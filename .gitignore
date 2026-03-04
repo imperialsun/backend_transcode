@@ -1,0 +1,18 @@
+# Local environment files
+.env
+.env.*
+!.env.example
+
+# SQLite database files
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+
+# Build/test artifacts
+coverage.out
+server
+bin/
+tmp/
+
+# OS/editor noise
+.DS_Store

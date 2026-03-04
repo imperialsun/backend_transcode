@@ -1,0 +1,91 @@
+name: Prod Smoke
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  schedule:
+    - cron: "17 3 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  prod-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Build backend image
+        run: docker build -t demeter-backend:smoke .
+
+      - name: Start backend container
+        run: |
+          docker run -d --rm --name demeter-backend-smoke \
+            -p 8080:8080 \
+            -e APP_ENV=production \
+            -e SQLITE_PATH=/data/backend.sqlite \
+            -e JWT_SECRET=smoke-secret \
+            -e MISTRAL_API_KEY=smoke-key \
+            -e MISTRAL_API_BASE_URL=https://api.mistral.ai \
+            -e BOOTSTRAP_ADMIN_EMAIL=admin@demeter.local \
+            -e BOOTSTRAP_ADMIN_PASSWORD=ChangeMe123! \
+            -e BOOTSTRAP_ORG_NAME="Demeter Santé" \
+            demeter-backend:smoke
+
+      - name: Wait for readiness
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 30); do
+            if curl -fsS http://localhost:8080/healthz >/dev/null; then
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "backend failed to start"
+          exit 1
+
+      - name: Verify health endpoints
+        run: |
+          curl -fsS http://localhost:8080/healthz | grep '"status":"ok"'
+          curl -fsS http://localhost:8080/readyz | grep '"status":"ready"'
+
+      - name: Verify auth and settings flows
+        run: |
+          set -euo pipefail
+
+          curl -fsS -c /tmp/cookies.txt \
+            -H "content-type: application/json" \
+            -d '{"email":"admin@demeter.local","password":"ChangeMe123!"}' \
+            http://localhost:8080/api/v1/auth/login >/tmp/login.json
+
+          grep -q '"runtimeMode":"backend"' /tmp/login.json
+
+          curl -fsS -b /tmp/cookies.txt http://localhost:8080/api/v1/auth/me >/tmp/me.json
+          grep -q '"permissions"' /tmp/me.json
+
+          curl -fsS -b /tmp/cookies.txt http://localhost:8080/api/v1/settings >/tmp/settings-before.json
+          grep -q '"version"' /tmp/settings-before.json
+
+          curl -fsS -b /tmp/cookies.txt \
+            -H "content-type: application/json" \
+            -X PUT \
+            -d '{"schemaVersion":1,"settings":{"cloudProvider":"demeter_sante"}}' \
+            http://localhost:8080/api/v1/settings >/tmp/settings-put.json
+          grep -q '"cloudProvider":"demeter_sante"' /tmp/settings-put.json
+
+          curl -fsS -b /tmp/cookies.txt -X POST http://localhost:8080/api/v1/settings/reset >/tmp/settings-reset.json
+          grep -q '"settings":{}' /tmp/settings-reset.json
+
+      - name: Dump logs on failure
+        if: failure()
+        run: docker logs demeter-backend-smoke
+
+      - name: Teardown
+        if: always()
+        run: docker rm -f demeter-backend-smoke || true

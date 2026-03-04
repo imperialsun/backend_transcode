@@ -1,0 +1,72 @@
+name: Trivy
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  schedule:
+    - cron: "17 3 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  trivy-fs:
+    name: Trivy FS
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Run Trivy filesystem scan
+        uses: aquasecurity/trivy-action@0.34.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          format: sarif
+          output: trivy-fs.sarif
+          exit-code: "0"
+
+      - name: Upload Trivy FS SARIF
+        if: always() && hashFiles('trivy-fs.sarif') != ''
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: trivy-fs.sarif
+          category: trivy-fs
+
+  trivy-image:
+    name: Trivy Image
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Build Docker image
+        run: docker build -t demeter-backend:ci .
+
+      - name: Run Trivy image scan
+        uses: aquasecurity/trivy-action@0.34.0
+        with:
+          scan-type: image
+          scan-ref: demeter-backend:ci
+          scanners: vuln
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          format: sarif
+          output: trivy-image.sarif
+          exit-code: "0"
+
+      - name: Upload Trivy Image SARIF
+        if: always() && hashFiles('trivy-image.sarif') != ''
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: trivy-image.sarif
+          category: trivy-image

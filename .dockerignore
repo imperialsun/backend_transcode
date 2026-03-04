@@ -1,0 +1,9 @@
+.git
+.github
+data
+*.sqlite
+*.sqlite-*
+coverage.out
+bin
+tmp
+*.log

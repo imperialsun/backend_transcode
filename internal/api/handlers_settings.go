@@ -1,0 +1,67 @@
+package api
+
+import (
+	"context"
+	"encoding/json"
+	"strings"
+
+	"github.com/gofiber/fiber/v2"
+)
+
+type putSettingsRequest struct {
+	SchemaVersion int             `json:"schemaVersion"`
+	Settings      json.RawMessage `json:"settings"`
+}
+
+func (a *App) RegisterSettingsRoutes(router fiber.Router) {
+	router.Get("/settings", a.AuthRequired(), RequirePermissions("feature.settings"), a.getSettings)
+	router.Put("/settings", a.AuthRequired(), RequirePermissions("feature.settings"), a.putSettings)
+	router.Post("/settings/reset", a.AuthRequired(), RequirePermissions("feature.settings"), a.resetSettings)
+}
+
+func (a *App) getSettings(c *fiber.Ctx) error {
+	claims := MustClaims(c)
+	if claims == nil {
+		return c.Status(fiber.StatusUnauthorized).JSON(ErrorResponse{Error: "unauthorized"})
+	}
+	record, err := a.Store.GetUserSettings(context.Background(), claims.UserID)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{Error: "failed to load settings"})
+	}
+	return c.JSON(toSettingsEnvelope(record))
+}
+
+func (a *App) putSettings(c *fiber.Ctx) error {
+	claims := MustClaims(c)
+	if claims == nil {
+		return c.Status(fiber.StatusUnauthorized).JSON(ErrorResponse{Error: "unauthorized"})
+	}
+	var req putSettingsRequest
+	if err := c.BodyParser(&req); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{Error: "invalid payload"})
+	}
+	payload := strings.TrimSpace(string(req.Settings))
+	if payload == "" {
+		payload = "{}"
+	}
+	if !json.Valid([]byte(payload)) {
+		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{Error: "settings must be valid JSON"})
+	}
+	record, err := a.Store.SaveUserSettings(context.Background(), claims.UserID, claims.OrgID, json.RawMessage(payload), req.SchemaVersion)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{Error: "failed to save settings"})
+	}
+	return c.JSON(toSettingsEnvelope(record))
+}
+
+func (a *App) resetSettings(c *fiber.Ctx) error {
+	claims := MustClaims(c)
+	if claims == nil {
+		return c.Status(fiber.StatusUnauthorized).JSON(ErrorResponse{Error: "unauthorized"})
+	}
+	record, err := a.Store.ResetUserSettings(context.Background(), claims.UserID, claims.OrgID)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{Error: "failed to reset settings"})
+	}
+	return c.JSON(toSettingsEnvelope(record))
+}
