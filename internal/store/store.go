@@ -66,6 +66,60 @@ type UpdateUserInput struct {
 	OrganizationID *string `json:"organizationId"`
 }
 
+type ActivityEventInput struct {
+	EventID    string
+	EventKind  string
+	SourceMode string
+	Provider   string
+	Status     string
+	OccurredAt time.Time
+	MetaJSON   json.RawMessage
+}
+
+type ActivityIngestResult struct {
+	Accepted   int `json:"accepted"`
+	Duplicates int `json:"duplicates"`
+}
+
+type ActivityRange struct {
+	From string `json:"from"`
+	To   string `json:"to"`
+}
+
+type ActivityTotals struct {
+	Transcriptions int `json:"transcriptions"`
+	Reports        int `json:"reports"`
+}
+
+type ActivityByDayItem struct {
+	Day            string `json:"day"`
+	Transcriptions int    `json:"transcriptions"`
+	Reports        int    `json:"reports"`
+}
+
+type ActivityByUserItem struct {
+	UserID         string `json:"userId"`
+	Email          string `json:"email"`
+	Transcriptions int    `json:"transcriptions"`
+	Reports        int    `json:"reports"`
+}
+
+type ActivityBreakdown struct {
+	TranscriptionsByMode     map[string]int `json:"transcriptionsByMode"`
+	TranscriptionsByProvider map[string]int `json:"transcriptionsByProvider"`
+	ReportsByMode            map[string]int `json:"reportsByMode"`
+	ReportsByProvider        map[string]int `json:"reportsByProvider"`
+}
+
+type ActivitySummary struct {
+	OrganizationID string               `json:"organizationId"`
+	Range          ActivityRange        `json:"range"`
+	Totals         ActivityTotals       `json:"totals"`
+	ByDay          []ActivityByDayItem  `json:"byDay"`
+	ByUser         []ActivityByUserItem `json:"byUser"`
+	Breakdown      ActivityBreakdown    `json:"breakdown"`
+}
+
 func Open(ctx context.Context, path string) (*Store, error) {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -112,7 +166,7 @@ func (s *Store) Migrate(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer rollbackTx(tx)
 
 	stmts := []string{
 		`CREATE TABLE IF NOT EXISTS organizations (
@@ -218,8 +272,27 @@ func (s *Store) Migrate(ctx context.Context) error {
 			FOREIGN KEY(actor_user_id) REFERENCES users(id),
 			FOREIGN KEY(organization_id) REFERENCES organizations(id)
 		);`,
+		`CREATE TABLE IF NOT EXISTS activity_usage_events (
+			event_id TEXT PRIMARY KEY,
+			organization_id TEXT NOT NULL,
+			user_id TEXT NOT NULL,
+			event_kind TEXT NOT NULL,
+			source_mode TEXT NOT NULL,
+			provider TEXT NOT NULL,
+			status TEXT NOT NULL,
+			occurred_at DATETIME NOT NULL,
+			day TEXT NOT NULL,
+			meta_json TEXT,
+			created_at DATETIME NOT NULL,
+			FOREIGN KEY(organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
+			FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+		);`,
 		`CREATE INDEX IF NOT EXISTS idx_users_org ON users(organization_id);`,
 		`CREATE INDEX IF NOT EXISTS idx_refresh_user ON refresh_sessions(user_id);`,
+		`CREATE INDEX IF NOT EXISTS idx_activity_org_day ON activity_usage_events(organization_id, day);`,
+		`CREATE INDEX IF NOT EXISTS idx_activity_user_day ON activity_usage_events(user_id, day);`,
+		`CREATE INDEX IF NOT EXISTS idx_activity_kind_org_day ON activity_usage_events(event_kind, organization_id, day);`,
+		`CREATE INDEX IF NOT EXISTS idx_activity_provider_org_day ON activity_usage_events(provider, organization_id, day);`,
 	}
 
 	for _, stmt := range stmts {
@@ -381,7 +454,7 @@ func (s *Store) ListOrganizations(ctx context.Context) ([]Organization, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer closeRows(rows)
 	var out []Organization
 	for rows.Next() {
 		var o Organization
@@ -492,7 +565,7 @@ func (s *Store) ListUsersByOrganization(ctx context.Context, organizationID stri
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer closeRows(rows)
 	out := make([]User, 0)
 	for rows.Next() {
 		var u User
@@ -576,7 +649,7 @@ func (s *Store) GetGlobalRoleCodesByUser(ctx context.Context, userID string) ([]
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer closeRows(rows)
 	return scanStringRows(rows)
 }
 
@@ -591,7 +664,7 @@ func (s *Store) GetOrganizationRoleCodesByUser(ctx context.Context, userID strin
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer closeRows(rows)
 	return scanStringRows(rows)
 }
 
@@ -617,7 +690,7 @@ func (s *Store) ResolveEffectivePermissions(ctx context.Context, userID string) 
 	for rows.Next() {
 		var code string
 		if err := rows.Scan(&code); err != nil {
-			rows.Close()
+			closeRows(rows)
 			return nil, err
 		}
 		base[code] = struct{}{}
@@ -635,7 +708,7 @@ func (s *Store) ResolveEffectivePermissions(ctx context.Context, userID string) 
 	if err != nil {
 		return nil, err
 	}
-	defer overrides.Close()
+	defer closeRows(overrides)
 	for overrides.Next() {
 		var code, effect string
 		if err := overrides.Scan(&code, &effect); err != nil {
@@ -663,7 +736,7 @@ func (s *Store) SetUserGlobalRoles(ctx context.Context, userID string, roleCodes
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer rollbackTx(tx)
 	if _, err := tx.ExecContext(ctx, `DELETE FROM user_global_roles WHERE user_id = ?`, userID); err != nil {
 		return err
 	}
@@ -687,7 +760,7 @@ func (s *Store) SetUserOrganizationRoles(ctx context.Context, userID string, rol
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer rollbackTx(tx)
 	if _, err := tx.ExecContext(ctx, `DELETE FROM user_organization_roles WHERE user_id = ?`, userID); err != nil {
 		return err
 	}
@@ -711,7 +784,7 @@ func (s *Store) SetUserPermissionOverrides(ctx context.Context, userID string, o
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer rollbackTx(tx)
 	if _, err := tx.ExecContext(ctx, `DELETE FROM user_permission_overrides WHERE user_id = ?`, userID); err != nil {
 		return err
 	}
@@ -743,7 +816,7 @@ func (s *Store) SetGlobalRolePermissionsByCode(ctx context.Context, roleCode str
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer rollbackTx(tx)
 	roleID, err := s.lookupRoleID(ctx, tx, "global_roles", roleCode)
 	if err != nil {
 		return err
@@ -774,7 +847,7 @@ func (s *Store) SetOrganizationRolePermissionsByCode(ctx context.Context, roleCo
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer rollbackTx(tx)
 	roleID, err := s.lookupRoleID(ctx, tx, "organization_roles", roleCode)
 	if err != nil {
 		return err
@@ -805,7 +878,7 @@ func (s *Store) ListGlobalRolesCatalog(ctx context.Context) ([]map[string]string
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer closeRows(rows)
 	return scanCatalogRows(rows)
 }
 
@@ -814,7 +887,7 @@ func (s *Store) ListOrganizationRolesCatalog(ctx context.Context) ([]map[string]
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer closeRows(rows)
 	return scanCatalogRows(rows)
 }
 
@@ -823,7 +896,7 @@ func (s *Store) ListPermissionsCatalog(ctx context.Context) ([]map[string]string
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer closeRows(rows)
 	out := []map[string]string{}
 	for rows.Next() {
 		var code, label, scope string
@@ -919,6 +992,207 @@ func (s *Store) ResetUserSettings(ctx context.Context, userID, organizationID st
 	return s.SaveUserSettings(ctx, userID, organizationID, json.RawMessage(`{}`), 1)
 }
 
+func (s *Store) IngestActivityEvents(
+	ctx context.Context,
+	organizationID string,
+	userID string,
+	events []ActivityEventInput,
+) (ActivityIngestResult, error) {
+	result := ActivityIngestResult{}
+	if len(events) == 0 {
+		return result, nil
+	}
+
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return result, err
+	}
+	defer rollbackTx(tx)
+
+	now := time.Now().UTC()
+	for _, event := range events {
+		eventID := strings.TrimSpace(event.EventID)
+		if eventID == "" {
+			continue
+		}
+
+		occurredAt := event.OccurredAt.UTC()
+		if occurredAt.IsZero() {
+			occurredAt = now
+		}
+
+		metaJSON := strings.TrimSpace(string(event.MetaJSON))
+		if metaJSON == "" {
+			metaJSON = "{}"
+		}
+
+		day := occurredAt.Format("2006-01-02")
+		_, err := tx.ExecContext(ctx, `
+			INSERT INTO activity_usage_events(
+				event_id, organization_id, user_id, event_kind, source_mode,
+				provider, status, occurred_at, day, meta_json, created_at
+			) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`, eventID, organizationID, userID, event.EventKind, event.SourceMode, event.Provider, event.Status, occurredAt, day, metaJSON, now)
+		if err != nil {
+			if isActivityEventDuplicateErr(err) {
+				result.Duplicates++
+				continue
+			}
+			return result, err
+		}
+		result.Accepted++
+	}
+
+	if err := tx.Commit(); err != nil {
+		return result, err
+	}
+	return result, nil
+}
+
+func (s *Store) GetOrganizationActivitySummary(
+	ctx context.Context,
+	organizationID string,
+	fromDay string,
+	toDay string,
+) (*ActivitySummary, error) {
+	summary := &ActivitySummary{
+		OrganizationID: organizationID,
+		Range: ActivityRange{
+			From: fromDay,
+			To:   toDay,
+		},
+		Breakdown: ActivityBreakdown{
+			TranscriptionsByMode:     map[string]int{},
+			TranscriptionsByProvider: map[string]int{},
+			ReportsByMode:            map[string]int{},
+			ReportsByProvider:        map[string]int{},
+		},
+		ByDay:  []ActivityByDayItem{},
+		ByUser: []ActivityByUserItem{},
+	}
+
+	err := s.DB.QueryRowContext(ctx, `
+		SELECT
+			COALESCE(SUM(CASE WHEN event_kind = 'transcription' THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN event_kind = 'report' THEN 1 ELSE 0 END), 0)
+		FROM activity_usage_events
+		WHERE organization_id = ? AND day BETWEEN ? AND ?
+	`, organizationID, fromDay, toDay).Scan(&summary.Totals.Transcriptions, &summary.Totals.Reports)
+	if err != nil {
+		return nil, err
+	}
+
+	byDayRows, err := s.DB.QueryContext(ctx, `
+		SELECT
+			day,
+			COALESCE(SUM(CASE WHEN event_kind = 'transcription' THEN 1 ELSE 0 END), 0) AS transcriptions,
+			COALESCE(SUM(CASE WHEN event_kind = 'report' THEN 1 ELSE 0 END), 0) AS reports
+		FROM activity_usage_events
+		WHERE organization_id = ? AND day BETWEEN ? AND ?
+		GROUP BY day
+		ORDER BY day ASC
+	`, organizationID, fromDay, toDay)
+	if err != nil {
+		return nil, err
+	}
+	defer closeRows(byDayRows)
+	for byDayRows.Next() {
+		var item ActivityByDayItem
+		if err := byDayRows.Scan(&item.Day, &item.Transcriptions, &item.Reports); err != nil {
+			return nil, err
+		}
+		summary.ByDay = append(summary.ByDay, item)
+	}
+	if err := byDayRows.Err(); err != nil {
+		return nil, err
+	}
+
+	byUserRows, err := s.DB.QueryContext(ctx, `
+		SELECT
+			e.user_id,
+			COALESCE(u.email, '') AS email,
+			COALESCE(SUM(CASE WHEN e.event_kind = 'transcription' THEN 1 ELSE 0 END), 0) AS transcriptions,
+			COALESCE(SUM(CASE WHEN e.event_kind = 'report' THEN 1 ELSE 0 END), 0) AS reports
+		FROM activity_usage_events e
+		LEFT JOIN users u ON u.id = e.user_id
+		WHERE e.organization_id = ? AND e.day BETWEEN ? AND ?
+		GROUP BY e.user_id, u.email
+		ORDER BY (transcriptions + reports) DESC, email ASC
+	`, organizationID, fromDay, toDay)
+	if err != nil {
+		return nil, err
+	}
+	defer closeRows(byUserRows)
+	for byUserRows.Next() {
+		var item ActivityByUserItem
+		if err := byUserRows.Scan(&item.UserID, &item.Email, &item.Transcriptions, &item.Reports); err != nil {
+			return nil, err
+		}
+		summary.ByUser = append(summary.ByUser, item)
+	}
+	if err := byUserRows.Err(); err != nil {
+		return nil, err
+	}
+
+	if err := s.scanActivityBreakdown(ctx, summary.Breakdown.TranscriptionsByMode, `
+		SELECT source_mode, COUNT(*)
+		FROM activity_usage_events
+		WHERE organization_id = ? AND day BETWEEN ? AND ? AND event_kind = 'transcription'
+		GROUP BY source_mode
+	`, organizationID, fromDay, toDay); err != nil {
+		return nil, err
+	}
+	if err := s.scanActivityBreakdown(ctx, summary.Breakdown.TranscriptionsByProvider, `
+		SELECT provider, COUNT(*)
+		FROM activity_usage_events
+		WHERE organization_id = ? AND day BETWEEN ? AND ? AND event_kind = 'transcription'
+		GROUP BY provider
+	`, organizationID, fromDay, toDay); err != nil {
+		return nil, err
+	}
+	if err := s.scanActivityBreakdown(ctx, summary.Breakdown.ReportsByMode, `
+		SELECT source_mode, COUNT(*)
+		FROM activity_usage_events
+		WHERE organization_id = ? AND day BETWEEN ? AND ? AND event_kind = 'report'
+		GROUP BY source_mode
+	`, organizationID, fromDay, toDay); err != nil {
+		return nil, err
+	}
+	if err := s.scanActivityBreakdown(ctx, summary.Breakdown.ReportsByProvider, `
+		SELECT provider, COUNT(*)
+		FROM activity_usage_events
+		WHERE organization_id = ? AND day BETWEEN ? AND ? AND event_kind = 'report'
+		GROUP BY provider
+	`, organizationID, fromDay, toDay); err != nil {
+		return nil, err
+	}
+
+	return summary, nil
+}
+
+func (s *Store) scanActivityBreakdown(
+	ctx context.Context,
+	out map[string]int,
+	query string,
+	args ...any,
+) error {
+	rows, err := s.DB.QueryContext(ctx, query, args...)
+	if err != nil {
+		return err
+	}
+	defer closeRows(rows)
+
+	for rows.Next() {
+		var key string
+		var count int
+		if err := rows.Scan(&key, &count); err != nil {
+			return err
+		}
+		out[key] = count
+	}
+	return rows.Err()
+}
+
 func (s *Store) lookupRoleID(ctx context.Context, tx *sql.Tx, table, code string) (string, error) {
 	query := fmt.Sprintf(`SELECT id FROM %s WHERE code = ?`, table)
 	var id string
@@ -1008,4 +1282,26 @@ func sortStrings(values []string) {
 			}
 		}
 	}
+}
+
+func isActivityEventDuplicateErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "unique constraint failed") && strings.Contains(msg, "activity_usage_events.event_id")
+}
+
+func closeRows(rows *sql.Rows) {
+	if rows == nil {
+		return
+	}
+	_ = rows.Close()
+}
+
+func rollbackTx(tx *sql.Tx) {
+	if tx == nil {
+		return
+	}
+	_ = tx.Rollback()
 }

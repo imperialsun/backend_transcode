@@ -51,6 +51,7 @@ func (a *App) RegisterAdminRoutes(router fiber.Router) {
 	group.Get("/organizations", a.listOrganizations)
 	group.Post("/organizations", a.createOrganization)
 	group.Patch("/organizations/:id", a.patchOrganization)
+	a.registerAdminActivityRoutes(group)
 	group.Get("/organizations/:id/users", a.listOrganizationUsers)
 	group.Post("/organizations/:id/users", a.createOrganizationUser)
 	group.Patch("/users/:id", a.patchUser)

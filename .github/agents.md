@@ -24,6 +24,14 @@ Rules for changes
 - Never expose backend secrets (especially `MISTRAL_API_KEY`) to clients.
 - Keep `standalone` mode behavior untouched on frontend integrations.
 
+Tooling setup
+
+```bash
+make install-tools
+export PATH="$HOME/.local/bin:$PATH"
+golangci-lint version
+```
+
 Required pre-commit checks
 
 ```bash

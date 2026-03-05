@@ -47,7 +47,7 @@ func (c *Client) DoJSON(ctx context.Context, method, path string, body []byte) (
 	if err != nil {
 		return 0, nil, err
 	}
-	defer res.Body.Close()
+	defer closeSilently(res.Body)
 	data, err := io.ReadAll(res.Body)
 	if err != nil {
 		return 0, nil, err
@@ -72,7 +72,7 @@ func (c *Client) DoMultipart(ctx context.Context, path string, body []byte, cont
 	if err != nil {
 		return 0, nil, err
 	}
-	defer res.Body.Close()
+	defer closeSilently(res.Body)
 	data, err := io.ReadAll(res.Body)
 	if err != nil {
 		return 0, nil, err
@@ -93,10 +93,17 @@ func (c *Client) DoGet(ctx context.Context, path string) (int, []byte, error) {
 	if err != nil {
 		return 0, nil, err
 	}
-	defer res.Body.Close()
+	defer closeSilently(res.Body)
 	data, err := io.ReadAll(res.Body)
 	if err != nil {
 		return 0, nil, err
 	}
 	return res.StatusCode, data, nil
+}
+
+func closeSilently(closer io.Closer) {
+	if closer == nil {
+		return
+	}
+	_ = closer.Close()
 }

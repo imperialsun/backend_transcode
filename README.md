@@ -46,3 +46,7 @@ By default, API listens on `http://localhost:8080` and exposes routes under `/ap
 - `/api/v1/settings*`
 - `/api/v1/providers/demeter-sante/*`
 - `/api/v1/admin/*`
+
+## Documentation
+
+- Database schema and behavior: [`docs/database.md`](/home/imperialsun/Transcode/Backend/docs/database.md)

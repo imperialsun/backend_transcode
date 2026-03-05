@@ -6,6 +6,14 @@
 - Keep commits atomic and focused.
 - In PR description, include impact, risks, and validation evidence.
 
+## Tooling setup
+
+```bash
+make install-tools
+export PATH="$HOME/.local/bin:$PATH"
+golangci-lint version
+```
+
 ## Required local gate before PR
 
 ```bash

@@ -1,6 +1,8 @@
 package api
 
 import (
+	"context"
+	"log"
 	"strings"
 
 	"demeter-backend/internal/auth"
@@ -16,13 +18,84 @@ func (a *App) AuthRequired() fiber.Handler {
 		if raw == "" {
 			return c.Status(fiber.StatusUnauthorized).JSON(ErrorResponse{Error: "missing access token"})
 		}
-		claims, err := auth.ParseAccessToken(a.Config.JWTSecret, raw)
+		tokenClaims, err := auth.ParseAccessToken(a.Config.JWTSecret, raw)
 		if err != nil {
+			log.Printf("[auth] access denied reason=invalid_token path=%q ip=%s", c.Path(), c.IP())
 			return c.Status(fiber.StatusUnauthorized).JSON(ErrorResponse{Error: "invalid access token"})
+		}
+		claims, status, err := a.resolveLiveClaims(context.Background(), tokenClaims)
+		if err != nil {
+			if status == fiber.StatusForbidden {
+				log.Printf(
+					"[auth] access denied reason=live_forbidden user=%s org=%s path=%q ip=%s",
+					tokenClaims.UserID,
+					tokenClaims.OrgID,
+					c.Path(),
+					c.IP(),
+				)
+				return c.Status(fiber.StatusForbidden).JSON(ErrorResponse{Error: "forbidden"})
+			}
+			log.Printf(
+				"[auth] access denied reason=resolve_claims_failed user=%s org=%s path=%q ip=%s err=%v",
+				tokenClaims.UserID,
+				tokenClaims.OrgID,
+				c.Path(),
+				c.IP(),
+				err,
+			)
+			return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{Error: "failed to resolve authorization context"})
 		}
 		c.Locals(claimsContextKey, claims)
 		return c.Next()
 	}
+}
+
+func (a *App) resolveLiveClaims(ctx context.Context, tokenClaims *auth.Claims) (*auth.Claims, int, error) {
+	if tokenClaims == nil || strings.TrimSpace(tokenClaims.UserID) == "" {
+		return nil, fiber.StatusUnauthorized, fiber.ErrUnauthorized
+	}
+	if a.Store == nil {
+		return nil, fiber.StatusInternalServerError, fiber.ErrInternalServerError
+	}
+
+	user, err := a.Store.GetUserByID(ctx, tokenClaims.UserID)
+	if err != nil {
+		return nil, fiber.StatusInternalServerError, err
+	}
+	if user == nil || user.Status != "active" {
+		return nil, fiber.StatusForbidden, fiber.ErrForbidden
+	}
+
+	org, err := a.Store.GetOrganizationByID(ctx, user.OrganizationID)
+	if err != nil {
+		return nil, fiber.StatusInternalServerError, err
+	}
+	if org == nil || org.Status != "active" {
+		return nil, fiber.StatusForbidden, fiber.ErrForbidden
+	}
+
+	globalRoles, err := a.Store.GetGlobalRoleCodesByUser(ctx, user.ID)
+	if err != nil {
+		return nil, fiber.StatusInternalServerError, err
+	}
+	orgRoles, err := a.Store.GetOrganizationRoleCodesByUser(ctx, user.ID)
+	if err != nil {
+		return nil, fiber.StatusInternalServerError, err
+	}
+	permissions, err := a.Store.ResolveEffectivePermissions(ctx, user.ID)
+	if err != nil {
+		return nil, fiber.StatusInternalServerError, err
+	}
+
+	return &auth.Claims{
+		UserID:           user.ID,
+		OrgID:            user.OrganizationID,
+		Email:            user.Email,
+		GlobalRoles:      globalRoles,
+		OrgRoles:         orgRoles,
+		Permissions:      permissions,
+		RegisteredClaims: tokenClaims.RegisteredClaims,
+	}, fiber.StatusOK, nil
 }
 
 func RequirePermissions(codes ...string) fiber.Handler {
