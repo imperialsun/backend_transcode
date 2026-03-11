@@ -1,4 +1,4 @@
-FROM golang:1.24-alpine AS builder
+FROM golang:1.25.7-alpine AS builder
 
 WORKDIR /src
 
@@ -7,7 +7,7 @@ RUN go mod download
 
 COPY . .
 RUN mkdir -p /out /runtime-data && \
-    CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/server ./cmd/server
+    CGO_ENABLED=0 GOMAXPROCS=2 go build -buildvcs=false -p=1 -gcflags=all=-c=1 -trimpath -ldflags="-s -w" -o /out/server ./cmd/server
 
 FROM gcr.io/distroless/base-debian12:nonroot
 
