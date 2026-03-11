@@ -10,7 +10,7 @@
 
 # Build/test artifacts
 coverage.out
-server
+/server
 bin/
 tmp/
 
