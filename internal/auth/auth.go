@@ -113,7 +113,7 @@ func VerifyPassword(encodedHash, password string) bool {
 func NewAccessToken(secret string, ttl time.Duration, claims Claims) (string, time.Time, error) {
 	now := time.Now().UTC()
 	expiresAt := now.Add(ttl)
-	audience := claims.RegisteredClaims.Audience
+	audience := claims.Audience
 	if len(audience) == 0 {
 		audience = jwt.ClaimStrings{string(SessionTypeApp)}
 	}
@@ -153,7 +153,7 @@ func HasAudience(claims *Claims, sessionType SessionType) bool {
 		return false
 	}
 	target := sessionType.String()
-	for _, audience := range claims.RegisteredClaims.Audience {
+	for _, audience := range claims.Audience {
 		if audience == target {
 			return true
 		}
