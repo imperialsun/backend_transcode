@@ -32,8 +32,20 @@ jobs:
 
       - name: Build backend binary
         run: |
+          set -euo pipefail
           mkdir -p bin
-          go build -o ./bin/server ./cmd/server
+          output_file="$(mktemp)"
+          if ! go build -o ./bin/server ./cmd/server >"$output_file" 2>&1; then
+            cat "$output_file"
+            {
+              echo "### Build backend binary failed"
+              echo '```text'
+              cat "$output_file"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            printf '::error::%s\n' "$(tr '\n' ' ' < "$output_file" | head -c 3500)"
+            exit 1
+          fi
 
       - name: Build backend image
         run: docker build -f Dockerfile.smoke -t demeter-backend:smoke .
