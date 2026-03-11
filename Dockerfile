@@ -6,18 +6,19 @@ COPY go.mod go.sum ./
 RUN go mod download
 
 COPY . .
-RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/server ./cmd/server
+RUN mkdir -p /out /runtime-data && \
+    CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/server ./cmd/server
 
 FROM gcr.io/distroless/base-debian12:nonroot
 
 WORKDIR /
 COPY --from=builder /out/server /server
+COPY --from=builder --chown=nonroot:nonroot /runtime-data /data
 
 ENV APP_ENV=production
 ENV PORT=8080
 ENV SQLITE_PATH=/data/backend.sqlite
 
-VOLUME ["/data"]
 EXPOSE 8080
 
 ENTRYPOINT ["/server"]
