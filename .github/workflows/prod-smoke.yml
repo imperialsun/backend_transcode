@@ -33,9 +33,8 @@ jobs:
       - name: Build backend binary
         run: |
           set -euo pipefail
-          mkdir -p bin
           output_file="$(mktemp)"
-          if ! go build -o ./bin/server ./cmd/server >"$output_file" 2>&1; then
+          if ! go build -o ./server ./cmd/server >"$output_file" 2>&1; then
             cat "$output_file"
             {
               echo "### Build backend binary failed"

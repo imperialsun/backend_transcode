@@ -1,7 +1,7 @@
 FROM gcr.io/distroless/base-debian12:nonroot
 
 WORKDIR /
-COPY --chown=nonroot:nonroot bin/server /server
+COPY --chown=nonroot:nonroot server /server
 
 ENV APP_ENV=production
 ENV PORT=8080
