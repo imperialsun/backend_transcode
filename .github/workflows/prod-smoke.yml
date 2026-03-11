@@ -21,24 +21,27 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Build backend binary
+        run: CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o server ./cmd/server
 
       - name: Build backend image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          load: true
-          provenance: false
-          sbom: false
-          tags: demeter-backend:smoke
+        run: docker build -f Dockerfile.smoke -t demeter-backend:smoke .
 
       - name: Start backend container
         run: |
           docker run -d --rm --name demeter-backend-smoke \
             -p 8080:8080 \
             -e APP_ENV=production \
-            -e SQLITE_PATH=/data/backend.sqlite \
+            -e SQLITE_PATH=/tmp/backend.sqlite \
             -e JWT_SECRET=smoke-secret \
             -e MISTRAL_API_KEY=smoke-key \
             -e MISTRAL_API_BASE_URL=https://api.mistral.ai \
