@@ -49,10 +49,21 @@ type RefreshSession struct {
 	ID             string
 	UserID         string
 	OrganizationID string
+	SessionType    string
 	TokenHash      string
 	ExpiresAt      time.Time
 	RevokedAt      sql.NullTime
 	CreatedAt      time.Time
+}
+
+type AuditLogInput struct {
+	ActorUserID    string
+	OrganizationID string
+	Action         string
+	TargetType     string
+	TargetID       string
+	Payload        any
+	PayloadJSON    json.RawMessage
 }
 
 type UserPermissionOverrideInput struct {
@@ -253,6 +264,7 @@ func (s *Store) Migrate(ctx context.Context) error {
 			id TEXT PRIMARY KEY,
 			user_id TEXT NOT NULL,
 			organization_id TEXT NOT NULL,
+			session_type TEXT NOT NULL DEFAULT 'app',
 			refresh_hash TEXT NOT NULL,
 			expires_at DATETIME NOT NULL,
 			revoked_at DATETIME,
@@ -299,6 +311,10 @@ func (s *Store) Migrate(ctx context.Context) error {
 		if _, err := tx.ExecContext(ctx, stmt); err != nil {
 			return err
 		}
+	}
+
+	if err := ensureColumnExists(ctx, tx, "refresh_sessions", "session_type", `ALTER TABLE refresh_sessions ADD COLUMN session_type TEXT NOT NULL DEFAULT 'app'`); err != nil {
+		return err
 	}
 
 	return tx.Commit()
@@ -909,24 +925,30 @@ func (s *Store) ListPermissionsCatalog(ctx context.Context) ([]map[string]string
 }
 
 func (s *Store) SaveRefreshSession(ctx context.Context, session RefreshSession) error {
+	if strings.TrimSpace(session.SessionType) == "" {
+		session.SessionType = "app"
+	}
 	_, err := s.DB.ExecContext(ctx, `
-		INSERT INTO refresh_sessions(id, user_id, organization_id, refresh_hash, expires_at, revoked_at, created_at)
-		VALUES(?, ?, ?, ?, ?, ?, ?)
-	`, session.ID, session.UserID, session.OrganizationID, session.TokenHash, session.ExpiresAt, nil, session.CreatedAt)
+		INSERT INTO refresh_sessions(id, user_id, organization_id, session_type, refresh_hash, expires_at, revoked_at, created_at)
+		VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+	`, session.ID, session.UserID, session.OrganizationID, session.SessionType, session.TokenHash, session.ExpiresAt, nil, session.CreatedAt)
 	return err
 }
 
 func (s *Store) GetRefreshSessionByID(ctx context.Context, id string) (*RefreshSession, error) {
 	var rec RefreshSession
 	err := s.DB.QueryRowContext(ctx, `
-		SELECT id, user_id, organization_id, refresh_hash, expires_at, revoked_at, created_at
+		SELECT id, user_id, organization_id, session_type, refresh_hash, expires_at, revoked_at, created_at
 		FROM refresh_sessions WHERE id = ?
-	`, id).Scan(&rec.ID, &rec.UserID, &rec.OrganizationID, &rec.TokenHash, &rec.ExpiresAt, &rec.RevokedAt, &rec.CreatedAt)
+	`, id).Scan(&rec.ID, &rec.UserID, &rec.OrganizationID, &rec.SessionType, &rec.TokenHash, &rec.ExpiresAt, &rec.RevokedAt, &rec.CreatedAt)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
 		}
 		return nil, err
+	}
+	if strings.TrimSpace(rec.SessionType) == "" {
+		rec.SessionType = "app"
 	}
 	return &rec, nil
 }
@@ -942,6 +964,11 @@ func (s *Store) RotateRefreshSession(ctx context.Context, id, newHash string, ex
 
 func (s *Store) RevokeRefreshSession(ctx context.Context, id string) error {
 	_, err := s.DB.ExecContext(ctx, `UPDATE refresh_sessions SET revoked_at = ? WHERE id = ?`, time.Now().UTC(), id)
+	return err
+}
+
+func (s *Store) RevokeRefreshSessionsByUser(ctx context.Context, userID string) error {
+	_, err := s.DB.ExecContext(ctx, `UPDATE refresh_sessions SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL`, time.Now().UTC(), userID)
 	return err
 }
 

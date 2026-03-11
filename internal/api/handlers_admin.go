@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 
 	"demeter-backend/internal/auth"
@@ -47,12 +48,13 @@ type updateEntitlementsRequest struct {
 }
 
 func (a *App) RegisterAdminRoutes(router fiber.Router) {
-	group := router.Group("/admin", a.AuthRequired(), RequirePermissions("feature.admin"), RequireAdminScope())
+	group := router.Group("/admin", a.AdminAuthRequired(), RequirePermissions("feature.admin"), RequireAdminScope(), RequireAdminCSRF())
 	group.Get("/organizations", a.listOrganizations)
 	group.Post("/organizations", a.createOrganization)
 	group.Patch("/organizations/:id", a.patchOrganization)
 	a.registerAdminActivityRoutes(group)
 	group.Get("/organizations/:id/users", a.listOrganizationUsers)
+	group.Get("/users/:id/access", a.getUserAccess)
 	group.Post("/organizations/:id/users", a.createOrganizationUser)
 	group.Patch("/users/:id", a.patchUser)
 	group.Put("/users/:id/password", a.updateUserPassword)
@@ -102,6 +104,11 @@ func (a *App) createOrganization(c *fiber.Ctx) error {
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{Error: "failed to create organization"})
 	}
+	a.writeAdminAudit(claims, "admin.organization.create", "organization", org.ID, fiber.Map{
+		"name":   org.Name,
+		"code":   org.Code,
+		"status": org.Status,
+	})
 	return c.Status(fiber.StatusCreated).JSON(org)
 }
 
@@ -122,6 +129,11 @@ func (a *App) patchOrganization(c *fiber.Ctx) error {
 	if updated == nil {
 		return c.Status(fiber.StatusNotFound).JSON(ErrorResponse{Error: "organization not found"})
 	}
+	a.writeAdminAudit(claims, "admin.organization.update", "organization", updated.ID, fiber.Map{
+		"name":   updated.Name,
+		"code":   updated.Code,
+		"status": updated.Status,
+	})
 	return c.JSON(updated)
 }
 
@@ -171,6 +183,11 @@ func (a *App) createOrganizationUser(c *fiber.Ctx) error {
 	_ = a.Store.SetUserGlobalRoles(context.Background(), created.ID, []string{"user"})
 	_ = a.Store.SetUserOrganizationRoles(context.Background(), created.ID, []string{"org_member"})
 	created.PasswordHash = ""
+	a.writeAdminAudit(claims, "admin.user.create", "user", created.ID, fiber.Map{
+		"organizationId": created.OrganizationID,
+		"email":          created.Email,
+		"status":         created.Status,
+	})
 	return c.Status(fiber.StatusCreated).JSON(created)
 }
 
@@ -206,6 +223,14 @@ func (a *App) patchUser(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{Error: "failed to update user"})
 	}
 	updated.PasswordHash = ""
+	if revokeErr := a.Store.RevokeRefreshSessionsByUser(context.Background(), updated.ID); revokeErr != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{Error: "failed to revoke user sessions"})
+	}
+	a.writeAdminAudit(claims, "admin.user.update", "user", updated.ID, fiber.Map{
+		"organizationId": updated.OrganizationID,
+		"email":          updated.Email,
+		"status":         updated.Status,
+	})
 	return c.JSON(updated)
 }
 
@@ -233,6 +258,12 @@ func (a *App) updateUserPassword(c *fiber.Ctx) error {
 	if err := a.Store.UpdateUserPassword(context.Background(), userID, hash); err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{Error: "failed to update password"})
 	}
+	if err := a.Store.RevokeRefreshSessionsByUser(context.Background(), userID); err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{Error: "failed to revoke user sessions"})
+	}
+	a.writeAdminAudit(claims, "admin.user.password.update", "user", userID, fiber.Map{
+		"organizationId": target.OrganizationID,
+	})
 	return c.SendStatus(fiber.StatusNoContent)
 }
 
@@ -249,6 +280,12 @@ func (a *App) updateUserGlobalRoles(c *fiber.Ctx) error {
 	if err := a.Store.SetUserGlobalRoles(context.Background(), userID, req.Codes); err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{Error: "failed to update global roles"})
 	}
+	if err := a.Store.RevokeRefreshSessionsByUser(context.Background(), userID); err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{Error: "failed to revoke user sessions"})
+	}
+	a.writeAdminAudit(claims, "admin.user.global_roles.update", "user", userID, fiber.Map{
+		"codes": req.Codes,
+	})
 	return c.SendStatus(fiber.StatusNoContent)
 }
 
@@ -272,6 +309,12 @@ func (a *App) updateUserOrgRoles(c *fiber.Ctx) error {
 	if err := a.Store.SetUserOrganizationRoles(context.Background(), userID, req.Codes); err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{Error: "failed to update organization roles"})
 	}
+	if err := a.Store.RevokeRefreshSessionsByUser(context.Background(), userID); err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{Error: "failed to revoke user sessions"})
+	}
+	a.writeAdminAudit(claims, "admin.user.org_roles.update", "user", userID, fiber.Map{
+		"codes": req.Codes,
+	})
 	return c.SendStatus(fiber.StatusNoContent)
 }
 
@@ -295,7 +338,55 @@ func (a *App) updateUserEntitlements(c *fiber.Ctx) error {
 	if err := a.Store.SetUserPermissionOverrides(context.Background(), userID, req.Overrides); err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{Error: "failed to update entitlements"})
 	}
+	if err := a.Store.RevokeRefreshSessionsByUser(context.Background(), userID); err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{Error: "failed to revoke user sessions"})
+	}
+	a.writeAdminAudit(claims, "admin.user.entitlements.update", "user", userID, fiber.Map{
+		"overrides": req.Overrides,
+	})
 	return c.SendStatus(fiber.StatusNoContent)
+}
+
+func (a *App) getUserAccess(c *fiber.Ctx) error {
+	claims := MustClaims(c)
+	if claims == nil {
+		return c.Status(fiber.StatusUnauthorized).JSON(ErrorResponse{Error: "unauthorized"})
+	}
+	userID := strings.TrimSpace(c.Params("id"))
+	target, err := a.Store.GetUserByID(context.Background(), userID)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{Error: "failed to load user"})
+	}
+	if target == nil {
+		return c.Status(fiber.StatusNotFound).JSON(ErrorResponse{Error: "user not found"})
+	}
+	if !isSuperAdmin(claims) && claims.OrgID != target.OrganizationID {
+		return c.Status(fiber.StatusForbidden).JSON(ErrorResponse{Error: "forbidden organization scope"})
+	}
+	globalRoles, err := a.Store.GetGlobalRoleCodesByUser(context.Background(), userID)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{Error: "failed to load global roles"})
+	}
+	orgRoles, err := a.Store.GetOrganizationRoleCodesByUser(context.Background(), userID)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{Error: "failed to load organization roles"})
+	}
+	overrides, err := a.Store.GetUserPermissionOverrides(context.Background(), userID)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{Error: "failed to load permission overrides"})
+	}
+	effectivePermissions, err := a.Store.ResolveEffectivePermissions(context.Background(), userID)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{Error: "failed to resolve effective permissions"})
+	}
+	target.PasswordHash = ""
+	return c.JSON(fiber.Map{
+		"user":                 target,
+		"globalRoles":          globalRoles,
+		"orgRoles":             orgRoles,
+		"overrides":            overrides,
+		"effectivePermissions": effectivePermissions,
+	})
 }
 
 func (a *App) catalogRoles(c *fiber.Ctx) error {
@@ -326,4 +417,25 @@ func isSuperAdmin(claims *auth.Claims) bool {
 		return false
 	}
 	return rbac.HasRole(claims.GlobalRoles, "super_admin")
+}
+
+func (a *App) writeAdminAudit(claims *auth.Claims, action, targetType, targetID string, payload any) {
+	if claims == nil {
+		return
+	}
+	safePayload := json.RawMessage(`{}`)
+	if payload != nil {
+		raw, err := json.Marshal(payload)
+		if err == nil && len(strings.TrimSpace(string(raw))) > 0 {
+			safePayload = raw
+		}
+	}
+	_ = a.Store.InsertAuditLog(context.Background(), store.AuditLogInput{
+		ActorUserID:    claims.UserID,
+		OrganizationID: claims.OrgID,
+		Action:         action,
+		TargetType:     targetType,
+		TargetID:       targetID,
+		PayloadJSON:    safePayload,
+	})
 }

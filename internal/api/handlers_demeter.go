@@ -8,7 +8,7 @@ import (
 )
 
 func (a *App) RegisterDemeterRoutes(router fiber.Router) {
-	group := router.Group("/providers/demeter-sante", a.AuthRequired())
+	group := router.Group("/providers/demeter-sante", a.AppAuthRequired())
 	group.Get("/models", RequireAnyPermission("provider.cloud.demeter_sante", "provider.llm.demeter_sante"), a.demeterModels)
 	group.Post("/audio/transcriptions", RequirePermissions("feature.cloudupload", "provider.cloud.demeter_sante"), a.demeterAudioTranscriptions)
 	group.Post("/chat/completions", RequirePermissions("feature.llmapi", "provider.llm.demeter_sante"), a.demeterChatCompletions)

@@ -1,7 +1,10 @@
-.PHONY: install-tools fmt-check test test-race lint vet build ci
+.PHONY: install-tools docs-check fmt-check test test-race lint vet build ci
 
 install-tools:
 	GOBIN=$$HOME/.local/bin go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
+
+docs-check:
+	go run ./cmd/docscheck
 
 fmt-check:
 	test -z "$$(gofmt -l .)"
@@ -21,4 +24,4 @@ vet:
 build:
 	go build ./cmd/server
 
-ci: fmt-check test test-race lint vet build
+ci: docs-check fmt-check test test-race lint vet build

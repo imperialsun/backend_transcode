@@ -14,8 +14,11 @@ type Config struct {
 	JWTSecret              string
 	AccessTTL              time.Duration
 	RefreshTTL             time.Duration
+	AdminAccessTTL         time.Duration
+	AdminRefreshTTL        time.Duration
 	CookieSecure           bool
-	CORSOrigins            []string
+	AppCORSOrigins         []string
+	AdminCORSOrigins       []string
 	MistralAPIBaseURL      string
 	MistralAPIKey          string
 	BootstrapAdminEmail    string
@@ -25,6 +28,7 @@ type Config struct {
 
 func Load() Config {
 	appEnv := getEnv("APP_ENV", "development")
+	legacyAppOrigins := getEnv("CORS_ORIGINS", "http://localhost:3000,http://localhost:5173")
 	cfg := Config{
 		AppEnv:                 appEnv,
 		Port:                   getEnv("PORT", "8080"),
@@ -32,8 +36,11 @@ func Load() Config {
 		JWTSecret:              getEnv("JWT_SECRET", "dev-insecure-jwt-secret-change-me"),
 		AccessTTL:              time.Duration(getEnvInt("ACCESS_TTL_MINUTES", 15)) * time.Minute,
 		RefreshTTL:             time.Duration(getEnvInt("REFRESH_TTL_HOURS", 24*30)) * time.Hour,
+		AdminAccessTTL:         time.Duration(getEnvInt("ADMIN_ACCESS_TTL_MINUTES", 10)) * time.Minute,
+		AdminRefreshTTL:        time.Duration(getEnvInt("ADMIN_REFRESH_TTL_HOURS", 12)) * time.Hour,
 		CookieSecure:           getEnvBool("COOKIE_SECURE", appEnv == "production"),
-		CORSOrigins:            splitCSV(getEnv("CORS_ORIGINS", "http://localhost:3000,http://localhost:5173")),
+		AppCORSOrigins:         splitCSV(getEnv("APP_CORS_ORIGINS", legacyAppOrigins)),
+		AdminCORSOrigins:       splitCSV(getEnv("ADMIN_CORS_ORIGINS", "http://localhost:4173")),
 		MistralAPIBaseURL:      strings.TrimRight(getEnv("MISTRAL_API_BASE_URL", "https://api.mistral.ai"), "/"),
 		MistralAPIKey:          strings.TrimSpace(os.Getenv("MISTRAL_API_KEY")),
 		BootstrapAdminEmail:    strings.TrimSpace(os.Getenv("BOOTSTRAP_ADMIN_EMAIL")),

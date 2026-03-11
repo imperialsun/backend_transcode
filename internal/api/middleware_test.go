@@ -14,6 +14,7 @@ import (
 	"demeter-backend/internal/config"
 	"demeter-backend/internal/store"
 	"github.com/gofiber/fiber/v2"
+	"github.com/golang-jwt/jwt/v5"
 )
 
 type protectedPayload struct {
@@ -205,6 +206,46 @@ func TestAuthRequired_UsesLivePermissionsWhenAddedAfterLogin(t *testing.T) {
 	}
 }
 
+func TestAppAuthRequired_RejectsAdminAudience(t *testing.T) {
+	appCtx, _, _, user, secret := setupAuthMiddlewareTest(t)
+	app := newProtectedTestApp(appCtx, false)
+
+	token := issueAccessTokenForSession(t, secret, auth.SessionTypeAdmin, auth.Claims{
+		UserID: user.ID,
+		OrgID:  user.OrganizationID,
+		Email:  user.Email,
+	})
+
+	resp := performProtectedRequest(t, app, token)
+	if resp.StatusCode != fiber.StatusUnauthorized {
+		t.Fatalf("expected 401 for admin token on app route, got %d", resp.StatusCode)
+	}
+}
+
+func TestAdminAuthRequired_RejectsAppAudience(t *testing.T) {
+	appCtx, _, _, user, secret := setupAuthMiddlewareTest(t)
+	app := fiber.New()
+	app.Get("/admin-protected", appCtx.AdminAuthRequired(), func(c *fiber.Ctx) error {
+		return c.SendStatus(fiber.StatusOK)
+	})
+
+	token := issueAccessTokenForSession(t, secret, auth.SessionTypeApp, auth.Claims{
+		UserID: user.ID,
+		OrgID:  user.OrganizationID,
+		Email:  user.Email,
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/admin-protected", nil)
+	req.Header.Set(fiber.HeaderAuthorization, "Bearer "+token)
+	resp, err := app.Test(req, 5_000)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	if resp.StatusCode != fiber.StatusUnauthorized {
+		t.Fatalf("expected 401 for app token on admin route, got %d", resp.StatusCode)
+	}
+}
+
 func setupAuthMiddlewareTest(t *testing.T) (*App, *store.Store, *store.Organization, *store.User, string) {
 	t.Helper()
 
@@ -238,7 +279,7 @@ func setupAuthMiddlewareTest(t *testing.T) (*App, *store.Store, *store.Organizat
 
 func newProtectedTestApp(appCtx *App, withPermissionCheck bool) *fiber.App {
 	app := fiber.New()
-	handlers := []fiber.Handler{appCtx.AuthRequired()}
+	handlers := []fiber.Handler{appCtx.AppAuthRequired()}
 	if withPermissionCheck {
 		handlers = append(handlers, RequirePermissions("feature.settings"))
 	}
@@ -283,6 +324,14 @@ func performProtectedRequest(t *testing.T, app *fiber.App, token string) *protec
 
 func issueAccessToken(t *testing.T, secret string, claims auth.Claims) string {
 	t.Helper()
+	return issueAccessTokenForSession(t, secret, auth.SessionTypeApp, claims)
+}
+
+func issueAccessTokenForSession(t *testing.T, secret string, sessionType auth.SessionType, claims auth.Claims) string {
+	t.Helper()
+	claims.RegisteredClaims = jwt.RegisteredClaims{
+		Audience: jwt.ClaimStrings{sessionType.String()},
+	}
 	token, _, err := auth.NewAccessToken(secret, time.Hour, claims)
 	if err != nil {
 		t.Fatalf("failed to issue access token: %v", err)

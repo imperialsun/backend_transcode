@@ -16,9 +16,23 @@ import (
 	"golang.org/x/crypto/argon2"
 )
 
+type SessionType string
+
 const (
-	AccessCookieName  = "tc_access"
-	RefreshCookieName = "tc_refresh"
+	SessionTypeApp   SessionType = "app"
+	SessionTypeAdmin SessionType = "admin"
+)
+
+const (
+	AppAccessCookieName    = "tc_app_access"
+	AppRefreshCookieName   = "tc_app_refresh"
+	AppAccessCookiePath    = "/api/v1"
+	AppRefreshCookiePath   = "/api/v1/auth"
+	AdminAccessCookieName  = "tc_admin_access"
+	AdminRefreshCookieName = "tc_admin_refresh"
+	AdminAccessCookiePath  = "/api/v1/admin"
+	AdminRefreshCookiePath = "/api/v1/admin/auth"
+	AdminCSRFHeaderName    = "X-Admin-CSRF"
 )
 
 type Claims struct {
@@ -28,7 +42,40 @@ type Claims struct {
 	GlobalRoles []string `json:"global_roles"`
 	OrgRoles    []string `json:"org_roles"`
 	Permissions []string `json:"permissions"`
+	CSRFToken   string   `json:"csrf,omitempty"`
 	jwt.RegisteredClaims
+}
+
+func (s SessionType) String() string {
+	return string(s)
+}
+
+func (s SessionType) AccessCookieName() string {
+	if s == SessionTypeAdmin {
+		return AdminAccessCookieName
+	}
+	return AppAccessCookieName
+}
+
+func (s SessionType) RefreshCookieName() string {
+	if s == SessionTypeAdmin {
+		return AdminRefreshCookieName
+	}
+	return AppRefreshCookieName
+}
+
+func (s SessionType) AccessCookiePath() string {
+	if s == SessionTypeAdmin {
+		return AdminAccessCookiePath
+	}
+	return AppAccessCookiePath
+}
+
+func (s SessionType) RefreshCookiePath() string {
+	if s == SessionTypeAdmin {
+		return AdminRefreshCookiePath
+	}
+	return AppRefreshCookiePath
 }
 
 func HashPassword(password string) (string, error) {
@@ -66,10 +113,15 @@ func VerifyPassword(encodedHash, password string) bool {
 func NewAccessToken(secret string, ttl time.Duration, claims Claims) (string, time.Time, error) {
 	now := time.Now().UTC()
 	expiresAt := now.Add(ttl)
+	audience := claims.RegisteredClaims.Audience
+	if len(audience) == 0 {
+		audience = jwt.ClaimStrings{string(SessionTypeApp)}
+	}
 	claims.RegisteredClaims = jwt.RegisteredClaims{
 		Subject:   claims.UserID,
 		IssuedAt:  jwt.NewNumericDate(now),
 		ExpiresAt: jwt.NewNumericDate(expiresAt),
+		Audience:  audience,
 	}
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	signed, err := token.SignedString([]byte(secret))
@@ -96,6 +148,19 @@ func ParseAccessToken(secret, raw string) (*Claims, error) {
 	return claims, nil
 }
 
+func HasAudience(claims *Claims, sessionType SessionType) bool {
+	if claims == nil {
+		return false
+	}
+	target := sessionType.String()
+	for _, audience := range claims.RegisteredClaims.Audience {
+		if audience == target {
+			return true
+		}
+	}
+	return false
+}
+
 type RefreshTokenPayload struct {
 	SessionID string
 	RawToken  string
@@ -118,6 +183,14 @@ func NewRefreshToken(ttl time.Duration) (*RefreshTokenPayload, error) {
 		Hash:      hash,
 		ExpiresAt: time.Now().UTC().Add(ttl),
 	}, nil
+}
+
+func NewCSRFToken() (string, error) {
+	raw := make([]byte, 32)
+	if _, err := rand.Read(raw); err != nil {
+		return "", err
+	}
+	return base64.RawStdEncoding.EncodeToString(raw), nil
 }
 
 func ParseRefreshToken(raw string) (sessionID string, token string, err error) {

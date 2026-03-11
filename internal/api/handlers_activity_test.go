@@ -15,6 +15,7 @@ import (
 	"demeter-backend/internal/config"
 	"demeter-backend/internal/store"
 	"github.com/gofiber/fiber/v2"
+	"github.com/golang-jwt/jwt/v5"
 )
 
 func TestPostActivityEvents_Unauthorized(t *testing.T) {
@@ -134,16 +135,16 @@ func TestAdminOrganizationActivitySummary_OrgScope(t *testing.T) {
 		t.Fatalf("failed to ingest activity: %v", err)
 	}
 
-	token := issueActivityToken(t, "test-jwt-secret", orgAdmin)
+	adminToken := issueAdminActivityToken(t, "test-jwt-secret", orgAdmin)
 
 	okPath := "/api/v1/admin/activity/organizations/" + orgA.ID + "/summary"
-	okResp := performJSONRequest(t, app, http.MethodGet, okPath, token, "")
+	okResp := performJSONRequest(t, app, http.MethodGet, okPath, adminToken, "")
 	if okResp.StatusCode != fiber.StatusOK {
 		t.Fatalf("expected 200 on org scope, got %d", okResp.StatusCode)
 	}
 
 	forbiddenPath := "/api/v1/admin/activity/organizations/" + orgB.ID + "/summary"
-	forbiddenResp := performJSONRequest(t, app, http.MethodGet, forbiddenPath, token, "")
+	forbiddenResp := performJSONRequest(t, app, http.MethodGet, forbiddenPath, adminToken, "")
 	if forbiddenResp.StatusCode != fiber.StatusForbidden {
 		t.Fatalf("expected 403 for cross-org access, got %d", forbiddenResp.StatusCode)
 	}
@@ -189,11 +190,56 @@ func TestAdminOrganizationActivitySummary_SuperAdminCanAccessAnyOrg(t *testing.T
 		t.Fatalf("failed to ingest org B activity: %v", err)
 	}
 
-	token := issueActivityToken(t, "test-jwt-secret", superAdmin)
+	token := issueAdminActivityToken(t, "test-jwt-secret", superAdmin)
 	path := "/api/v1/admin/activity/organizations/" + orgB.ID + "/summary"
 	resp := performJSONRequest(t, app, http.MethodGet, path, token, "")
 	if resp.StatusCode != fiber.StatusOK {
 		t.Fatalf("expected 200 for super admin access, got %d", resp.StatusCode)
+	}
+}
+
+func TestAdminActivitySummary_GlobalScopeForSuperAdmin(t *testing.T) {
+	_, app, st := setupActivityTestApp(t)
+	ctx := context.Background()
+
+	orgA, _ := st.CreateOrganization(ctx, "Org A", "org-a", "active")
+	orgB, _ := st.CreateOrganization(ctx, "Org B", "org-b", "active")
+	superAdmin, _ := st.CreateUser(ctx, orgA.ID, "super-admin@example.com", "hash", "active")
+	if err := st.SetUserGlobalRoles(ctx, superAdmin.ID, []string{"super_admin", "user"}); err != nil {
+		t.Fatalf("failed to set global roles: %v", err)
+	}
+	if err := st.SetUserOrganizationRoles(ctx, superAdmin.ID, []string{"org_admin"}); err != nil {
+		t.Fatalf("failed to set org roles: %v", err)
+	}
+	userB, _ := st.CreateUser(ctx, orgB.ID, "user-b@example.com", "hash", "active")
+	_, _ = st.IngestActivityEvents(ctx, orgA.ID, superAdmin.ID, []store.ActivityEventInput{{
+		EventID:    "evt-global-a",
+		EventKind:  "transcription",
+		SourceMode: "local",
+		Provider:   "local_upload",
+		Status:     "success",
+		OccurredAt: time.Now().UTC(),
+	}})
+	_, _ = st.IngestActivityEvents(ctx, orgB.ID, userB.ID, []store.ActivityEventInput{{
+		EventID:    "evt-global-b",
+		EventKind:  "report",
+		SourceMode: "cloud_backend",
+		Provider:   "demeter_sante",
+		Status:     "success",
+		OccurredAt: time.Now().UTC(),
+	}})
+
+	token := issueAdminActivityToken(t, "test-jwt-secret", superAdmin)
+	resp := performJSONRequest(t, app, http.MethodGet, "/api/v1/admin/activity/summary", token, "")
+	if resp.StatusCode != fiber.StatusOK {
+		t.Fatalf("expected 200 for global summary, got %d", resp.StatusCode)
+	}
+	var summary store.ActivitySummary
+	if err := json.Unmarshal(resp.Body, &summary); err != nil {
+		t.Fatalf("failed to decode summary: %v", err)
+	}
+	if summary.Totals.Transcriptions != 1 || summary.Totals.Reports != 1 {
+		t.Fatalf("unexpected totals: %+v", summary.Totals)
 	}
 }
 
@@ -230,6 +276,22 @@ func issueActivityToken(t *testing.T, secret string, user *store.User) string {
 	})
 	if err != nil {
 		t.Fatalf("failed to issue token: %v", err)
+	}
+	return token
+}
+
+func issueAdminActivityToken(t *testing.T, secret string, user *store.User) string {
+	t.Helper()
+	token, _, err := auth.NewAccessToken(secret, time.Hour, auth.Claims{
+		UserID: user.ID,
+		OrgID:  user.OrganizationID,
+		Email:  user.Email,
+		RegisteredClaims: jwt.RegisteredClaims{
+			Audience: jwt.ClaimStrings{auth.SessionTypeAdmin.String()},
+		},
+	})
+	if err != nil {
+		t.Fatalf("failed to issue admin token: %v", err)
 	}
 	return token
 }

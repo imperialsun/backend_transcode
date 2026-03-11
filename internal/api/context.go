@@ -26,6 +26,7 @@ type AuthResponse struct {
 	GlobalRoles  []string `json:"globalRoles"`
 	OrgRoles     []string `json:"orgRoles"`
 	Permissions  []string `json:"permissions"`
+	CsrfToken    string   `json:"csrfToken,omitempty"`
 	RuntimeMode  string   `json:"runtimeMode"`
 }
 

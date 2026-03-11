@@ -67,11 +67,12 @@ var allowedProvidersByKindAndMode = map[string]map[string]map[string]struct{}{
 }
 
 func (a *App) RegisterActivityRoutes(router fiber.Router) {
-	router.Post("/activity/events", a.AuthRequired(), a.postActivityEvents)
+	router.Post("/activity/events", a.AppAuthRequired(), a.postActivityEvents)
 }
 
 func (a *App) registerAdminActivityRoutes(group fiber.Router) {
 	group.Get("/activity/organizations/:id/summary", a.adminOrganizationActivitySummary)
+	group.Get("/activity/summary", a.adminActivitySummary)
 }
 
 func (a *App) postActivityEvents(c *fiber.Ctx) error {
@@ -148,6 +149,51 @@ func (a *App) adminOrganizationActivitySummary(c *fiber.Ctx) error {
 	summary, err := a.Store.GetOrganizationActivitySummary(context.Background(), orgID, fromDay, toDay)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{Error: "failed to load organization activity summary"})
+	}
+	return c.JSON(summary)
+}
+
+func (a *App) adminActivitySummary(c *fiber.Ctx) error {
+	claims := MustClaims(c)
+	if claims == nil {
+		return c.Status(fiber.StatusUnauthorized).JSON(ErrorResponse{Error: "unauthorized"})
+	}
+
+	fromDay, toDay, err := resolveActivityRange(c.Query("from"), c.Query("to"))
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{Error: err.Error()})
+	}
+
+	orgID := strings.TrimSpace(c.Query("organizationId"))
+	if orgID != "" {
+		if !isSuperAdmin(claims) && claims.OrgID != orgID {
+			return c.Status(fiber.StatusForbidden).JSON(ErrorResponse{Error: "forbidden organization scope"})
+		}
+		org, err := a.Store.GetOrganizationByID(context.Background(), orgID)
+		if err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{Error: "failed to load organization"})
+		}
+		if org == nil {
+			return c.Status(fiber.StatusNotFound).JSON(ErrorResponse{Error: "organization not found"})
+		}
+		summary, err := a.Store.GetOrganizationActivitySummary(context.Background(), orgID, fromDay, toDay)
+		if err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{Error: "failed to load activity summary"})
+		}
+		return c.JSON(summary)
+	}
+
+	if isSuperAdmin(claims) {
+		summary, err := a.Store.GetGlobalActivitySummary(context.Background(), fromDay, toDay)
+		if err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{Error: "failed to load activity summary"})
+		}
+		return c.JSON(summary)
+	}
+
+	summary, err := a.Store.GetOrganizationActivitySummary(context.Background(), claims.OrgID, fromDay, toDay)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{Error: "failed to load activity summary"})
 	}
 	return c.JSON(summary)
 }

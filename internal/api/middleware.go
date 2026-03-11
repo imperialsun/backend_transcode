@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"crypto/subtle"
 	"log"
 	"strings"
 
@@ -12,22 +13,31 @@ import (
 
 const claimsContextKey = "claims"
 
-func (a *App) AuthRequired() fiber.Handler {
+func (a *App) AppAuthRequired() fiber.Handler {
+	return a.AuthRequired(auth.SessionTypeApp)
+}
+
+func (a *App) AdminAuthRequired() fiber.Handler {
+	return a.AuthRequired(auth.SessionTypeAdmin)
+}
+
+func (a *App) AuthRequired(sessionType auth.SessionType) fiber.Handler {
 	return func(c *fiber.Ctx) error {
-		raw := readAccessToken(c)
+		raw := readAccessToken(c, sessionType)
 		if raw == "" {
 			return c.Status(fiber.StatusUnauthorized).JSON(ErrorResponse{Error: "missing access token"})
 		}
 		tokenClaims, err := auth.ParseAccessToken(a.Config.JWTSecret, raw)
 		if err != nil {
-			log.Printf("[auth] access denied reason=invalid_token path=%q ip=%s", c.Path(), c.IP())
+			log.Printf("[auth] access denied reason=invalid_token session=%s path=%q ip=%s", sessionType, c.Path(), c.IP())
 			return c.Status(fiber.StatusUnauthorized).JSON(ErrorResponse{Error: "invalid access token"})
 		}
-		claims, status, err := a.resolveLiveClaims(context.Background(), tokenClaims)
+		claims, status, err := a.resolveLiveClaims(context.Background(), tokenClaims, sessionType)
 		if err != nil {
 			if status == fiber.StatusForbidden {
 				log.Printf(
-					"[auth] access denied reason=live_forbidden user=%s org=%s path=%q ip=%s",
+					"[auth] access denied reason=live_forbidden session=%s user=%s org=%s path=%q ip=%s",
+					sessionType,
 					tokenClaims.UserID,
 					tokenClaims.OrgID,
 					c.Path(),
@@ -35,8 +45,20 @@ func (a *App) AuthRequired() fiber.Handler {
 				)
 				return c.Status(fiber.StatusForbidden).JSON(ErrorResponse{Error: "forbidden"})
 			}
+			if status == fiber.StatusUnauthorized {
+				log.Printf(
+					"[auth] access denied reason=invalid_audience session=%s user=%s org=%s path=%q ip=%s",
+					sessionType,
+					tokenClaims.UserID,
+					tokenClaims.OrgID,
+					c.Path(),
+					c.IP(),
+				)
+				return c.Status(fiber.StatusUnauthorized).JSON(ErrorResponse{Error: "invalid access token"})
+			}
 			log.Printf(
-				"[auth] access denied reason=resolve_claims_failed user=%s org=%s path=%q ip=%s err=%v",
+				"[auth] access denied reason=resolve_claims_failed session=%s user=%s org=%s path=%q ip=%s err=%v",
+				sessionType,
 				tokenClaims.UserID,
 				tokenClaims.OrgID,
 				c.Path(),
@@ -50,8 +72,11 @@ func (a *App) AuthRequired() fiber.Handler {
 	}
 }
 
-func (a *App) resolveLiveClaims(ctx context.Context, tokenClaims *auth.Claims) (*auth.Claims, int, error) {
+func (a *App) resolveLiveClaims(ctx context.Context, tokenClaims *auth.Claims, sessionType auth.SessionType) (*auth.Claims, int, error) {
 	if tokenClaims == nil || strings.TrimSpace(tokenClaims.UserID) == "" {
+		return nil, fiber.StatusUnauthorized, fiber.ErrUnauthorized
+	}
+	if !auth.HasAudience(tokenClaims, sessionType) {
 		return nil, fiber.StatusUnauthorized, fiber.ErrUnauthorized
 	}
 	if a.Store == nil {
@@ -94,6 +119,7 @@ func (a *App) resolveLiveClaims(ctx context.Context, tokenClaims *auth.Claims) (
 		GlobalRoles:      globalRoles,
 		OrgRoles:         orgRoles,
 		Permissions:      permissions,
+		CSRFToken:        tokenClaims.CSRFToken,
 		RegisteredClaims: tokenClaims.RegisteredClaims,
 	}, fiber.StatusOK, nil
 }
@@ -139,13 +165,50 @@ func RequireAdminScope() fiber.Handler {
 	}
 }
 
+func RequireAdminCSRF() fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		if c.Method() == fiber.MethodGet || c.Method() == fiber.MethodHead || c.Method() == fiber.MethodOptions {
+			return c.Next()
+		}
+		claims := MustClaims(c)
+		if claims == nil || strings.TrimSpace(claims.CSRFToken) == "" {
+			return c.Status(fiber.StatusForbidden).JSON(ErrorResponse{Error: "invalid csrf token"})
+		}
+		candidate := strings.TrimSpace(c.Get(auth.AdminCSRFHeaderName))
+		if subtle.ConstantTimeCompare([]byte(candidate), []byte(claims.CSRFToken)) != 1 {
+			return c.Status(fiber.StatusForbidden).JSON(ErrorResponse{Error: "invalid csrf token"})
+		}
+		return c.Next()
+	}
+}
+
+func (a *App) EnforceAdminOrigin() fiber.Handler {
+	allowedOrigins := make(map[string]struct{}, len(a.Config.AdminCORSOrigins))
+	for _, origin := range a.Config.AdminCORSOrigins {
+		allowedOrigins[strings.TrimSpace(origin)] = struct{}{}
+	}
+	return func(c *fiber.Ctx) error {
+		if !strings.HasPrefix(c.Path(), "/api/v1/admin") {
+			return c.Next()
+		}
+		origin := strings.TrimSpace(c.Get(fiber.HeaderOrigin))
+		if origin == "" {
+			return c.Next()
+		}
+		if _, ok := allowedOrigins[origin]; ok {
+			return c.Next()
+		}
+		return c.Status(fiber.StatusForbidden).JSON(ErrorResponse{Error: "forbidden origin"})
+	}
+}
+
 func MustClaims(c *fiber.Ctx) *auth.Claims {
 	claims, _ := c.Locals(claimsContextKey).(*auth.Claims)
 	return claims
 }
 
-func readAccessToken(c *fiber.Ctx) string {
-	cookie := strings.TrimSpace(c.Cookies(auth.AccessCookieName))
+func readAccessToken(c *fiber.Ctx, sessionType auth.SessionType) string {
+	cookie := strings.TrimSpace(c.Cookies(sessionType.AccessCookieName()))
 	if cookie != "" {
 		return cookie
 	}

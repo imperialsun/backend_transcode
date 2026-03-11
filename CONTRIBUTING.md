@@ -1,22 +1,14 @@
 # Contributing
 
-## Workflow
+This file is the short entrypoint. The detailed guides live in:
 
-- Work on a dedicated branch.
-- Keep commits atomic and focused.
-- In PR description, include impact, risks, and validation evidence.
+- French: [`docs/fr/contributing.md`](docs/fr/contributing.md)
+- English: [`docs/en/contributing.md`](docs/en/contributing.md)
 
-## Tooling setup
-
-```bash
-make install-tools
-export PATH="$HOME/.local/bin:$PATH"
-golangci-lint version
-```
-
-## Required local gate before PR
+## Minimum local gate before PR
 
 ```bash
+make docs-check
 go test ./...
 go test ./... -race -coverprofile=coverage.out
 golangci-lint run
@@ -25,14 +17,8 @@ test -z "$(gofmt -l .)"
 go build ./cmd/server
 ```
 
-## Commit / push policy
+## Scope reminders
 
-- Before `git commit` or `git push`, share:
-  - current diff
-  - outputs of all required checks above
-- Wait for explicit approval before committing/pushing.
-
-## Security reminders
-
-- Never commit secrets.
-- Keep `JWT_SECRET` and `MISTRAL_API_KEY` in environment variables only.
+- Keep changes focused and test-backed.
+- Update both FR and EN docs when backend behavior changes.
+- Do not commit secrets or private credentials.

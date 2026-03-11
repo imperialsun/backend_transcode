@@ -1,52 +1,58 @@
 # Demeter Backend
 
-Backend `Go + Fiber + SQLite` for Transcode frontend backend mode.
+Backend `Go + Fiber + SQLite` for the Transcode frontend backend mode and admin panel.
 
-## Features
+## Main capabilities
 
-- Authentication (`login`, `refresh`, `logout`, `me`) with secure cookies.
-- Multi-tenant model: one user belongs to one organization.
-- RBAC with global roles, organization roles, and per-user permission overrides.
-- User settings source-of-truth on backend, synchronized by frontend on login.
-- `Demeter Santé` provider relay endpoints that call Mistral server-side.
-- SQLite with WAL enabled and persistent storage support.
+- App authentication and dedicated admin authentication with isolated cookies.
+- Multi-tenant organization model with global roles, organization roles, and per-user permission overrides.
+- Backend-owned user settings storage exposed under `/api/v1/settings`.
+- Activity ingestion and admin summaries for transcription and report usage.
+- `Demeter Sante` relay routes that call Mistral server-side.
+- SQLite persistence with WAL enabled and optional bootstrap admin creation.
 
-## Quick start
+## Quickstart
+
+### Local development
 
 ```bash
 cp .env.example .env
 go run ./cmd/server
 ```
 
-By default, API listens on `http://localhost:8080` and exposes routes under `/api/v1`.
+Alternative launcher:
 
-## Environment variables
+```bash
+./scripts/run-local-backend.sh
+```
 
-- `PORT` (default `8080`)
-- `SQLITE_PATH` (default `./backend.sqlite`)
-- `JWT_SECRET` (required in production)
-- `ACCESS_TTL_MINUTES` (default `15`)
-- `REFRESH_TTL_HOURS` (default `720`)
-- `COOKIE_SECURE` (`true`/`false`)
-- `CORS_ORIGINS` (CSV)
-- `MISTRAL_API_KEY` (required for Demeter relay routes and `readyz`)
-- `MISTRAL_API_BASE_URL` (default `https://api.mistral.ai`)
-- `BOOTSTRAP_ADMIN_EMAIL`
-- `BOOTSTRAP_ADMIN_PASSWORD`
-- `BOOTSTRAP_ORG_NAME` (default `Default Organization`)
+Default base URL: `http://localhost:8080`
 
-## Health endpoints
+## Health checks
 
 - `GET /healthz`
 - `GET /readyz`
 
-## Main API surface
+`/readyz` requires both SQLite and the Mistral client to be configured.
 
-- `/api/v1/auth/*`
-- `/api/v1/settings*`
-- `/api/v1/providers/demeter-sante/*`
-- `/api/v1/admin/*`
+## Environment summary
+
+- Core runtime: `APP_ENV`, `PORT`, `SQLITE_PATH`, `JWT_SECRET`
+- App sessions: `ACCESS_TTL_MINUTES`, `REFRESH_TTL_HOURS`, `COOKIE_SECURE`
+- Admin sessions: `ADMIN_ACCESS_TTL_MINUTES`, `ADMIN_REFRESH_TTL_HOURS`
+- CORS and origin control: `APP_CORS_ORIGINS`, `ADMIN_CORS_ORIGINS`, legacy `CORS_ORIGINS`
+- Provider relay: `MISTRAL_API_BASE_URL`, `MISTRAL_API_KEY`
+- First-start bootstrap: `BOOTSTRAP_ADMIN_EMAIL`, `BOOTSTRAP_ADMIN_PASSWORD`, `BOOTSTRAP_ORG_NAME`
+
+The full environment reference lives in [`docs/en/deployment-operations.md`](docs/en/deployment-operations.md) and [`docs/fr/deployment-operations.md`](docs/fr/deployment-operations.md).
 
 ## Documentation
 
-- Database schema and behavior: [`docs/database.md`](/home/imperialsun/Transcode/Backend/docs/database.md)
+- Documentation portal: [`docs/README.md`](docs/README.md)
+- French docs: [`docs/fr/index.md`](docs/fr/index.md)
+- English docs: [`docs/en/index.md`](docs/en/index.md)
+
+## Project guides
+
+- Contributing entrypoint: [`CONTRIBUTING.md`](CONTRIBUTING.md)
+- Security policy: [`SECURITY.md`](SECURITY.md)

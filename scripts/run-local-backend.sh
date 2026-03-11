@@ -11,39 +11,45 @@ fi
 
 load_dotenv() {
   local env_file="$1"
+  local line key value
+  local quoted_double_re='^(export[[:space:]]+)?([A-Za-z_][A-Za-z0-9_]*)[[:space:]]*=[[:space:]]*"(.*)"[[:space:]]*(#.*)?$'
+  local quoted_single_re="^(export[[:space:]]+)?([A-Za-z_][A-Za-z0-9_]*)[[:space:]]*=[[:space:]]*'(.*)'[[:space:]]*(#.*)?$"
+  local plain_re='^(export[[:space:]]+)?([A-Za-z_][A-Za-z0-9_]*)[[:space:]]*=[[:space:]]*(.*)$'
+
   while IFS= read -r line || [ -n "$line" ]; do
+    line="${line%$'\r'}"
+    line="${line#"${line%%[![:space:]]*}"}"
+    line="${line%"${line##*[![:space:]]}"}"
+
     case "$line" in
       ""|\#*)
         continue
         ;;
     esac
 
-    line="${line#export }"
-    if [[ "$line" != *"="* ]]; then
+    if [[ "$line" =~ $quoted_double_re ]]; then
+      key="${BASH_REMATCH[2]}"
+      value="${BASH_REMATCH[3]}"
+    elif [[ "$line" =~ $quoted_single_re ]]; then
+      key="${BASH_REMATCH[2]}"
+      value="${BASH_REMATCH[3]}"
+    elif [[ "$line" =~ $plain_re ]]; then
+      key="${BASH_REMATCH[2]}"
+      value="${BASH_REMATCH[3]}"
+      value="${value%%[[:space:]]#*}"
+      value="${value%"${value##*[![:space:]]}"}"
+    else
+      echo "[run-local] skipping malformed line in ${env_file}"
       continue
     fi
 
-    local key="${line%%=*}"
-    local value="${line#*=}"
-    key="${key//[[:space:]]/}"
-
-    case "$value" in
-      \"*\")
-        value="${value:1:${#value}-2}"
-        ;;
-      \'*\')
-        value="${value:1:${#value}-2}"
-        ;;
-    esac
-
-    if [ -n "$key" ]; then
-      export "$key=$value"
-    fi
+    export "$key=$value"
   done < "$env_file"
 }
 
 if [ -f ".env" ]; then
   load_dotenv ".env"
+  echo "[run-local] loaded .env"
 else
   echo "[run-local] .env not found, defaults will be used"
 fi
