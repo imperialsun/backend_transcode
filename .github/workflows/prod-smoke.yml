@@ -31,7 +31,7 @@ jobs:
         run: go mod download
 
       - name: Build backend binary
-        run: CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o server ./cmd/server
+        run: go build -trimpath -ldflags="-s -w" -o server ./cmd/server
 
       - name: Build backend image
         run: docker build -f Dockerfile.smoke -t demeter-backend:smoke .
