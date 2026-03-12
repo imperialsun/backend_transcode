@@ -13,6 +13,11 @@ type putSettingsRequest struct {
 	Settings      json.RawMessage `json:"settings"`
 }
 
+var removedLegacySettingsKeys = map[string]struct{}{
+	"cloudApiUrl":        {},
+	"cloudContextPreset": {},
+}
+
 func (a *App) RegisterSettingsRoutes(router fiber.Router) {
 	router.Get("/settings", a.AppAuthRequired(), RequirePermissions("feature.settings"), a.getSettings)
 	router.Put("/settings", a.AppAuthRequired(), RequirePermissions("feature.settings"), a.putSettings)
@@ -47,7 +52,11 @@ func (a *App) putSettings(c *fiber.Ctx) error {
 	if !json.Valid([]byte(payload)) {
 		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{Error: "settings must be valid JSON"})
 	}
-	record, err := a.Store.SaveUserSettings(context.Background(), claims.UserID, claims.OrgID, json.RawMessage(payload), req.SchemaVersion)
+	sanitizedPayload, err := sanitizeSettingsPayload(json.RawMessage(payload))
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{Error: "settings must be valid JSON"})
+	}
+	record, err := a.Store.SaveUserSettings(context.Background(), claims.UserID, claims.OrgID, sanitizedPayload, req.SchemaVersion)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{Error: "failed to save settings"})
 	}
@@ -64,4 +73,31 @@ func (a *App) resetSettings(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{Error: "failed to reset settings"})
 	}
 	return c.JSON(toSettingsEnvelope(record))
+}
+
+func sanitizeSettingsPayload(payload json.RawMessage) (json.RawMessage, error) {
+	if len(strings.TrimSpace(string(payload))) == 0 {
+		return json.RawMessage(`{}`), nil
+	}
+	if !json.Valid(payload) {
+		return nil, fiber.ErrBadRequest
+	}
+
+	trimmed := strings.TrimSpace(string(payload))
+	if len(trimmed) == 0 || trimmed[0] != '{' {
+		return payload, nil
+	}
+
+	var settings map[string]json.RawMessage
+	if err := json.Unmarshal(payload, &settings); err != nil {
+		return nil, err
+	}
+	for key := range removedLegacySettingsKeys {
+		delete(settings, key)
+	}
+	sanitized, err := json.Marshal(settings)
+	if err != nil {
+		return nil, err
+	}
+	return json.RawMessage(sanitized), nil
 }

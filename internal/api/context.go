@@ -63,6 +63,12 @@ func toSettingsEnvelope(rec *store.SettingsRecord) SettingsEnvelope {
 	if len(strings.TrimSpace(string(payload))) == 0 {
 		payload = json.RawMessage(`{}`)
 	}
+	sanitizedPayload, err := sanitizeSettingsPayload(payload)
+	if err == nil {
+		payload = sanitizedPayload
+	} else {
+		payload = json.RawMessage(`{}`)
+	}
 	return SettingsEnvelope{
 		Version:       rec.Version,
 		SchemaVersion: rec.SchemaVersion,

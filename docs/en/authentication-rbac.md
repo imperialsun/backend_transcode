@@ -90,7 +90,6 @@ Full admin access requires:
 
 ### Cloud provider permissions
 
-- `provider.cloud.gradio`
 - `provider.cloud.whisper`
 - `provider.cloud.mistral`
 - `provider.cloud.demeter_sante`

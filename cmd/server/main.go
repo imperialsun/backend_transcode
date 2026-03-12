@@ -43,13 +43,19 @@ func main() {
 	}
 
 	appCtx := &api.App{
-		Config:        cfg,
-		Store:         st,
-		MistralClient: mistral.NewClient(cfg.MistralAPIBaseURL, cfg.MistralAPIKey),
+		Config: cfg,
+		Store:  st,
+		MistralClient: mistral.NewClient(
+			cfg.MistralAPIBaseURL,
+			cfg.MistralAPIKey,
+			cfg.MistralRequestTimeout,
+			cfg.MistralAudioTimeout,
+		),
 	}
 
 	app := fiber.New(fiber.Config{
 		AppName:               "Demeter Backend",
+		BodyLimit:             cfg.BodyLimitBytes,
 		DisableStartupMessage: true,
 	})
 	app.Use(appCtx.RequestLogger())

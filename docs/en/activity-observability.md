@@ -37,7 +37,7 @@ Response:
 | `eventKind` | `sourceMode` | Allowed providers |
 | --- | --- | --- |
 | `transcription` | `local` | `local_upload`, `mic` |
-| `transcription` | `cloud_direct` | `gradio`, `whisper`, `mistral` |
+| `transcription` | `cloud_direct` | `whisper`, `mistral` |
 | `transcription` | `cloud_backend` | `demeter_sante` |
 | `report` | `local` | `local` |
 | `report` | `cloud_direct` | `huggingface`, `mistral` |

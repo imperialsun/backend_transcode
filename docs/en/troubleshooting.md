@@ -14,6 +14,7 @@
 | mutating admin route returns `invalid csrf token` | missing or stale `X-Admin-CSRF` header | reuse the token returned by admin login or refresh |
 | admin route returns `forbidden origin` | `Origin` outside `ADMIN_CORS_ORIGINS` | fix the admin CORS configuration |
 | `PUT /settings` returns `settings must be valid JSON` | invalid `settings` field | send a valid JSON object |
+| Demeter transcription returns `context deadline exceeded (Client.Timeout exceeded while awaiting headers)` | backend Mistral timeout is too short for a long file | increase `MISTRAL_AUDIO_TRANSCRIPTION_TIMEOUT_SECONDS` and also verify upstream proxy timeouts |
 | some activity events are rejected | invalid `eventKind` / `sourceMode` / `provider` combination | check the matrix in [`activity-observability.md`](activity-observability.md) |
 | refresh sessions stop working after user updates | admin mutations revoke refresh sessions | log the client in again to obtain a new session |
 

@@ -10,6 +10,7 @@ import (
 type Config struct {
 	AppEnv                 string
 	Port                   string
+	BodyLimitBytes         int
 	SQLitePath             string
 	JWTSecret              string
 	AccessTTL              time.Duration
@@ -21,6 +22,8 @@ type Config struct {
 	AdminCORSOrigins       []string
 	MistralAPIBaseURL      string
 	MistralAPIKey          string
+	MistralRequestTimeout  time.Duration
+	MistralAudioTimeout    time.Duration
 	BootstrapAdminEmail    string
 	BootstrapAdminPassword string
 	BootstrapOrgName       string
@@ -32,6 +35,7 @@ func Load() Config {
 	cfg := Config{
 		AppEnv:                 appEnv,
 		Port:                   getEnv("PORT", "8080"),
+		BodyLimitBytes:         getEnvInt("BODY_LIMIT_BYTES", 500*1024*1024),
 		SQLitePath:             getEnv("SQLITE_PATH", "./backend.sqlite"),
 		JWTSecret:              getEnv("JWT_SECRET", "dev-insecure-jwt-secret-change-me"),
 		AccessTTL:              time.Duration(getEnvInt("ACCESS_TTL_MINUTES", 15)) * time.Minute,
@@ -43,6 +47,8 @@ func Load() Config {
 		AdminCORSOrigins:       splitCSV(getEnv("ADMIN_CORS_ORIGINS", "http://localhost:4173")),
 		MistralAPIBaseURL:      strings.TrimRight(getEnv("MISTRAL_API_BASE_URL", "https://api.mistral.ai"), "/"),
 		MistralAPIKey:          strings.TrimSpace(os.Getenv("MISTRAL_API_KEY")),
+		MistralRequestTimeout:  time.Duration(getEnvInt("MISTRAL_REQUEST_TIMEOUT_SECONDS", 480)) * time.Second,
+		MistralAudioTimeout:    time.Duration(getEnvInt("MISTRAL_AUDIO_TRANSCRIPTION_TIMEOUT_SECONDS", 1200)) * time.Second,
 		BootstrapAdminEmail:    strings.TrimSpace(os.Getenv("BOOTSTRAP_ADMIN_EMAIL")),
 		BootstrapAdminPassword: strings.TrimSpace(os.Getenv("BOOTSTRAP_ADMIN_PASSWORD")),
 		BootstrapOrgName:       strings.TrimSpace(getEnv("BOOTSTRAP_ORG_NAME", "Default Organization")),

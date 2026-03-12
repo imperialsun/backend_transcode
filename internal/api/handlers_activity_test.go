@@ -75,6 +75,9 @@ func TestPostActivityEvents_AcceptsDuplicatesAndRejectsInvalid(t *testing.T) {
 	if firstPayload.Accepted != 1 || firstPayload.Duplicates != 0 || len(firstPayload.Rejected) != 1 {
 		t.Fatalf("unexpected first response: %+v", firstPayload)
 	}
+	if firstPayload.Rejected[0].EventID != "evt-invalid" || firstPayload.Rejected[0].Reason != "invalid_provider_for_mode" {
+		t.Fatalf("unexpected rejection payload: %+v", firstPayload.Rejected[0])
+	}
 
 	secondBody := `{
 		"events": [
@@ -97,6 +100,47 @@ func TestPostActivityEvents_AcceptsDuplicatesAndRejectsInvalid(t *testing.T) {
 	}
 	if secondPayload.Accepted != 0 || secondPayload.Duplicates != 1 || len(secondPayload.Rejected) != 0 {
 		t.Fatalf("unexpected second response: %+v", secondPayload)
+	}
+}
+
+func TestPostActivityEvents_RejectsGradioProvider(t *testing.T) {
+	_, app, st := setupActivityTestApp(t)
+	ctx := context.Background()
+
+	org, err := st.CreateOrganization(ctx, "Org One", "org-one", "active")
+	if err != nil {
+		t.Fatalf("failed to create organization: %v", err)
+	}
+	user, err := st.CreateUser(ctx, org.ID, "u1@example.com", "hash", "active")
+	if err != nil {
+		t.Fatalf("failed to create user: %v", err)
+	}
+	token := issueActivityToken(t, "test-jwt-secret", user)
+
+	resp := performJSONRequest(t, app, http.MethodPost, "/api/v1/activity/events", token, `{
+		"events": [
+			{
+				"eventId": "evt-gradio",
+				"eventKind": "transcription",
+				"sourceMode": "cloud_direct",
+				"provider": "gradio",
+				"status": "success"
+			}
+		]
+	}`)
+	if resp.StatusCode != fiber.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+
+	var payload activityEventsResponse
+	if err := json.Unmarshal(resp.Body, &payload); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if payload.Accepted != 0 || payload.Duplicates != 0 || len(payload.Rejected) != 1 {
+		t.Fatalf("unexpected response: %+v", payload)
+	}
+	if payload.Rejected[0].EventID != "evt-gradio" || payload.Rejected[0].Reason != "invalid_provider_for_mode" {
+		t.Fatalf("unexpected rejection payload: %+v", payload.Rejected[0])
 	}
 }
 

@@ -44,7 +44,6 @@ var allowedProvidersByKindAndMode = map[string]map[string]map[string]struct{}{
 			"mic":          {},
 		},
 		"cloud_direct": {
-			"gradio":  {},
 			"whisper": {},
 			"mistral": {},
 		},

@@ -26,6 +26,8 @@ The repo provides:
 | `CORS_ORIGINS` | same value as app origins | legacy fallback for `APP_CORS_ORIGINS` |
 | `MISTRAL_API_BASE_URL` | `https://api.mistral.ai` | upstream base URL |
 | `MISTRAL_API_KEY` | empty | key required for Demeter and `readyz` |
+| `MISTRAL_REQUEST_TIMEOUT_SECONDS` | `480` | timeout for non-audio Mistral calls |
+| `MISTRAL_AUDIO_TRANSCRIPTION_TIMEOUT_SECONDS` | `1200` | dedicated timeout for `POST /v1/audio/transcriptions` |
 | `BOOTSTRAP_ADMIN_EMAIL` | empty | admin email created on first boot |
 | `BOOTSTRAP_ADMIN_PASSWORD` | empty | admin password created on first boot |
 | `BOOTSTRAP_ORG_NAME` | `Default Organization` | bootstrap org name |
