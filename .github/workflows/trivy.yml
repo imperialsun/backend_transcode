@@ -33,6 +33,7 @@ jobs:
         with:
           scan-type: fs
           scan-ref: .
+          cache: "false"
           scanners: vuln
           severity: HIGH,CRITICAL
           ignore-unfixed: true
@@ -71,6 +72,7 @@ jobs:
         with:
           scan-type: image
           scan-ref: demeter-backend:ci
+          cache: "false"
           scanners: vuln
           severity: HIGH,CRITICAL
           ignore-unfixed: true
