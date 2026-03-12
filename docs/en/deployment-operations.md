@@ -39,7 +39,7 @@ cp .env.example .env
 
 The script:
 
-- loads `.env` when it exists,
+- loads `.env` when it exists without overriding already-set environment variables,
 - forces defaults for `APP_ENV`, `PORT`, and `SQLITE_PATH`,
 - runs `go run ./cmd/server`.
 
@@ -70,6 +70,33 @@ Image characteristics:
 - runtime `gcr.io/distroless/base-debian12:nonroot`,
 - `VOLUME ["/data"]`,
 - `EXPOSE 8080`.
+
+## Docker Compose
+
+The repo also provides:
+
+- `compose.yml` for a prod-like local deployment using the final image,
+- `compose.dev.yml` for development with `go run` inside `golang:1.25.7`.
+
+Prod-like launch:
+
+```bash
+docker compose up --build
+```
+
+Development launch:
+
+```bash
+docker compose -f compose.dev.yml up
+```
+
+Compose specifics:
+
+- all runtime variables are declared inline under `environment:`,
+- `compose.yml` persists SQLite in the named volume `backend-data`,
+- `compose.dev.yml` uses separate named volumes for SQLite and Go build caches,
+- real secrets should still come from environment substitution, not committed literal values,
+- there is no Docker `healthcheck` because the distroless runtime image does not ship an HTTP probe tool.
 
 ## Minimal runbook
 

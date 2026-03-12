@@ -64,6 +64,24 @@ docker run --rm \
 
 L image ecrit SQLite dans `/data/backend.sqlite` par defaut.
 
+## Docker Compose
+
+Lancement prod-like avec l image finale existante:
+
+```bash
+docker compose up --build
+```
+
+Lancement developpement avec `go run` dans `golang:1.25.7` et montage du repo:
+
+```bash
+docker compose -f compose.dev.yml up
+```
+
+Les fichiers Compose gardent toutes les variables dans `environment:`. Les secrets restent injectables via substitution de variables comme `JWT_SECRET` et `MISTRAL_API_KEY`, sans etre ecrits en dur dans le YAML.
+
+Il n y a volontairement pas de `healthcheck` Docker. Utilisez `GET /healthz` pour un controle manuel generique. `GET /readyz` depend aussi de SQLite et d un client Mistral configure, donc il reste rouge si `MISTRAL_API_KEY` est vide.
+
 ## Erreurs frequentes de setup
 
 ### `readyz` retourne 503

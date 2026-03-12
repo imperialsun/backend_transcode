@@ -21,15 +21,40 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Build backend binary
+        run: |
+          set -euo pipefail
+          output_file="$(mktemp)"
+          if ! go build -o ./server ./cmd/server >"$output_file" 2>&1; then
+            cat "$output_file"
+            {
+              echo "### Build backend binary failed"
+              echo '```text'
+              cat "$output_file"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            printf '::error::%s\n' "$(tr '\n' ' ' < "$output_file" | head -c 3500)"
+            exit 1
+          fi
+
       - name: Build backend image
-        run: docker build -t demeter-backend:smoke .
+        run: docker build -f Dockerfile.smoke -t demeter-backend:smoke .
 
       - name: Start backend container
         run: |
           docker run -d --rm --name demeter-backend-smoke \
             -p 8080:8080 \
             -e APP_ENV=production \
-            -e SQLITE_PATH=/data/backend.sqlite \
+            -e SQLITE_PATH=/tmp/backend.sqlite \
             -e JWT_SECRET=smoke-secret \
             -e MISTRAL_API_KEY=smoke-key \
             -e MISTRAL_API_BASE_URL=https://api.mistral.ai \
@@ -84,7 +109,12 @@ jobs:
 
       - name: Dump logs on failure
         if: failure()
-        run: docker logs demeter-backend-smoke
+        run: |
+          if docker ps -a --format '{{.Names}}' | grep -qx demeter-backend-smoke; then
+            docker logs demeter-backend-smoke
+          else
+            echo "demeter-backend-smoke was not created"
+          fi
 
       - name: Teardown
         if: always()
