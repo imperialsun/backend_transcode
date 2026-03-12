@@ -28,6 +28,22 @@ Alternative launcher:
 
 Default base URL: `http://localhost:8080`
 
+### Docker Compose
+
+Prod-like launch with the final image:
+
+```bash
+docker compose up --build
+```
+
+Development launch with `go run` and the source tree mounted:
+
+```bash
+docker compose -f compose.dev.yml up
+```
+
+Both Compose files declare their environment variables inline. Real secret values can still be injected through shell variables or Compose substitution without being hardcoded in the YAML.
+
 ## Health checks
 
 - `GET /healthz`

@@ -22,17 +22,26 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
+      - name: Setup Trivy
+        uses: aquasecurity/setup-trivy@v0.2.5
+        with:
+          version: v0.69.3
+          cache: true
+
       - name: Run Trivy filesystem scan
-        uses: aquasecurity/trivy-action@0.34.0
+        uses: aquasecurity/trivy-action@0.35.0
         with:
           scan-type: fs
           scan-ref: .
+          cache: "false"
           scanners: vuln
           severity: HIGH,CRITICAL
           ignore-unfixed: true
           format: sarif
           output: trivy-fs.sarif
           exit-code: "0"
+          version: v0.69.3
+          skip-setup-trivy: true
 
       - name: Upload Trivy FS SARIF
         if: always() && hashFiles('trivy-fs.sarif') != ''
@@ -49,20 +58,29 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
+      - name: Setup Trivy
+        uses: aquasecurity/setup-trivy@v0.2.5
+        with:
+          version: v0.69.3
+          cache: true
+
       - name: Build Docker image
         run: docker build -t demeter-backend:ci .
 
       - name: Run Trivy image scan
-        uses: aquasecurity/trivy-action@0.34.0
+        uses: aquasecurity/trivy-action@0.35.0
         with:
           scan-type: image
           scan-ref: demeter-backend:ci
+          cache: "false"
           scanners: vuln
           severity: HIGH,CRITICAL
           ignore-unfixed: true
           format: sarif
           output: trivy-image.sarif
           exit-code: "0"
+          version: v0.69.3
+          skip-setup-trivy: true
 
       - name: Upload Trivy Image SARIF
         if: always() && hashFiles('trivy-image.sarif') != ''

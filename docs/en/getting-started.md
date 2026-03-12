@@ -64,6 +64,24 @@ docker run --rm \
 
 The image writes SQLite to `/data/backend.sqlite` by default.
 
+## Docker Compose
+
+Prod-like launch with the existing distroless image:
+
+```bash
+docker compose up --build
+```
+
+Development launch with `go run` inside `golang:1.25.7` and the repo mounted into the container:
+
+```bash
+docker compose -f compose.dev.yml up
+```
+
+The Compose files keep the full `environment:` blocks inline. Secrets are still expected through variable substitution such as `JWT_SECRET` and `MISTRAL_API_KEY`, rather than hardcoded values committed to the repo.
+
+There is intentionally no Docker `healthcheck`. Use `GET /healthz` for a generic manual check. `GET /readyz` also requires SQLite access and a configured Mistral client, so it stays red when `MISTRAL_API_KEY` is empty.
+
 ## Frequent setup issues
 
 ### `readyz` returns 503

@@ -43,7 +43,10 @@ load_dotenv() {
       continue
     fi
 
-    export "$key=$value"
+    # Keep preexisting environment values so Compose or the caller can override .env.
+    if [[ -z "${!key+x}" ]]; then
+      export "$key=$value"
+    fi
   done < "$env_file"
 }
 
