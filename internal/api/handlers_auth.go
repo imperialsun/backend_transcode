@@ -21,6 +21,8 @@ type loginRequest struct {
 
 func (a *App) RegisterAuthRoutes(router fiber.Router) {
 	router.Post("/login", newLoginRateLimiter(), a.login)
+	router.Post("/forgot-password", newPasswordResetRequestRateLimiter(), a.forgotPassword)
+	router.Post("/reset-password", newPasswordResetApplyRateLimiter(), a.resetPassword)
 	router.Post("/refresh", a.refresh)
 	router.Post("/logout", a.logout)
 	router.Get("/me", a.AppAuthRequired(), a.me)
@@ -28,12 +30,26 @@ func (a *App) RegisterAuthRoutes(router fiber.Router) {
 
 func (a *App) RegisterAdminAuthRoutes(router fiber.Router) {
 	router.Post("/login", newLoginRateLimiter(), a.adminLogin)
+	router.Post("/forgot-password", newPasswordResetRequestRateLimiter(), a.adminForgotPassword)
+	router.Post("/reset-password", newPasswordResetApplyRateLimiter(), a.adminResetPassword)
 	router.Post("/refresh", a.adminRefresh)
 	router.Post("/logout", a.adminLogout)
 	router.Get("/me", a.AdminAuthRequired(), a.adminMe)
 }
 
 func newLoginRateLimiter() fiber.Handler {
+	return newIPRateLimiter(10, time.Minute, "too many login attempts")
+}
+
+func newPasswordResetRequestRateLimiter() fiber.Handler {
+	return newIPRateLimiter(5, time.Minute, "too many password reset requests")
+}
+
+func newPasswordResetApplyRateLimiter() fiber.Handler {
+	return newIPRateLimiter(10, time.Minute, "too many password reset attempts")
+}
+
+func newIPRateLimiter(limit int, window time.Duration, message string) fiber.Handler {
 	type attemptWindow struct {
 		StartedAt time.Time
 		Count     int
@@ -42,8 +58,6 @@ func newLoginRateLimiter() fiber.Handler {
 	var (
 		mu      sync.Mutex
 		windows = map[string]attemptWindow{}
-		limit   = 10
-		window  = time.Minute
 	)
 
 	return func(c *fiber.Ctx) error {
@@ -63,7 +77,7 @@ func newLoginRateLimiter() fiber.Handler {
 		mu.Unlock()
 
 		if entry.Count > limit {
-			return c.Status(fiber.StatusTooManyRequests).JSON(ErrorResponse{Error: "too many login attempts"})
+			return c.Status(fiber.StatusTooManyRequests).JSON(ErrorResponse{Error: message})
 		}
 		return c.Next()
 	}
@@ -75,6 +89,22 @@ func (a *App) login(c *fiber.Ctx) error {
 
 func (a *App) adminLogin(c *fiber.Ctx) error {
 	return a.loginForSession(c, auth.SessionTypeAdmin)
+}
+
+func (a *App) forgotPassword(c *fiber.Ctx) error {
+	return a.forgotPasswordForSession(c, auth.SessionTypeApp)
+}
+
+func (a *App) adminForgotPassword(c *fiber.Ctx) error {
+	return a.forgotPasswordForSession(c, auth.SessionTypeAdmin)
+}
+
+func (a *App) resetPassword(c *fiber.Ctx) error {
+	return a.resetPasswordForSession(c, auth.SessionTypeApp)
+}
+
+func (a *App) adminResetPassword(c *fiber.Ctx) error {
+	return a.resetPasswordForSession(c, auth.SessionTypeAdmin)
 }
 
 func (a *App) loginForSession(c *fiber.Ctx, sessionType auth.SessionType) error {

@@ -35,6 +35,37 @@ Toutes les cookies de session sont:
 - Le logout revoque la session refresh active si elle existe.
 - Les cookies access et refresh sont aussitot expirees cote client.
 
+### Reset mot de passe par email
+
+- `POST /api/v1/auth/forgot-password` et `POST /api/v1/admin/auth/forgot-password` acceptent `{ email }` et repondent `204` pour toute requete syntaxiquement valide.
+- Les demandes publiques ne revelent pas si l email existe, si le user est inactif, ou si l envoi SMTP a echoue.
+- `POST /api/v1/auth/reset-password` et `POST /api/v1/admin/auth/reset-password` acceptent `{ token, password }`.
+- Les tokens de reset sont:
+  - one-shot,
+  - stockes hashes en base dans `password_reset_tokens`,
+  - limites dans le temps via `PASSWORD_RESET_TTL_MINUTES`,
+  - scopes par namespace `app` ou `admin`.
+- Un reset reussi:
+  - met a jour le hash Argon2id du user,
+  - revoque toutes ses refresh sessions,
+  - invalide tous ses autres tokens de reset en attente.
+- L admin dispose aussi de `POST /api/v1/admin/users/:id/password-reset-email` pour envoyer un lien de reset app a un utilisateur de son scope.
+- L admin dispose aussi de `DELETE /api/v1/admin/users/:id` pour supprimer definitivement un utilisateur de son scope, avec protections contre l auto-suppression et la suppression du dernier admin requis.
+
+## Configuration email et liens publics
+
+Variables backend utilisees par le reset email:
+
+- `SMTP_HOST`
+- `SMTP_PORT`
+- `SMTP_USERNAME`
+- `SMTP_PASSWORD`
+- `SMTP_FROM_EMAIL`
+- `SMTP_FROM_NAME`
+- `APP_PUBLIC_URL`
+- `ADMIN_PUBLIC_URL`
+- `PASSWORD_RESET_TTL_MINUTES`
+
 ## Chargement des access tokens
 
 Le middleware accepte l access token depuis:

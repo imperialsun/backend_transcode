@@ -35,6 +35,37 @@ All session cookies are:
 - Logout revokes the current refresh session if it exists.
 - Access and refresh cookies are immediately expired on the client side.
 
+### Email password reset
+
+- `POST /api/v1/auth/forgot-password` and `POST /api/v1/admin/auth/forgot-password` accept `{ email }` and return `204` for any syntactically valid request.
+- Public reset requests do not reveal whether the email exists, whether the user is inactive, or whether SMTP delivery failed.
+- `POST /api/v1/auth/reset-password` and `POST /api/v1/admin/auth/reset-password` accept `{ token, password }`.
+- Reset tokens are:
+  - one-shot,
+  - stored hashed in `password_reset_tokens`,
+  - time-limited through `PASSWORD_RESET_TTL_MINUTES`,
+  - scoped to the `app` or `admin` namespace.
+- A successful reset:
+  - updates the user's Argon2id password hash,
+  - revokes every refresh session for that user,
+  - invalidates every other outstanding reset token for that user.
+- Admins also get `POST /api/v1/admin/users/:id/password-reset-email` to send an app reset link to a user inside their scope.
+- Admins also get `DELETE /api/v1/admin/users/:id` to permanently delete a user inside their scope, with protections against self-deletion and deleting the last required admin.
+
+## Email and public URL configuration
+
+Backend variables used by the email reset flow:
+
+- `SMTP_HOST`
+- `SMTP_PORT`
+- `SMTP_USERNAME`
+- `SMTP_PASSWORD`
+- `SMTP_FROM_EMAIL`
+- `SMTP_FROM_NAME`
+- `APP_PUBLIC_URL`
+- `ADMIN_PUBLIC_URL`
+- `PASSWORD_RESET_TTL_MINUTES`
+
 ## Access token loading
 
 The middleware accepts the access token from:

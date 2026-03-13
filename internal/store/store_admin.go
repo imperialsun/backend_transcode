@@ -66,6 +66,70 @@ func (s *Store) GetUserPermissionOverrides(ctx context.Context, userID string) (
 	return out, rows.Err()
 }
 
+func (s *Store) CountActiveUsersByGlobalRole(ctx context.Context, roleCode string) (int, error) {
+	var count int
+	err := s.DB.QueryRowContext(ctx, `
+		SELECT COUNT(DISTINCT u.id)
+		FROM users u
+		JOIN user_global_roles ugr ON ugr.user_id = u.id
+		JOIN global_roles gr ON gr.id = ugr.global_role_id
+		WHERE u.status = 'active' AND gr.code = ?
+	`, strings.TrimSpace(roleCode)).Scan(&count)
+	return count, err
+}
+
+func (s *Store) CountActiveUsersByOrganizationRole(ctx context.Context, organizationID string, roleCode string) (int, error) {
+	var count int
+	err := s.DB.QueryRowContext(ctx, `
+		SELECT COUNT(DISTINCT u.id)
+		FROM users u
+		JOIN user_organization_roles uor ON uor.user_id = u.id
+		JOIN organization_roles orr ON orr.id = uor.organization_role_id
+		WHERE u.status = 'active' AND u.organization_id = ? AND orr.code = ?
+	`, strings.TrimSpace(organizationID), strings.TrimSpace(roleCode)).Scan(&count)
+	return count, err
+}
+
+func (s *Store) DeleteUser(ctx context.Context, userID string) (bool, error) {
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return false, err
+	}
+	defer rollbackTx(tx)
+
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE password_reset_tokens
+		SET requested_by_user_id = NULL
+		WHERE requested_by_user_id = ?
+	`, strings.TrimSpace(userID)); err != nil {
+		return false, err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE audit_logs
+		SET actor_user_id = NULL
+		WHERE actor_user_id = ?
+	`, strings.TrimSpace(userID)); err != nil {
+		return false, err
+	}
+
+	result, err := tx.ExecContext(ctx, `DELETE FROM users WHERE id = ?`, strings.TrimSpace(userID))
+	if err != nil {
+		return false, err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	if affected == 0 {
+		return false, nil
+	}
+
+	if err := tx.Commit(); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 func (s *Store) InsertAuditLog(ctx context.Context, input AuditLogInput) error {
 	payload := input.PayloadJSON
 	if len(strings.TrimSpace(string(payload))) == 0 && input.Payload != nil {

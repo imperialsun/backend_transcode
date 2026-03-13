@@ -144,6 +144,7 @@ All routes below require:
 | `GET` | `/api/v1/admin/organizations/:id/users` | lists users in an org |
 | `POST` | `/api/v1/admin/organizations/:id/users` | creates a user and grants `user` + `org_member` |
 | `PATCH` | `/api/v1/admin/users/:id` | updates email, status, org (org only for `super_admin`) |
+| `DELETE` | `/api/v1/admin/users/:id` | permanently deletes the user; rejects self-deletion and deleting the last required admin |
 | `PUT` | `/api/v1/admin/users/:id/password` | changes the password and revokes refresh sessions |
 | `PUT` | `/api/v1/admin/users/:id/global-roles` | reserved to `super_admin` |
 | `PUT` | `/api/v1/admin/users/:id/org-roles` | updates organization roles |

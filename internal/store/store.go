@@ -56,6 +56,17 @@ type RefreshSession struct {
 	CreatedAt      time.Time
 }
 
+type PasswordResetToken struct {
+	ID                string
+	UserID            string
+	SessionType       string
+	TokenHash         string
+	ExpiresAt         time.Time
+	UsedAt            sql.NullTime
+	RequestedByUserID sql.NullString
+	CreatedAt         time.Time
+}
+
 type AuditLogInput struct {
 	ActorUserID    string
 	OrganizationID string
@@ -272,6 +283,18 @@ func (s *Store) Migrate(ctx context.Context) error {
 			FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,
 			FOREIGN KEY(organization_id) REFERENCES organizations(id)
 		);`,
+		`CREATE TABLE IF NOT EXISTS password_reset_tokens (
+			id TEXT PRIMARY KEY,
+			user_id TEXT NOT NULL,
+			session_type TEXT NOT NULL DEFAULT 'app',
+			token_hash TEXT NOT NULL UNIQUE,
+			expires_at DATETIME NOT NULL,
+			used_at DATETIME,
+			requested_by_user_id TEXT,
+			created_at DATETIME NOT NULL,
+			FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,
+			FOREIGN KEY(requested_by_user_id) REFERENCES users(id)
+		);`,
 		`CREATE TABLE IF NOT EXISTS audit_logs (
 			id TEXT PRIMARY KEY,
 			actor_user_id TEXT,
@@ -301,6 +324,8 @@ func (s *Store) Migrate(ctx context.Context) error {
 		);`,
 		`CREATE INDEX IF NOT EXISTS idx_users_org ON users(organization_id);`,
 		`CREATE INDEX IF NOT EXISTS idx_refresh_user ON refresh_sessions(user_id);`,
+		`CREATE INDEX IF NOT EXISTS idx_password_reset_user ON password_reset_tokens(user_id);`,
+		`CREATE INDEX IF NOT EXISTS idx_password_reset_hash ON password_reset_tokens(token_hash);`,
 		`CREATE INDEX IF NOT EXISTS idx_activity_org_day ON activity_usage_events(organization_id, day);`,
 		`CREATE INDEX IF NOT EXISTS idx_activity_user_day ON activity_usage_events(user_id, day);`,
 		`CREATE INDEX IF NOT EXISTS idx_activity_kind_org_day ON activity_usage_events(event_kind, organization_id, day);`,
@@ -967,6 +992,147 @@ func (s *Store) RevokeRefreshSession(ctx context.Context, id string) error {
 func (s *Store) RevokeRefreshSessionsByUser(ctx context.Context, userID string) error {
 	_, err := s.DB.ExecContext(ctx, `UPDATE refresh_sessions SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL`, time.Now().UTC(), userID)
 	return err
+}
+
+func (s *Store) SavePasswordResetToken(ctx context.Context, token PasswordResetToken) error {
+	if strings.TrimSpace(token.ID) == "" {
+		token.ID = uuid.NewString()
+	}
+	if strings.TrimSpace(token.SessionType) == "" {
+		token.SessionType = "app"
+	}
+	if token.CreatedAt.IsZero() {
+		token.CreatedAt = time.Now().UTC()
+	}
+	_, err := s.DB.ExecContext(ctx, `
+		INSERT INTO password_reset_tokens(
+			id, user_id, session_type, token_hash, expires_at, used_at, requested_by_user_id, created_at
+		) VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+	`, token.ID, token.UserID, token.SessionType, token.TokenHash, token.ExpiresAt, nil, nullableString(token.RequestedByUserID.String), token.CreatedAt)
+	return err
+}
+
+func (s *Store) GetPasswordResetTokenByHash(ctx context.Context, hash string) (*PasswordResetToken, error) {
+	var record PasswordResetToken
+	err := s.DB.QueryRowContext(ctx, `
+		SELECT id, user_id, session_type, token_hash, expires_at, used_at, requested_by_user_id, created_at
+		FROM password_reset_tokens
+		WHERE token_hash = ?
+	`, strings.TrimSpace(hash)).Scan(
+		&record.ID,
+		&record.UserID,
+		&record.SessionType,
+		&record.TokenHash,
+		&record.ExpiresAt,
+		&record.UsedAt,
+		&record.RequestedByUserID,
+		&record.CreatedAt,
+	)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	if strings.TrimSpace(record.SessionType) == "" {
+		record.SessionType = "app"
+	}
+	return &record, nil
+}
+
+func (s *Store) ConsumePasswordResetToken(ctx context.Context, id string) error {
+	_, err := s.DB.ExecContext(ctx, `
+		UPDATE password_reset_tokens
+		SET used_at = ?
+		WHERE id = ? AND used_at IS NULL
+	`, time.Now().UTC(), strings.TrimSpace(id))
+	return err
+}
+
+func (s *Store) RevokePasswordResetTokensByUser(ctx context.Context, userID string, sessionType string) error {
+	query := `
+		UPDATE password_reset_tokens
+		SET used_at = ?
+		WHERE user_id = ? AND used_at IS NULL
+	`
+	args := []any{time.Now().UTC(), strings.TrimSpace(userID)}
+	if strings.TrimSpace(sessionType) != "" {
+		query += ` AND session_type = ?`
+		args = append(args, strings.TrimSpace(sessionType))
+	}
+	_, err := s.DB.ExecContext(ctx, query, args...)
+	return err
+}
+
+func (s *Store) ApplyPasswordReset(ctx context.Context, tokenHash string, passwordHash string, sessionType string) (*PasswordResetToken, error) {
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer rollbackTx(tx)
+
+	var record PasswordResetToken
+	err = tx.QueryRowContext(ctx, `
+		SELECT id, user_id, session_type, token_hash, expires_at, used_at, requested_by_user_id, created_at
+		FROM password_reset_tokens
+		WHERE token_hash = ?
+	`, strings.TrimSpace(tokenHash)).Scan(
+		&record.ID,
+		&record.UserID,
+		&record.SessionType,
+		&record.TokenHash,
+		&record.ExpiresAt,
+		&record.UsedAt,
+		&record.RequestedByUserID,
+		&record.CreatedAt,
+	)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	if strings.TrimSpace(record.SessionType) == "" {
+		record.SessionType = "app"
+	}
+
+	now := time.Now().UTC()
+	if record.SessionType != strings.TrimSpace(sessionType) || record.UsedAt.Valid || record.ExpiresAt.Before(now) {
+		return nil, nil
+	}
+
+	result, err := tx.ExecContext(ctx, `
+		UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?
+	`, passwordHash, now, record.UserID)
+	if err != nil {
+		return nil, err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return nil, err
+	}
+	if affected == 0 {
+		return nil, nil
+	}
+
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE refresh_sessions SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL
+	`, now, record.UserID); err != nil {
+		return nil, err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE password_reset_tokens
+		SET used_at = ?
+		WHERE user_id = ? AND used_at IS NULL
+	`, now, record.UserID); err != nil {
+		return nil, err
+	}
+
+	record.UsedAt = sql.NullTime{Time: now, Valid: true}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return &record, nil
 }
 
 func (s *Store) GetUserSettings(ctx context.Context, userID string) (*SettingsRecord, error) {

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"demeter-backend/internal/config"
+	"demeter-backend/internal/mailer"
 	"demeter-backend/internal/mistral"
 	"demeter-backend/internal/store"
 )
@@ -14,6 +15,7 @@ type App struct {
 	Config        config.Config
 	Store         *store.Store
 	MistralClient *mistral.Client
+	Mailer        mailer.Sender
 }
 
 type ErrorResponse struct {

@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 
 	"demeter-backend/internal/auth"
@@ -57,7 +58,9 @@ func (a *App) RegisterAdminRoutes(router fiber.Router) {
 	group.Get("/users/:id/access", a.getUserAccess)
 	group.Post("/organizations/:id/users", a.createOrganizationUser)
 	group.Patch("/users/:id", a.patchUser)
+	group.Delete("/users/:id", a.deleteUser)
 	group.Put("/users/:id/password", a.updateUserPassword)
+	group.Post("/users/:id/password-reset-email", a.sendUserPasswordResetEmail)
 	group.Put("/users/:id/global-roles", a.updateUserGlobalRoles)
 	group.Put("/users/:id/org-roles", a.updateUserOrgRoles)
 	group.Put("/users/:id/entitlements", a.updateUserEntitlements)
@@ -263,6 +266,110 @@ func (a *App) updateUserPassword(c *fiber.Ctx) error {
 	}
 	a.writeAdminAudit(claims, "admin.user.password.update", "user", userID, fiber.Map{
 		"organizationId": target.OrganizationID,
+	})
+	return c.SendStatus(fiber.StatusNoContent)
+}
+
+func (a *App) deleteUser(c *fiber.Ctx) error {
+	claims := MustClaims(c)
+	if claims == nil {
+		return c.Status(fiber.StatusUnauthorized).JSON(ErrorResponse{Error: "unauthorized"})
+	}
+
+	ctx := context.Background()
+	userID := strings.TrimSpace(c.Params("id"))
+	target, err := a.Store.GetUserByID(ctx, userID)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{Error: "failed to load user"})
+	}
+	if target == nil {
+		return c.Status(fiber.StatusNotFound).JSON(ErrorResponse{Error: "user not found"})
+	}
+	if !isSuperAdmin(claims) && claims.OrgID != target.OrganizationID {
+		return c.Status(fiber.StatusForbidden).JSON(ErrorResponse{Error: "forbidden organization scope"})
+	}
+	if claims.UserID == target.ID {
+		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{Error: "cannot delete your own account"})
+	}
+
+	globalRoles, err := a.Store.GetGlobalRoleCodesByUser(ctx, target.ID)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{Error: "failed to load global roles"})
+	}
+	orgRoles, err := a.Store.GetOrganizationRoleCodesByUser(ctx, target.ID)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{Error: "failed to load organization roles"})
+	}
+
+	if target.Status == "active" && rbac.HasRole(globalRoles, "super_admin") {
+		activeSuperAdmins, err := a.Store.CountActiveUsersByGlobalRole(ctx, "super_admin")
+		if err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{Error: "failed to verify super admin protections"})
+		}
+		if activeSuperAdmins <= 1 {
+			return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{Error: "cannot delete the last active super admin"})
+		}
+	}
+
+	if target.Status == "active" && rbac.HasRole(orgRoles, "org_admin") {
+		activeOrgAdmins, err := a.Store.CountActiveUsersByOrganizationRole(ctx, target.OrganizationID, "org_admin")
+		if err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{Error: "failed to verify organization admin protections"})
+		}
+		if activeOrgAdmins <= 1 {
+			return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{Error: "cannot delete the last active organization admin"})
+		}
+	}
+
+	deleted, err := a.Store.DeleteUser(ctx, target.ID)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{Error: "failed to delete user"})
+	}
+	if !deleted {
+		return c.Status(fiber.StatusNotFound).JSON(ErrorResponse{Error: "user not found"})
+	}
+
+	a.writeAdminAudit(claims, "admin.user.delete", "user", target.ID, fiber.Map{
+		"email":            target.Email,
+		"organizationId":   target.OrganizationID,
+		"globalRoles":      globalRoles,
+		"orgRoles":         orgRoles,
+		"status":           target.Status,
+		"actorGlobalRoles": claims.GlobalRoles,
+		"actorOrgRoles":    claims.OrgRoles,
+	})
+	return c.SendStatus(fiber.StatusNoContent)
+}
+
+func (a *App) sendUserPasswordResetEmail(c *fiber.Ctx) error {
+	claims := MustClaims(c)
+	userID := strings.TrimSpace(c.Params("id"))
+	target, err := a.Store.GetUserByID(context.Background(), userID)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{Error: "failed to load user"})
+	}
+	if target == nil {
+		return c.Status(fiber.StatusNotFound).JSON(ErrorResponse{Error: "user not found"})
+	}
+	if !isSuperAdmin(claims) && claims.OrgID != target.OrganizationID {
+		return c.Status(fiber.StatusForbidden).JSON(ErrorResponse{Error: "forbidden organization scope"})
+	}
+	if target.Status != "active" {
+		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{Error: "user is inactive"})
+	}
+
+	if err := a.sendPasswordResetForUser(context.Background(), target, auth.SessionTypeApp, claims.UserID); err != nil {
+		if errors.Is(err, errPasswordResetUnavailable) {
+			return c.Status(fiber.StatusServiceUnavailable).JSON(ErrorResponse{Error: "password reset email unavailable"})
+		}
+		if fiberErr, ok := err.(*fiber.Error); ok {
+			return c.Status(fiberErr.Code).JSON(ErrorResponse{Error: fiberErr.Message})
+		}
+		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{Error: "failed to send password reset email"})
+	}
+
+	a.writeAdminAudit(claims, "admin.user.password_reset_email.send", "user", target.ID, fiber.Map{
+		"email": target.Email,
 	})
 	return c.SendStatus(fiber.StatusNoContent)
 }

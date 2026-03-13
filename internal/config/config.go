@@ -24,6 +24,15 @@ type Config struct {
 	MistralAPIKey          string
 	MistralRequestTimeout  time.Duration
 	MistralAudioTimeout    time.Duration
+	SMTPHost               string
+	SMTPPort               int
+	SMTPUsername           string
+	SMTPPassword           string
+	SMTPFromEmail          string
+	SMTPFromName           string
+	AppPublicURL           string
+	AdminPublicURL         string
+	PasswordResetTTL       time.Duration
 	BootstrapAdminEmail    string
 	BootstrapAdminPassword string
 	BootstrapOrgName       string
@@ -49,6 +58,15 @@ func Load() Config {
 		MistralAPIKey:          strings.TrimSpace(os.Getenv("MISTRAL_API_KEY")),
 		MistralRequestTimeout:  time.Duration(getEnvInt("MISTRAL_REQUEST_TIMEOUT_SECONDS", 480)) * time.Second,
 		MistralAudioTimeout:    time.Duration(getEnvInt("MISTRAL_AUDIO_TRANSCRIPTION_TIMEOUT_SECONDS", 1200)) * time.Second,
+		SMTPHost:               strings.TrimSpace(os.Getenv("SMTP_HOST")),
+		SMTPPort:               getEnvInt("SMTP_PORT", 587),
+		SMTPUsername:           strings.TrimSpace(os.Getenv("SMTP_USERNAME")),
+		SMTPPassword:           strings.TrimSpace(os.Getenv("SMTP_PASSWORD")),
+		SMTPFromEmail:          strings.TrimSpace(os.Getenv("SMTP_FROM_EMAIL")),
+		SMTPFromName:           strings.TrimSpace(os.Getenv("SMTP_FROM_NAME")),
+		AppPublicURL:           strings.TrimSpace(os.Getenv("APP_PUBLIC_URL")),
+		AdminPublicURL:         strings.TrimSpace(os.Getenv("ADMIN_PUBLIC_URL")),
+		PasswordResetTTL:       time.Duration(getEnvInt("PASSWORD_RESET_TTL_MINUTES", 60)) * time.Minute,
 		BootstrapAdminEmail:    strings.TrimSpace(os.Getenv("BOOTSTRAP_ADMIN_EMAIL")),
 		BootstrapAdminPassword: strings.TrimSpace(os.Getenv("BOOTSTRAP_ADMIN_PASSWORD")),
 		BootstrapOrgName:       strings.TrimSpace(getEnv("BOOTSTRAP_ORG_NAME", "Default Organization")),

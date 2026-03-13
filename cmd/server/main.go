@@ -11,6 +11,7 @@ import (
 	"demeter-backend/internal/api"
 	"demeter-backend/internal/auth"
 	"demeter-backend/internal/config"
+	"demeter-backend/internal/mailer"
 	"demeter-backend/internal/mistral"
 	"demeter-backend/internal/store"
 
@@ -51,6 +52,14 @@ func main() {
 			cfg.MistralRequestTimeout,
 			cfg.MistralAudioTimeout,
 		),
+		Mailer: mailer.NewSMTPMailer(mailer.Config{
+			Host:      cfg.SMTPHost,
+			Port:      cfg.SMTPPort,
+			Username:  cfg.SMTPUsername,
+			Password:  cfg.SMTPPassword,
+			FromEmail: cfg.SMTPFromEmail,
+			FromName:  cfg.SMTPFromName,
+		}),
 	}
 
 	app := fiber.New(fiber.Config{

@@ -55,3 +55,19 @@ func TestParseRefreshToken(t *testing.T) {
 		t.Fatal("expected ParseRefreshToken to fail on invalid format")
 	}
 }
+
+func TestNewPasswordResetToken(t *testing.T) {
+	token, err := NewPasswordResetToken(30 * time.Minute)
+	if err != nil {
+		t.Fatalf("NewPasswordResetToken returned error: %v", err)
+	}
+	if token.RawToken == "" {
+		t.Fatal("expected raw token to be populated")
+	}
+	if token.Hash != HashPasswordResetToken(token.RawToken) {
+		t.Fatal("expected token hash to match raw token")
+	}
+	if !token.ExpiresAt.After(time.Now().UTC()) {
+		t.Fatal("expected password reset token to expire in the future")
+	}
+}
