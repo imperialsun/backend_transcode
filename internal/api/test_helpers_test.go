@@ -147,9 +147,19 @@ func performJSONRequestWithHeaders(t *testing.T, app *fiber.App, method, path st
 		t.Fatalf("request failed: %v", err)
 	}
 	t.Cleanup(func() {
-		_ = resp.Body.Close()
+		closeHTTPResponse(t, resp)
 	})
 	return resp
+}
+
+func closeHTTPResponse(t *testing.T, resp *http.Response) {
+	t.Helper()
+	if resp == nil || resp.Body == nil {
+		return
+	}
+	if err := resp.Body.Close(); err != nil {
+		t.Errorf("close response body: %v", err)
+	}
 }
 
 func performLoginRequest(t *testing.T, app *fiber.App, path string, payload map[string]string) *http.Response {

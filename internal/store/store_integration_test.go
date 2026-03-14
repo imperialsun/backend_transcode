@@ -17,7 +17,7 @@ func TestStoreCoreFlows(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to open store: %v", err)
 	}
-	defer st.Close()
+	defer closeTestStore(t, st)
 
 	// Ensure basic catalog and roles are present
 	orgs, err := st.ListOrganizations(ctx)

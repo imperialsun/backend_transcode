@@ -38,7 +38,11 @@ func TestBuildApp_RegistersRoutesAndAdminOriginGuard(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to open store: %v", err)
 	}
-	defer st.Close()
+	defer func() {
+		if err := st.Close(); err != nil {
+			t.Errorf("close store: %v", err)
+		}
+	}()
 
 	app := buildApp(config.Config{
 		JWTSecret:        "test-secret",

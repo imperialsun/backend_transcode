@@ -110,7 +110,7 @@ func (s *smtpTestServer) serve(t *testing.T) {
 	if err != nil {
 		return
 	}
-	defer conn.Close()
+	defer closeSMTPConn(t, conn)
 
 	reader := bufio.NewReader(conn)
 	writer := bufio.NewWriter(conn)
@@ -160,6 +160,16 @@ func (s *smtpTestServer) serve(t *testing.T) {
 		default:
 			writeLine("250 OK")
 		}
+	}
+}
+
+func closeSMTPConn(t *testing.T, conn net.Conn) {
+	t.Helper()
+	if conn == nil {
+		return
+	}
+	if err := conn.Close(); err != nil {
+		t.Errorf("close smtp connection: %v", err)
 	}
 }
 

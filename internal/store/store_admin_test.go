@@ -28,7 +28,7 @@ func TestEnsureColumnExistsAddsMissingColumn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to open store: %v", err)
 	}
-	defer st.Close()
+	defer closeTestStore(t, st)
 
 	tx, err := st.DB.BeginTx(ctx, nil)
 	if err != nil {
@@ -77,7 +77,7 @@ func TestEnsureColumnExistsDoesNotFailWhenAlreadyPresent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to open store: %v", err)
 	}
-	defer st.Close()
+	defer closeTestStore(t, st)
 
 	tx, err := st.DB.BeginTx(ctx, nil)
 	if err != nil {

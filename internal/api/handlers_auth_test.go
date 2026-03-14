@@ -608,7 +608,7 @@ func TestMeForSession_DirectBranches(t *testing.T) {
 	if err != nil {
 		t.Fatalf("app me request failed: %v", err)
 	}
-	defer unauthorizedResp.Body.Close()
+	defer closeHTTPResponse(t, unauthorizedResp)
 	if unauthorizedResp.StatusCode != fiber.StatusUnauthorized {
 		t.Fatalf("expected 401 when claims are missing, got %d", unauthorizedResp.StatusCode)
 	}
@@ -617,7 +617,7 @@ func TestMeForSession_DirectBranches(t *testing.T) {
 	if err != nil {
 		t.Fatalf("admin me request failed: %v", err)
 	}
-	defer adminForbiddenResp.Body.Close()
+	defer closeHTTPResponse(t, adminForbiddenResp)
 	if adminForbiddenResp.StatusCode != fiber.StatusForbidden {
 		t.Fatalf("expected 403 when admin scope is missing, got %d", adminForbiddenResp.StatusCode)
 	}
@@ -630,7 +630,7 @@ func TestMeForSession_DirectBranches(t *testing.T) {
 	if err != nil {
 		t.Fatalf("authorized app me request failed: %v", err)
 	}
-	defer appResp.Body.Close()
+	defer closeHTTPResponse(t, appResp)
 	if appResp.StatusCode != fiber.StatusOK {
 		t.Fatalf("expected 200 for direct app me, got %d", appResp.StatusCode)
 	}
@@ -663,7 +663,7 @@ func TestAuthHandlers_ReturnServerErrorsWhenStoreIsClosed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("direct me request failed: %v", err)
 	}
-	defer meResp.Body.Close()
+	defer closeHTTPResponse(t, meResp)
 	if meResp.StatusCode != fiber.StatusInternalServerError {
 		t.Fatalf("expected 500 for meForSession with closed store, got %d", meResp.StatusCode)
 	}

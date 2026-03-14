@@ -15,7 +15,7 @@ func TestStoreBasicsAndUserUpdates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to open store: %v", err)
 	}
-	defer st.Close()
+	defer closeTestStore(t, st)
 
 	if err := st.Ping(ctx); err != nil {
 		t.Fatalf("Ping failed: %v", err)
@@ -84,7 +84,7 @@ func TestResolveEffectivePermissionsAndSettingsReset(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to open store: %v", err)
 	}
-	defer st.Close()
+	defer closeTestStore(t, st)
 
 	org, err := st.CreateOrganization(ctx, "Perm Org", "perm-org", "active")
 	if err != nil {
@@ -157,7 +157,7 @@ func TestGetGlobalActivitySummary_ReturnsBreakdownsByDayAndUser(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to open store: %v", err)
 	}
-	defer st.Close()
+	defer closeTestStore(t, st)
 
 	orgA := createOrg(t, st, "Org A", "org-a", "active")
 	orgB := createOrg(t, st, "Org B", "org-b", "active")
@@ -405,7 +405,7 @@ func TestStoreMetaHelpers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to open store: %v", err)
 	}
-	defer st.Close()
+	defer closeTestStore(t, st)
 
 	// hasColumn should work for refresh_sessions
 	ok, err := hasColumn(ctx, st.DB, "refresh_sessions", "session_type")

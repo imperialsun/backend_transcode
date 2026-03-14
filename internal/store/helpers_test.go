@@ -61,7 +61,7 @@ func TestScanStringRowsAndCatalogRows(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to open sqlite: %v", err)
 	}
-	defer db.Close()
+	defer closeTestDB(t, db)
 	_, _ = db.Exec(`CREATE TABLE foo (value TEXT); INSERT INTO foo(value) VALUES('x'),('y')`)
 	rows, err := db.Query(`SELECT value FROM foo ORDER BY value ASC`)
 	if err != nil {

@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"path/filepath"
 	"testing"
 
@@ -15,9 +16,29 @@ func openTestStore(t *testing.T, name string) *Store {
 		t.Fatalf("failed to open sqlite store: %v", err)
 	}
 	t.Cleanup(func() {
-		_ = st.Close()
+		closeTestStore(t, st)
 	})
 	return st
+}
+
+func closeTestStore(t *testing.T, st *Store) {
+	t.Helper()
+	if st == nil {
+		return
+	}
+	if err := st.Close(); err != nil {
+		t.Errorf("close store: %v", err)
+	}
+}
+
+func closeTestDB(t *testing.T, db *sql.DB) {
+	t.Helper()
+	if db == nil {
+		return
+	}
+	if err := db.Close(); err != nil {
+		t.Errorf("close db: %v", err)
+	}
 }
 
 func createOrg(t *testing.T, st *Store, name, code, status string) *Organization {

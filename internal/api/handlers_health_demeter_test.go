@@ -28,7 +28,11 @@ func TestHealthRoutes_ReadyRequiresMistralConfigured(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to open store: %v", err)
 	}
-	defer st.Close()
+	defer func() {
+		if err := st.Close(); err != nil {
+			t.Errorf("close store: %v", err)
+		}
+	}()
 
 	appCtx := &App{Config: config.Config{}, Store: st, MistralClient: &mistral.Client{}}
 	app := fiber.New()
@@ -94,7 +98,11 @@ func TestDemeterModels_RequiresPermissionAndMistral(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to open store: %v", err)
 	}
-	defer st.Close()
+	defer func() {
+		if err := st.Close(); err != nil {
+			t.Errorf("close store: %v", err)
+		}
+	}()
 
 	org, err := st.CreateOrganization(ctx, "Org", "org", "active")
 	if err != nil {
@@ -288,7 +296,7 @@ func TestDemeterAudioTranscriptions_ReturnsBadGatewayOnUpstreamError(t *testing.
 	if err != nil {
 		t.Fatalf("request failed: %v", err)
 	}
-	defer resp.Body.Close()
+	defer closeHTTPResponse(t, resp)
 	if resp.StatusCode != fiber.StatusBadGateway {
 		t.Fatalf("expected 502 for transcription upstream transport error, got %d", resp.StatusCode)
 	}
@@ -332,7 +340,7 @@ func TestDemeterHelperFunctions_LogOnlyErrorsAndExposeActorIDs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("helper route request failed: %v", err)
 	}
-	defer resp.Body.Close()
+	defer closeHTTPResponse(t, resp)
 	if resp.StatusCode != fiber.StatusNoContent {
 		t.Fatalf("expected 204 from helper route, got %d", resp.StatusCode)
 	}
@@ -360,7 +368,7 @@ func TestDemeterAudioTranscriptions_RejectsInvalidContentType(t *testing.T) {
 	if err != nil {
 		t.Fatalf("request failed: %v", err)
 	}
-	defer resp.Body.Close()
+	defer closeHTTPResponse(t, resp)
 	if resp.StatusCode != fiber.StatusBadRequest {
 		t.Fatalf("expected 400 for invalid content type, got %d", resp.StatusCode)
 	}
@@ -404,7 +412,7 @@ func TestDemeterAudioTranscriptions_ProxiesMultipartBody(t *testing.T) {
 	if err != nil {
 		t.Fatalf("request failed: %v", err)
 	}
-	defer resp.Body.Close()
+	defer closeHTTPResponse(t, resp)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200 for proxied transcription, got %d", resp.StatusCode)
 	}
