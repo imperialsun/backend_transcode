@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"demeter-backend/internal/auth"
+
 	"github.com/gofiber/fiber/v2"
 )
 

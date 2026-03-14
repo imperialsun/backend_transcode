@@ -15,8 +15,9 @@ import (
 
 	"demeter-backend/internal/auth"
 	"demeter-backend/internal/config"
-	"demeter-backend/internal/store"
 	"demeter-backend/internal/mistral"
+	"demeter-backend/internal/store"
+
 	"github.com/gofiber/fiber/v2"
 )
 
@@ -118,9 +119,9 @@ func TestDemeterModels_RequiresPermissionAndMistral(t *testing.T) {
 
 	// Create a token for the user
 	token, _, err := auth.NewAccessToken("test-secret", time.Hour, auth.Claims{
-		UserID: user.ID,
-		OrgID:  user.OrganizationID,
-		Email:  user.Email,
+		UserID:      user.ID,
+		OrgID:       user.OrganizationID,
+		Email:       user.Email,
 		Permissions: []string{"provider.cloud.demeter_sante"},
 	})
 	if err != nil {
@@ -461,9 +462,9 @@ func setupDemeterRoutesApp(t *testing.T, overrides []store.UserPermissionOverrid
 	appCtx.RegisterDemeterRoutes(api)
 
 	token, _, err := auth.NewAccessToken("test-secret", time.Hour, auth.Claims{
-		UserID:      user.ID,
-		OrgID:       user.OrganizationID,
-		Email:       user.Email,
+		UserID: user.ID,
+		OrgID:  user.OrganizationID,
+		Email:  user.Email,
 		Permissions: func() []string {
 			codes := make([]string, 0, len(overrides))
 			for _, override := range overrides {

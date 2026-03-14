@@ -12,6 +12,7 @@ import (
 	"demeter-backend/internal/mailer"
 	"demeter-backend/internal/mistral"
 	"demeter-backend/internal/store"
+
 	"github.com/gofiber/fiber/v2"
 )
 

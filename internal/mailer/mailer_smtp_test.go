@@ -66,12 +66,12 @@ func TestSMTPMailerSendPasswordResetEmail_RCPTFailure(t *testing.T) {
 }
 
 type smtpTestServer struct {
-	host        string
-	port        int
-	rejectRcpt  bool
-	messageCh   chan string
-	listener    net.Listener
-	closeOnce   sync.Once
+	host       string
+	port       int
+	rejectRcpt bool
+	messageCh  chan string
+	listener   net.Listener
+	closeOnce  sync.Once
 }
 
 func startSMTPTestServer(t *testing.T, rejectRcpt bool) *smtpTestServer {

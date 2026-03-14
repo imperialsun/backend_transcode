@@ -474,7 +474,6 @@ func TestApplyPasswordReset_UpdatesPasswordAndRevokesSessionsAndTokens(t *testin
 	}
 }
 
-
 func TestRevokePasswordResetTokensByUser_FiltersBySessionType(t *testing.T) {
 	ctx := context.Background()
 	st := openTestStore(t, "revoke-reset-filter.sqlite")

@@ -2,8 +2,8 @@ package api
 
 import (
 	"context"
-	"encoding/json"
 	"database/sql"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -13,6 +13,7 @@ import (
 	"demeter-backend/internal/auth"
 	"demeter-backend/internal/config"
 	"demeter-backend/internal/store"
+
 	"github.com/gofiber/fiber/v2"
 )
 

@@ -8,6 +8,7 @@ import (
 
 	"demeter-backend/internal/config"
 	"demeter-backend/internal/store"
+
 	"github.com/gofiber/fiber/v2"
 )
 

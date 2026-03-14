@@ -77,8 +77,8 @@ func main() {
 
 func buildApp(cfg config.Config, st *store.Store, mistralClient *mistral.Client, appMailer mailer.Sender) *fiber.App {
 	appCtx := &api.App{
-		Config: cfg,
-		Store:  st,
+		Config:        cfg,
+		Store:         st,
 		MistralClient: mistralClient,
 		Mailer:        appMailer,
 	}
