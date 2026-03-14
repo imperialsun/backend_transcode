@@ -226,6 +226,19 @@ func TestCountActiveUsersByRoles(t *testing.T) {
 	}
 }
 
+func TestDeleteUser_ReturnsFalseWhenUserDoesNotExist(t *testing.T) {
+	ctx := context.Background()
+	st := openTestStore(t, "delete-missing.sqlite")
+
+	deleted, err := st.DeleteUser(ctx, "missing-user")
+	if err != nil {
+		t.Fatalf("DeleteUser returned error: %v", err)
+	}
+	if deleted {
+		t.Fatal("expected DeleteUser to report no deletion for unknown user")
+	}
+}
+
 func assertTableCount(t *testing.T, st *Store, tableName, columnName, value string, expected int) {
 	t.Helper()
 

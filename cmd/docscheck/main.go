@@ -71,6 +71,19 @@ type markdownLink struct {
 }
 
 func main() {
+	errors := runDocsCheck()
+	if len(errors) > 0 {
+		fmt.Fprintln(os.Stderr, "[docs-check] FAIL")
+		for _, err := range errors {
+			fmt.Fprintf(os.Stderr, "- %s\n", err)
+		}
+		os.Exit(1)
+	}
+
+	fmt.Println("[docs-check] PASS")
+}
+
+func runDocsCheck() []string {
 	errors := []string{}
 
 	for _, path := range requiredRootFiles {
@@ -93,14 +106,10 @@ func main() {
 	validateLinks(markdownFiles, &errors)
 
 	if len(errors) > 0 {
-		fmt.Fprintln(os.Stderr, "[docs-check] FAIL")
-		for _, err := range errors {
-			fmt.Fprintf(os.Stderr, "- %s\n", err)
-		}
-		os.Exit(1)
+		return errors
 	}
 
-	fmt.Println("[docs-check] PASS")
+	return nil
 }
 
 func assertFilePresentAndNonEmpty(relativePath string, errors *[]string) {

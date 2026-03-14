@@ -36,6 +36,12 @@ jobs:
       - name: Race and coverage
         run: go test ./... -race -coverprofile=coverage.out
 
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          file: coverage.out
+          fail_ci_if_error: false
+
       - name: Lint
         uses: golangci/golangci-lint-action@v9
         with:

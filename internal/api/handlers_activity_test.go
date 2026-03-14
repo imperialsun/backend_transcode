@@ -3,19 +3,15 @@ package api
 import (
 	"context"
 	"encoding/json"
-	"io"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
-	"demeter-backend/internal/auth"
 	"demeter-backend/internal/config"
 	"demeter-backend/internal/store"
 	"github.com/gofiber/fiber/v2"
-	"github.com/golang-jwt/jwt/v5"
 )
 
 func TestPostActivityEvents_Unauthorized(t *testing.T) {
@@ -287,84 +283,168 @@ func TestAdminActivitySummary_GlobalScopeForSuperAdmin(t *testing.T) {
 	}
 }
 
+func TestAdminActivitySummary_OrganizationQueryScopeAndValidation(t *testing.T) {
+	_, app, st := setupActivityTestApp(t)
+	ctx := context.Background()
+
+	orgA, err := st.CreateOrganization(ctx, "Org A", "org-a", "active")
+	if err != nil {
+		t.Fatalf("failed to create org A: %v", err)
+	}
+	orgB, err := st.CreateOrganization(ctx, "Org B", "org-b", "active")
+	if err != nil {
+		t.Fatalf("failed to create org B: %v", err)
+	}
+	orgAdmin, err := st.CreateUser(ctx, orgA.ID, "org-admin@example.com", "hash", "active")
+	if err != nil {
+		t.Fatalf("failed to create org admin: %v", err)
+	}
+	if err := st.SetUserGlobalRoles(ctx, orgAdmin.ID, []string{"user"}); err != nil {
+		t.Fatalf("failed to set global roles: %v", err)
+	}
+	if err := st.SetUserOrganizationRoles(ctx, orgAdmin.ID, []string{"org_admin"}); err != nil {
+		t.Fatalf("failed to set org roles: %v", err)
+	}
+	if _, err := st.IngestActivityEvents(ctx, orgA.ID, orgAdmin.ID, []store.ActivityEventInput{{
+		EventID:    "evt-org-query",
+		EventKind:  "report",
+		SourceMode: "cloud_backend",
+		Provider:   "demeter_sante",
+		Status:     "success",
+		OccurredAt: time.Now().UTC(),
+	}}); err != nil {
+		t.Fatalf("failed to ingest activity: %v", err)
+	}
+
+	token := issueAdminActivityToken(t, "test-jwt-secret", orgAdmin)
+
+	resp := performJSONRequest(t, app, http.MethodGet, "/api/v1/admin/activity/summary?organizationId="+orgA.ID, token, "")
+	if resp.StatusCode != fiber.StatusOK {
+		t.Fatalf("expected 200 for scoped organization query, got %d", resp.StatusCode)
+	}
+
+	forbidden := performJSONRequest(t, app, http.MethodGet, "/api/v1/admin/activity/summary?organizationId="+orgB.ID, token, "")
+	if forbidden.StatusCode != fiber.StatusForbidden {
+		t.Fatalf("expected 403 for cross-org organization query, got %d", forbidden.StatusCode)
+	}
+
+	badRange := performJSONRequest(t, app, http.MethodGet, "/api/v1/admin/activity/summary?from=2026-03-10&to=2026-03-01", token, "")
+	if badRange.StatusCode != fiber.StatusBadRequest {
+		t.Fatalf("expected 400 for invalid activity range, got %d", badRange.StatusCode)
+	}
+}
+
+func TestValidateActivityEvent(t *testing.T) {
+	tests := []struct {
+		name       string
+		payload    activityEventPayload
+		wantReason string
+	}{
+		{
+			name:       "missing event id",
+			payload:    activityEventPayload{EventKind: "transcription", SourceMode: "local", Provider: "local_upload", Status: "success"},
+			wantReason: "event_id_required",
+		},
+		{
+			name:       "invalid event kind",
+			payload:    activityEventPayload{EventID: "evt-1", EventKind: "other", SourceMode: "local", Provider: "local_upload", Status: "success"},
+			wantReason: "invalid_event_kind",
+		},
+		{
+			name:       "invalid source mode",
+			payload:    activityEventPayload{EventID: "evt-1", EventKind: "transcription", SourceMode: "desktop", Provider: "local_upload", Status: "success"},
+			wantReason: "invalid_source_mode",
+		},
+		{
+			name:       "invalid status",
+			payload:    activityEventPayload{EventID: "evt-1", EventKind: "transcription", SourceMode: "local", Provider: "local_upload", Status: "pending"},
+			wantReason: "invalid_status",
+		},
+		{
+			name:       "invalid provider",
+			payload:    activityEventPayload{EventID: "evt-1", EventKind: "report", SourceMode: "local", Provider: "mistral", Status: "success"},
+			wantReason: "invalid_provider_for_mode",
+		},
+		{
+			name:       "invalid occurred at",
+			payload:    activityEventPayload{EventID: "evt-1", EventKind: "transcription", SourceMode: "local", Provider: "local_upload", Status: "success", OccurredAt: "not-a-date"},
+			wantReason: "invalid_occurred_at",
+		},
+		{
+			name:       "invalid meta json",
+			payload:    activityEventPayload{EventID: "evt-1", EventKind: "transcription", SourceMode: "local", Provider: "local_upload", Status: "success", Meta: json.RawMessage(`{"broken":`)},
+			wantReason: "invalid_meta_json",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, reason := validateActivityEvent(tc.payload)
+			if reason != tc.wantReason {
+				t.Fatalf("expected reason %q, got %q", tc.wantReason, reason)
+			}
+		})
+	}
+
+	t.Run("valid event normalizes fields and defaults occurred at", func(t *testing.T) {
+		input, reason := validateActivityEvent(activityEventPayload{
+			EventID:    " evt-ok ",
+			EventKind:  " Transcription ",
+			SourceMode: " Local ",
+			Provider:   " Local_Upload ",
+			Status:     " Success ",
+		})
+		if reason != "" {
+			t.Fatalf("expected no validation error, got %q", reason)
+		}
+		if input.EventID != "evt-ok" || input.EventKind != "transcription" || input.SourceMode != "local" || input.Provider != "local_upload" || input.Status != "success" {
+			t.Fatalf("unexpected normalized input: %+v", input)
+		}
+		if input.OccurredAt.IsZero() {
+			t.Fatal("expected occurred at to default to now")
+		}
+	})
+}
+
+func TestResolveActivityRange(t *testing.T) {
+	t.Run("defaults from last 30 days", func(t *testing.T) {
+		fromDay, toDay, err := resolveActivityRange("", "")
+		if err != nil {
+			t.Fatalf("resolveActivityRange returned error: %v", err)
+		}
+		toDate, err := time.Parse(activityDayLayout, toDay)
+		if err != nil {
+			t.Fatalf("failed to parse to date: %v", err)
+		}
+		fromDate, err := time.Parse(activityDayLayout, fromDay)
+		if err != nil {
+			t.Fatalf("failed to parse from date: %v", err)
+		}
+		if toDate.Sub(fromDate) != 29*24*time.Hour {
+			t.Fatalf("expected 29 day default range, got from=%s to=%s", fromDay, toDay)
+		}
+	})
+
+	t.Run("rejects invalid formats and inverted ranges", func(t *testing.T) {
+		if _, _, err := resolveActivityRange("2026/03/01", "2026-03-10"); err == nil {
+			t.Fatal("expected invalid from format to fail")
+		}
+		if _, _, err := resolveActivityRange("2026-03-01", "2026/03/10"); err == nil {
+			t.Fatal("expected invalid to format to fail")
+		}
+		if _, _, err := resolveActivityRange("2026-03-10", "2026-03-01"); err == nil {
+			t.Fatal("expected inverted range to fail")
+		}
+	})
+}
+
 func setupActivityTestApp(t *testing.T) (*App, *fiber.App, *store.Store) {
 	t.Helper()
 
-	ctx := context.Background()
-	dbPath := filepath.Join(t.TempDir(), "activity.sqlite")
-	st, err := store.Open(ctx, dbPath)
-	if err != nil {
-		t.Fatalf("failed to open sqlite store: %v", err)
-	}
-	t.Cleanup(func() {
-		_ = st.Close()
-	})
-
-	appCtx := &App{
-		Config: config.Config{JWTSecret: "test-jwt-secret"},
-		Store:  st,
-	}
+	appCtx, st := newAPIAppContext(t, "activity.sqlite", config.Config{JWTSecret: "test-jwt-secret"})
 	app := fiber.New()
 	apiV1 := app.Group("/api/v1")
 	appCtx.RegisterActivityRoutes(apiV1)
 	appCtx.RegisterAdminRoutes(apiV1)
 	return appCtx, app, st
-}
-
-func issueActivityToken(t *testing.T, secret string, user *store.User) string {
-	t.Helper()
-	token, _, err := auth.NewAccessToken(secret, time.Hour, auth.Claims{
-		UserID: user.ID,
-		OrgID:  user.OrganizationID,
-		Email:  user.Email,
-	})
-	if err != nil {
-		t.Fatalf("failed to issue token: %v", err)
-	}
-	return token
-}
-
-func issueAdminActivityToken(t *testing.T, secret string, user *store.User) string {
-	t.Helper()
-	token, _, err := auth.NewAccessToken(secret, time.Hour, auth.Claims{
-		UserID: user.ID,
-		OrgID:  user.OrganizationID,
-		Email:  user.Email,
-		RegisteredClaims: jwt.RegisteredClaims{
-			Audience: jwt.ClaimStrings{auth.SessionTypeAdmin.String()},
-		},
-	})
-	if err != nil {
-		t.Fatalf("failed to issue admin token: %v", err)
-	}
-	return token
-}
-
-type testResponse struct {
-	StatusCode int
-	Body       []byte
-}
-
-func performJSONRequest(t *testing.T, app *fiber.App, method, path, token, body string) testResponse {
-	t.Helper()
-
-	req := httptest.NewRequest(method, path, strings.NewReader(body))
-	if body != "" {
-		req.Header.Set(fiber.HeaderContentType, fiber.MIMEApplicationJSON)
-	}
-	if token != "" {
-		req.Header.Set(fiber.HeaderAuthorization, "Bearer "+token)
-	}
-	resp, err := app.Test(req, 5_000)
-	if err != nil {
-		t.Fatalf("request failed: %v", err)
-	}
-	defer func() {
-		_ = resp.Body.Close()
-	}()
-	raw, err := io.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatalf("failed to read response body: %v", err)
-	}
-	return testResponse{StatusCode: resp.StatusCode, Body: raw}
 }

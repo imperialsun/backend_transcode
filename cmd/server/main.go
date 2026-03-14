@@ -43,23 +43,44 @@ func main() {
 		log.Fatalf("failed to bootstrap catalog/admin: %v", err)
 	}
 
+	app := buildApp(cfg, st, mistral.NewClient(
+		cfg.MistralAPIBaseURL,
+		cfg.MistralAPIKey,
+		cfg.MistralRequestTimeout,
+		cfg.MistralAudioTimeout,
+	), mailer.NewSMTPMailer(mailer.Config{
+		Host:      cfg.SMTPHost,
+		Port:      cfg.SMTPPort,
+		Username:  cfg.SMTPUsername,
+		Password:  cfg.SMTPPassword,
+		FromEmail: cfg.SMTPFromEmail,
+		FromName:  cfg.SMTPFromName,
+	}))
+
+	go func() {
+		if err := app.Listen(":" + cfg.Port); err != nil {
+			log.Printf("fiber listen stopped: %v", err)
+		}
+	}()
+	log.Printf("backend started on :%s", cfg.Port)
+
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	<-sigCh
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := app.ShutdownWithContext(shutdownCtx); err != nil {
+		log.Printf("graceful shutdown failed: %v", err)
+	}
+}
+
+func buildApp(cfg config.Config, st *store.Store, mistralClient *mistral.Client, appMailer mailer.Sender) *fiber.App {
 	appCtx := &api.App{
 		Config: cfg,
 		Store:  st,
-		MistralClient: mistral.NewClient(
-			cfg.MistralAPIBaseURL,
-			cfg.MistralAPIKey,
-			cfg.MistralRequestTimeout,
-			cfg.MistralAudioTimeout,
-		),
-		Mailer: mailer.NewSMTPMailer(mailer.Config{
-			Host:      cfg.SMTPHost,
-			Port:      cfg.SMTPPort,
-			Username:  cfg.SMTPUsername,
-			Password:  cfg.SMTPPassword,
-			FromEmail: cfg.SMTPFromEmail,
-			FromName:  cfg.SMTPFromName,
-		}),
+		MistralClient: mistralClient,
+		Mailer:        appMailer,
 	}
 
 	app := fiber.New(fiber.Config{
@@ -86,23 +107,7 @@ func main() {
 	appCtx.RegisterActivityRoutes(apiV1)
 	appCtx.RegisterDemeterRoutes(apiV1)
 	appCtx.RegisterAdminRoutes(apiV1)
-
-	go func() {
-		if err := app.Listen(":" + cfg.Port); err != nil {
-			log.Printf("fiber listen stopped: %v", err)
-		}
-	}()
-	log.Printf("backend started on :%s", cfg.Port)
-
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-	<-sigCh
-
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if err := app.ShutdownWithContext(shutdownCtx); err != nil {
-		log.Printf("graceful shutdown failed: %v", err)
-	}
+	return app
 }
 
 func joinOrigins(origins []string) string {

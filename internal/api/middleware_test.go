@@ -6,15 +6,12 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"testing"
-	"time"
 
 	"demeter-backend/internal/auth"
 	"demeter-backend/internal/config"
 	"demeter-backend/internal/store"
 	"github.com/gofiber/fiber/v2"
-	"github.com/golang-jwt/jwt/v5"
 )
 
 type protectedPayload struct {
@@ -249,32 +246,17 @@ func TestAdminAuthRequired_RejectsAppAudience(t *testing.T) {
 func setupAuthMiddlewareTest(t *testing.T) (*App, *store.Store, *store.Organization, *store.User, string) {
 	t.Helper()
 
-	ctx := context.Background()
-	dbPath := filepath.Join(t.TempDir(), "test.sqlite")
-	st, err := store.Open(ctx, dbPath)
-	if err != nil {
-		t.Fatalf("failed to open sqlite store: %v", err)
-	}
-	t.Cleanup(func() {
-		_ = st.Close()
-	})
-
-	org, err := st.CreateOrganization(ctx, "Org Test", "org-test", "active")
+	appCtx, st := newAPIAppContext(t, "test.sqlite", config.Config{JWTSecret: "test-jwt-secret"})
+	org, err := st.CreateOrganization(context.Background(), "Org Test", "org-test", "active")
 	if err != nil {
 		t.Fatalf("failed to create organization: %v", err)
 	}
 
-	user, err := st.CreateUser(ctx, org.ID, "user@example.com", "unused", "active")
+	user, err := st.CreateUser(context.Background(), org.ID, "user@example.com", "unused", "active")
 	if err != nil {
 		t.Fatalf("failed to create user: %v", err)
 	}
-
-	secret := "test-jwt-secret"
-	appCtx := &App{
-		Config: config.Config{JWTSecret: secret},
-		Store:  st,
-	}
-	return appCtx, st, org, user, secret
+	return appCtx, st, org, user, appCtx.Config.JWTSecret
 }
 
 func newProtectedTestApp(appCtx *App, withPermissionCheck bool) *fiber.App {
@@ -320,23 +302,6 @@ func performProtectedRequest(t *testing.T, app *fiber.App, token string) *protec
 		StatusCode: resp.StatusCode,
 		Body:       body,
 	}
-}
-
-func issueAccessToken(t *testing.T, secret string, claims auth.Claims) string {
-	t.Helper()
-	return issueAccessTokenForSession(t, secret, auth.SessionTypeApp, claims)
-}
-
-func issueAccessTokenForSession(t *testing.T, secret string, sessionType auth.SessionType, claims auth.Claims) string {
-	t.Helper()
-	claims.RegisteredClaims = jwt.RegisteredClaims{
-		Audience: jwt.ClaimStrings{sessionType.String()},
-	}
-	token, _, err := auth.NewAccessToken(secret, time.Hour, claims)
-	if err != nil {
-		t.Fatalf("failed to issue access token: %v", err)
-	}
-	return token
 }
 
 func hasCode(values []string, target string) bool {

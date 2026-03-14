@@ -1,5 +1,11 @@
 # Demeter Backend
 
+[![CI](https://github.com/imperialsun/backend_transcode/actions/workflows/ci.yml/badge.svg)](https://github.com/imperialsun/backend_transcode/actions/workflows/ci.yml)
+[![Prod Smoke](https://github.com/imperialsun/backend_transcode/actions/workflows/prod-smoke.yml/badge.svg)](https://github.com/imperialsun/backend_transcode/actions/workflows/prod-smoke.yml)
+[![CodeQL](https://github.com/imperialsun/backend_transcode/actions/workflows/codeql.yml/badge.svg)](https://github.com/imperialsun/backend_transcode/actions/workflows/codeql.yml)
+[![Trivy](https://github.com/imperialsun/backend_transcode/actions/workflows/trivy.yml/badge.svg)](https://github.com/imperialsun/backend_transcode/actions/workflows/trivy.yml)
+[![Codecov](https://codecov.io/gh/imperialsun/backend_transcode/branch/main/graph/badge.svg)](https://codecov.io/gh/imperialsun/backend_transcode)
+
 Backend `Go + Fiber + SQLite` for the Transcode frontend backend mode and admin panel.
 
 ## Main capabilities

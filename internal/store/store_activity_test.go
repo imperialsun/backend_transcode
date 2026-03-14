@@ -144,3 +144,93 @@ func TestIngestActivityEventsAndSummary(t *testing.T) {
 		t.Fatalf("expected 2 users in summary, got %d", len(summary.ByUser))
 	}
 }
+
+func TestOrganizationActivitySummary_TracksMultipleDaysAndEmptyRanges(t *testing.T) {
+	ctx := context.Background()
+	st := openTestStore(t, "activity-summary.sqlite")
+
+	org := createOrg(t, st, "Summary Org", "summary-org", "active")
+	user := createUserWithPassword(t, st, org.ID, "summary@example.com", "ChangeMe123!", "active")
+
+	dayOne := time.Date(2026, time.March, 10, 8, 0, 0, 0, time.UTC)
+	dayTwo := time.Date(2026, time.March, 11, 8, 0, 0, 0, time.UTC)
+	_, err := st.IngestActivityEvents(ctx, org.ID, user.ID, []ActivityEventInput{
+		{EventID: "sum-1", EventKind: "transcription", SourceMode: "local", Provider: "local_upload", Status: "success", OccurredAt: dayOne},
+		{EventID: "sum-2", EventKind: "report", SourceMode: "cloud_direct", Provider: "mistral", Status: "success", OccurredAt: dayTwo},
+	})
+	if err != nil {
+		t.Fatalf("IngestActivityEvents failed: %v", err)
+	}
+
+	summary, err := st.GetOrganizationActivitySummary(ctx, org.ID, "2026-03-10", "2026-03-11")
+	if err != nil {
+		t.Fatalf("GetOrganizationActivitySummary failed: %v", err)
+	}
+	if len(summary.ByDay) != 2 {
+		t.Fatalf("expected 2 by-day items, got %+v", summary.ByDay)
+	}
+	if summary.ByDay[0].Day != "2026-03-10" || summary.ByDay[1].Day != "2026-03-11" {
+		t.Fatalf("unexpected day ordering: %+v", summary.ByDay)
+	}
+	if len(summary.ByUser) != 1 || summary.ByUser[0].UserID != user.ID {
+		t.Fatalf("unexpected by-user summary: %+v", summary.ByUser)
+	}
+
+	emptySummary, err := st.GetOrganizationActivitySummary(ctx, org.ID, "2026-03-01", "2026-03-02")
+	if err != nil {
+		t.Fatalf("GetOrganizationActivitySummary for empty range failed: %v", err)
+	}
+	if emptySummary.Totals.Transcriptions != 0 || emptySummary.Totals.Reports != 0 {
+		t.Fatalf("expected empty totals, got %+v", emptySummary.Totals)
+	}
+	if len(emptySummary.ByDay) != 0 || len(emptySummary.ByUser) != 0 {
+		t.Fatalf("expected empty breakdowns, got %+v", emptySummary)
+	}
+}
+
+func TestOrganizationActivitySummary_ExcludesOtherOrganizationsAndOrdersUsers(t *testing.T) {
+	ctx := context.Background()
+	st := openTestStore(t, "activity-order.sqlite")
+
+	orgA := createOrg(t, st, "Org A", "org-a", "active")
+	orgB := createOrg(t, st, "Org B", "org-b", "active")
+	alpha := createUserWithPassword(t, st, orgA.ID, "alpha@example.com", "ChangeMe123!", "active")
+	beta := createUserWithPassword(t, st, orgA.ID, "beta@example.com", "ChangeMe123!", "active")
+	other := createUserWithPassword(t, st, orgB.ID, "other@example.com", "ChangeMe123!", "active")
+
+	day := time.Date(2026, time.March, 12, 9, 0, 0, 0, time.UTC)
+	_, err := st.IngestActivityEvents(ctx, orgA.ID, alpha.ID, []ActivityEventInput{
+		{EventID: "ord-a-1", EventKind: "transcription", SourceMode: "local", Provider: "local_upload", Status: "success", OccurredAt: day},
+		{EventID: "ord-a-2", EventKind: "report", SourceMode: "local", Provider: "local", Status: "success", OccurredAt: day},
+	})
+	if err != nil {
+		t.Fatalf("IngestActivityEvents failed: %v", err)
+	}
+	_, err = st.IngestActivityEvents(ctx, orgA.ID, beta.ID, []ActivityEventInput{
+		{EventID: "ord-b-1", EventKind: "transcription", SourceMode: "cloud_direct", Provider: "whisper", Status: "success", OccurredAt: day},
+		{EventID: "ord-b-2", EventKind: "report", SourceMode: "cloud_direct", Provider: "mistral", Status: "success", OccurredAt: day},
+	})
+	if err != nil {
+		t.Fatalf("IngestActivityEvents failed: %v", err)
+	}
+	_, err = st.IngestActivityEvents(ctx, orgB.ID, other.ID, []ActivityEventInput{{
+		EventID: "ord-o-1", EventKind: "report", SourceMode: "cloud_backend", Provider: "demeter_sante", Status: "success", OccurredAt: day,
+	}})
+	if err != nil {
+		t.Fatalf("IngestActivityEvents failed: %v", err)
+	}
+
+	summary, err := st.GetOrganizationActivitySummary(ctx, orgA.ID, "2026-03-12", "2026-03-12")
+	if err != nil {
+		t.Fatalf("GetOrganizationActivitySummary failed: %v", err)
+	}
+	if summary.Totals.Transcriptions != 2 || summary.Totals.Reports != 2 {
+		t.Fatalf("unexpected org summary totals: %+v", summary.Totals)
+	}
+	if len(summary.ByUser) != 2 {
+		t.Fatalf("expected 2 org users in summary, got %+v", summary.ByUser)
+	}
+	if summary.ByUser[0].Email != "alpha@example.com" || summary.ByUser[1].Email != "beta@example.com" {
+		t.Fatalf("expected by-user ordering by email on equal totals, got %+v", summary.ByUser)
+	}
+}

@@ -1,12 +1,10 @@
 package api
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
-	"net/http/httptest"
 	"net/url"
 	"path/filepath"
 	"testing"
@@ -126,6 +124,36 @@ func TestForgotPassword_NonEnumeratingForExistingAbsentAndInactiveUsers(t *testi
 	}
 	if fixture.mailer.sent[0].ResetURL[:26] != "https://admin.demeter.test" {
 		t.Fatalf("expected admin public url, got %q", fixture.mailer.sent[0].ResetURL)
+	}
+}
+
+func TestForgotPassword_RejectsInvalidPayloadAndMissingEmail(t *testing.T) {
+	fixture := setupPasswordResetRoutesTest(t)
+
+	invalidPayload := performJSONRequestWithHeaders(
+		t,
+		fixture.app,
+		http.MethodPost,
+		"/api/v1/auth/forgot-password",
+		nil,
+		nil,
+		map[string]string{fiber.HeaderContentType: fiber.MIMEApplicationJSON},
+	)
+	if invalidPayload.StatusCode != fiber.StatusBadRequest {
+		t.Fatalf("expected 400 for invalid forgot-password payload, got %d", invalidPayload.StatusCode)
+	}
+
+	missingEmail := performPasswordResetRequest(
+		t,
+		fixture.app,
+		http.MethodPost,
+		"/api/v1/auth/forgot-password",
+		map[string]string{"email": "   "},
+		nil,
+		nil,
+	)
+	if missingEmail.StatusCode != fiber.StatusBadRequest {
+		t.Fatalf("expected 400 for missing email, got %d", missingEmail.StatusCode)
 	}
 }
 
@@ -395,6 +423,81 @@ func TestAdminSendUserPasswordResetEmail_EnforcesScopeAndSurfacesMailerErrors(t 
 	}
 }
 
+func TestAdminSendUserPasswordResetEmail_ReturnsServiceUnavailableWhenResetUnavailable(t *testing.T) {
+	fixture := setupPasswordResetRoutesTest(t)
+	fixture.mailer.readyErr = errors.New("not ready")
+
+	loginResp := performLoginRequest(t, fixture.app, "/api/v1/admin/auth/login", map[string]string{
+		"email":    fixture.adminUser.Email,
+		"password": "ChangeMe123!",
+	})
+	var sessionPayload AuthResponse
+	if err := json.NewDecoder(loginResp.Body).Decode(&sessionPayload); err != nil {
+		t.Fatalf("failed to decode admin login payload: %v", err)
+	}
+
+	resp := performPasswordResetRequest(
+		t,
+		fixture.app,
+		http.MethodPost,
+		"/api/v1/admin/users/"+fixture.activeUser.ID+"/password-reset-email",
+		nil,
+		[]*http.Cookie{
+			findCookie(t, loginResp, auth.AdminAccessCookieName),
+			findCookie(t, loginResp, auth.AdminRefreshCookieName),
+		},
+		map[string]string{auth.AdminCSRFHeaderName: sessionPayload.CsrfToken},
+	)
+	if resp.StatusCode != fiber.StatusServiceUnavailable {
+		t.Fatalf("expected 503 when password reset is unavailable, got %d", resp.StatusCode)
+	}
+}
+
+func TestAdminSendUserPasswordResetEmail_RejectsInactiveAndMissingUsers(t *testing.T) {
+	fixture := setupPasswordResetRoutesTest(t)
+
+	loginResp := performLoginRequest(t, fixture.app, "/api/v1/admin/auth/login", map[string]string{
+		"email":    fixture.adminUser.Email,
+		"password": "ChangeMe123!",
+	})
+	var sessionPayload AuthResponse
+	if err := json.NewDecoder(loginResp.Body).Decode(&sessionPayload); err != nil {
+		t.Fatalf("failed to decode admin login payload: %v", err)
+	}
+
+	cookies := []*http.Cookie{
+		findCookie(t, loginResp, auth.AdminAccessCookieName),
+		findCookie(t, loginResp, auth.AdminRefreshCookieName),
+	}
+	headers := map[string]string{auth.AdminCSRFHeaderName: sessionPayload.CsrfToken}
+
+	inactiveResp := performPasswordResetRequest(
+		t,
+		fixture.app,
+		http.MethodPost,
+		"/api/v1/admin/users/"+fixture.inactiveUser.ID+"/password-reset-email",
+		nil,
+		cookies,
+		headers,
+	)
+	if inactiveResp.StatusCode != fiber.StatusBadRequest {
+		t.Fatalf("expected 400 for inactive target user, got %d", inactiveResp.StatusCode)
+	}
+
+	missingResp := performPasswordResetRequest(
+		t,
+		fixture.app,
+		http.MethodPost,
+		"/api/v1/admin/users/missing-user/password-reset-email",
+		nil,
+		cookies,
+		headers,
+	)
+	if missingResp.StatusCode != fiber.StatusNotFound {
+		t.Fatalf("expected 404 for missing target user, got %d", missingResp.StatusCode)
+	}
+}
+
 func setupPasswordResetRoutesTest(t *testing.T) *passwordResetFixture {
 	t.Helper()
 
@@ -480,45 +583,4 @@ func setupPasswordResetRoutesTest(t *testing.T) *passwordResetFixture {
 		inactiveUser: inactiveUser,
 		otherUser:    otherUser,
 	}
-}
-
-func performPasswordResetRequest(
-	t *testing.T,
-	app *fiber.App,
-	method string,
-	path string,
-	payload any,
-	cookies []*http.Cookie,
-	headers map[string]string,
-) *http.Response {
-	t.Helper()
-
-	body := bytes.NewReader(nil)
-	if payload != nil {
-		raw, err := json.Marshal(payload)
-		if err != nil {
-			t.Fatalf("failed to marshal payload: %v", err)
-		}
-		body = bytes.NewReader(raw)
-	}
-
-	req := httptest.NewRequest(method, path, body)
-	if payload != nil {
-		req.Header.Set(fiber.HeaderContentType, fiber.MIMEApplicationJSON)
-	}
-	for _, cookie := range cookies {
-		req.AddCookie(cookie)
-	}
-	for key, value := range headers {
-		req.Header.Set(key, value)
-	}
-
-	resp, err := app.Test(req, 5_000)
-	if err != nil {
-		t.Fatalf("request failed: %v", err)
-	}
-	t.Cleanup(func() {
-		_ = resp.Body.Close()
-	})
-	return resp
 }
