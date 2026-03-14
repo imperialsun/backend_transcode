@@ -779,7 +779,7 @@ func (s *Store) SetUserGlobalRoles(ctx context.Context, userID string, roleCodes
 		return err
 	}
 	for _, code := range uniqueNormalizedCodes(roleCodes) {
-		roleID, err := s.lookupRoleID(ctx, tx, "global_roles", code)
+		roleID, err := s.lookupGlobalRoleID(ctx, tx, code)
 		if err != nil {
 			return err
 		}
@@ -803,7 +803,7 @@ func (s *Store) SetUserOrganizationRoles(ctx context.Context, userID string, rol
 		return err
 	}
 	for _, code := range uniqueNormalizedCodes(roleCodes) {
-		roleID, err := s.lookupRoleID(ctx, tx, "organization_roles", code)
+		roleID, err := s.lookupOrganizationRoleID(ctx, tx, code)
 		if err != nil {
 			return err
 		}
@@ -855,7 +855,7 @@ func (s *Store) SetGlobalRolePermissionsByCode(ctx context.Context, roleCode str
 		return err
 	}
 	defer rollbackTx(tx)
-	roleID, err := s.lookupRoleID(ctx, tx, "global_roles", roleCode)
+	roleID, err := s.lookupGlobalRoleID(ctx, tx, roleCode)
 	if err != nil {
 		return err
 	}
@@ -886,7 +886,7 @@ func (s *Store) SetOrganizationRolePermissionsByCode(ctx context.Context, roleCo
 		return err
 	}
 	defer rollbackTx(tx)
-	roleID, err := s.lookupRoleID(ctx, tx, "organization_roles", roleCode)
+	roleID, err := s.lookupOrganizationRoleID(ctx, tx, roleCode)
 	if err != nil {
 		return err
 	}
@@ -1383,14 +1383,21 @@ func (s *Store) scanActivityBreakdown(
 	return rows.Err()
 }
 
-func (s *Store) lookupRoleID(ctx context.Context, tx *sql.Tx, table, code string) (string, error) {
-	query := fmt.Sprintf(`SELECT id FROM %s WHERE code = ?`, table)
+func (s *Store) lookupRoleID(ctx context.Context, tx *sql.Tx, query string, code string) (string, error) {
 	var id string
 	err := tx.QueryRowContext(ctx, query, code).Scan(&id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", nil
 	}
 	return id, err
+}
+
+func (s *Store) lookupGlobalRoleID(ctx context.Context, tx *sql.Tx, code string) (string, error) {
+	return s.lookupRoleID(ctx, tx, `SELECT id FROM global_roles WHERE code = ?`, code)
+}
+
+func (s *Store) lookupOrganizationRoleID(ctx context.Context, tx *sql.Tx, code string) (string, error) {
+	return s.lookupRoleID(ctx, tx, `SELECT id FROM organization_roles WHERE code = ?`, code)
 }
 
 func (s *Store) lookupPermissionID(ctx context.Context, tx *sql.Tx, code string) (string, error) {

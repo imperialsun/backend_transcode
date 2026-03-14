@@ -9,6 +9,12 @@ Ce repo implemente une auth serveur complete:
 - refresh tokens aleatoires hashes en base,
 - verification live user / org / roles / permissions sur chaque requete protegee.
 
+Acces SQLite:
+
+- les lectures / ecritures SQL applicatives utilisent des placeholders `?`,
+- les rares helpers internes dynamiques restants ont ete durcis avec des requetes de roles fixes et une whitelist stricte pour `PRAGMA table_info(...)`,
+- aucun point d injection SQL exploitable n a ete identifie depuis les entrees HTTP actuelles.
+
 ## Sessions et cookies
 
 - cookies `HttpOnly`,

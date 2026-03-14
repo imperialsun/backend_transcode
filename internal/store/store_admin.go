@@ -5,14 +5,30 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
 )
 
+var errUnsupportedTableInfoTarget = errors.New("unsupported sqlite table info target")
+
+func resolveTableInfoQuery(tableName string) (string, error) {
+	switch strings.TrimSpace(tableName) {
+	case "refresh_sessions":
+		return `PRAGMA table_info(refresh_sessions)`, nil
+	default:
+		return "", fmt.Errorf("%w: %s", errUnsupportedTableInfoTarget, strings.TrimSpace(tableName))
+	}
+}
+
 func ensureColumnExists(ctx context.Context, tx *sql.Tx, tableName string, columnName string, alterStmt string) error {
-	rows, err := tx.QueryContext(ctx, "PRAGMA table_info("+tableName+")")
+	query, err := resolveTableInfoQuery(tableName)
+	if err != nil {
+		return err
+	}
+	rows, err := tx.QueryContext(ctx, query)
 	if err != nil {
 		return err
 	}
@@ -274,7 +290,11 @@ func nullableString(value string) any {
 }
 
 func hasColumn(ctx context.Context, db *sql.DB, tableName string, columnName string) (bool, error) {
-	rows, err := db.QueryContext(ctx, "PRAGMA table_info("+tableName+")")
+	query, err := resolveTableInfoQuery(tableName)
+	if err != nil {
+		return false, err
+	}
+	rows, err := db.QueryContext(ctx, query)
 	if err != nil {
 		return false, err
 	}

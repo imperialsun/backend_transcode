@@ -9,6 +9,12 @@ This repo implements full server-side authentication:
 - random refresh tokens hashed in the database,
 - live user / org / role / permission verification on every protected request.
 
+SQLite access:
+
+- application SQL reads and writes use `?` placeholders,
+- the remaining internal dynamic helpers are hardened through fixed role lookup queries and a strict whitelist for `PRAGMA table_info(...)`,
+- no SQL injection path exploitable from the current HTTP inputs was identified in this audit.
+
 ## Sessions and cookies
 
 - `HttpOnly` cookies,
