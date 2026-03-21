@@ -106,6 +106,7 @@ func buildApp(cfg config.Config, st *store.Store, mistralClient *mistral.Client,
 	appCtx.RegisterSettingsRoutes(apiV1)
 	appCtx.RegisterActivityRoutes(apiV1)
 	appCtx.RegisterDemeterRoutes(apiV1)
+	appCtx.RegisterMeetingRoutes(apiV1)
 	appCtx.RegisterAdminRoutes(apiV1)
 	return app
 }

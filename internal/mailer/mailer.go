@@ -3,7 +3,9 @@ package mailer
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/tls"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"html"
@@ -15,11 +17,14 @@ import (
 	"demeter-backend/internal/auth"
 )
 
-var ErrUnavailable = errors.New("password reset email unavailable")
+var ErrUnavailable = errors.New("mailer unavailable")
+
+const DocxContentType = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 
 type Sender interface {
 	Ready() error
 	SendPasswordResetEmail(ctx context.Context, input PasswordResetEmail) error
+	SendMeetingSummaryEmail(ctx context.Context, input MeetingSummaryEmail) error
 }
 
 type Config struct {
@@ -36,6 +41,20 @@ type PasswordResetEmail struct {
 	ResetURL    string
 	ExpiresAt   time.Time
 	SessionType auth.SessionType
+}
+
+type MailAttachment struct {
+	Filename    string
+	ContentType string
+	Data        []byte
+}
+
+type MeetingSummaryEmail struct {
+	ToEmail     string
+	Subject     string
+	TextBody    string
+	HTMLBody    string
+	Attachments []MailAttachment
 }
 
 type SMTPMailer struct {
@@ -81,6 +100,23 @@ func (m *SMTPMailer) SendPasswordResetEmail(ctx context.Context, input PasswordR
 		return err
 	}
 
+	return m.sendMessage(ctx, input.ToEmail, message)
+}
+
+func (m *SMTPMailer) SendMeetingSummaryEmail(ctx context.Context, input MeetingSummaryEmail) error {
+	if err := m.Ready(); err != nil {
+		return err
+	}
+
+	message, err := m.buildMeetingSummaryMessage(input)
+	if err != nil {
+		return err
+	}
+
+	return m.sendMessage(ctx, input.ToEmail, message)
+}
+
+func (m *SMTPMailer) sendMessage(ctx context.Context, toEmail string, message []byte) error {
 	address := net.JoinHostPort(m.host, fmt.Sprintf("%d", m.port))
 	dialer := &net.Dialer{Timeout: 10 * time.Second}
 	conn, err := dialer.DialContext(ctx, "tcp", address)
@@ -115,7 +151,7 @@ func (m *SMTPMailer) SendPasswordResetEmail(ctx context.Context, input PasswordR
 	if err := client.Mail(m.fromEmail); err != nil {
 		return err
 	}
-	if err := client.Rcpt(strings.TrimSpace(input.ToEmail)); err != nil {
+	if err := client.Rcpt(strings.TrimSpace(toEmail)); err != nil {
 		return err
 	}
 
@@ -165,6 +201,74 @@ func (m *SMTPMailer) buildPasswordResetMessage(input PasswordResetEmail) ([]byte
 	return message.Bytes(), nil
 }
 
+func (m *SMTPMailer) buildMeetingSummaryMessage(input MeetingSummaryEmail) ([]byte, error) {
+	to := strings.TrimSpace(input.ToEmail)
+	if to == "" {
+		return nil, ErrUnavailable
+	}
+
+	subject := sanitizeHeaderValue(strings.TrimSpace(input.Subject))
+	if subject == "" {
+		subject = "Compte rendu de reunion Demeter Speech"
+	}
+	textBody := strings.TrimSpace(input.TextBody)
+	htmlBody := strings.TrimSpace(input.HTMLBody)
+	if textBody == "" && htmlBody == "" {
+		return nil, ErrUnavailable
+	}
+
+	mixedBoundary := newBoundary("demeter-meeting")
+	alternativeBoundary := newBoundary("demeter-alt")
+	from := formatAddress(m.fromName, m.fromEmail)
+
+	var message bytes.Buffer
+	message.WriteString("From: " + from + "\r\n")
+	message.WriteString("To: " + to + "\r\n")
+	message.WriteString("Subject: " + subject + "\r\n")
+	message.WriteString("MIME-Version: 1.0\r\n")
+	message.WriteString("Content-Type: multipart/mixed; boundary=" + mixedBoundary + "\r\n")
+	message.WriteString("\r\n")
+
+	message.WriteString("--" + mixedBoundary + "\r\n")
+	if htmlBody != "" {
+		message.WriteString("Content-Type: multipart/alternative; boundary=" + alternativeBoundary + "\r\n\r\n")
+		message.WriteString("--" + alternativeBoundary + "\r\n")
+		message.WriteString("Content-Type: text/plain; charset=UTF-8\r\n")
+		message.WriteString("Content-Transfer-Encoding: 8bit\r\n\r\n")
+		message.WriteString(textBody)
+		message.WriteString("\r\n--" + alternativeBoundary + "\r\n")
+		message.WriteString("Content-Type: text/html; charset=UTF-8\r\n")
+		message.WriteString("Content-Transfer-Encoding: 8bit\r\n\r\n")
+		message.WriteString(htmlBody)
+		message.WriteString("\r\n--" + alternativeBoundary + "--\r\n")
+	} else {
+		message.WriteString("Content-Type: text/plain; charset=UTF-8\r\n")
+		message.WriteString("Content-Transfer-Encoding: 8bit\r\n\r\n")
+		message.WriteString(textBody)
+		message.WriteString("\r\n")
+	}
+
+	for _, attachment := range input.Attachments {
+		filename := sanitizeHeaderValue(strings.TrimSpace(attachment.Filename))
+		if filename == "" || len(attachment.Data) == 0 {
+			continue
+		}
+		contentType := strings.TrimSpace(attachment.ContentType)
+		if contentType == "" {
+			contentType = "application/octet-stream"
+		}
+		message.WriteString("--" + mixedBoundary + "\r\n")
+		message.WriteString("Content-Type: " + contentType + `; name="` + filename + `"` + "\r\n")
+		message.WriteString("Content-Disposition: attachment; filename=\"" + filename + "\"\r\n")
+		message.WriteString("Content-Transfer-Encoding: base64\r\n\r\n")
+		message.WriteString(wrapBase64(base64.StdEncoding.EncodeToString(attachment.Data)))
+		message.WriteString("\r\n")
+	}
+
+	message.WriteString("--" + mixedBoundary + "--\r\n")
+	return message.Bytes(), nil
+}
+
 func buildPasswordResetBodies(input PasswordResetEmail) (string, string) {
 	expiresAt := input.ExpiresAt.UTC().Format("2006-01-02 15:04 UTC")
 	space := "application"
@@ -204,4 +308,35 @@ func formatAddress(name, address string) string {
 		return cleanAddress
 	}
 	return fmt.Sprintf("\"%s\" <%s>", strings.ReplaceAll(cleanName, "\"", ""), cleanAddress)
+}
+
+func newBoundary(prefix string) string {
+	var raw [12]byte
+	_, _ = rand.Read(raw[:])
+	return fmt.Sprintf("%s-%x", prefix, raw)
+}
+
+func sanitizeHeaderValue(value string) string {
+	value = strings.TrimSpace(value)
+	value = strings.ReplaceAll(value, "\r", " ")
+	value = strings.ReplaceAll(value, "\n", " ")
+	value = strings.ReplaceAll(value, "\"", "")
+	return value
+}
+
+func wrapBase64(encoded string) string {
+	const width = 76
+	if len(encoded) <= width {
+		return encoded
+	}
+	var builder strings.Builder
+	for start := 0; start < len(encoded); start += width {
+		end := start + width
+		if end > len(encoded) {
+			end = len(encoded)
+		}
+		builder.WriteString(encoded[start:end])
+		builder.WriteString("\r\n")
+	}
+	return builder.String()
 }

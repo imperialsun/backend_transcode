@@ -65,6 +65,38 @@ func TestSMTPMailerSendPasswordResetEmail_RCPTFailure(t *testing.T) {
 	}
 }
 
+func TestSMTPMailerSendMeetingSummaryEmail_Success(t *testing.T) {
+	server := startSMTPTestServer(t, false)
+
+	m := NewSMTPMailer(Config{
+		Host:      server.host,
+		Port:      server.port,
+		FromEmail: "noreply@demeter.test",
+		FromName:  "Demeter",
+	})
+
+	err := m.SendMeetingSummaryEmail(context.Background(), MeetingSummaryEmail{
+		ToEmail:  "user@example.com",
+		Subject:  "Compte rendu de reunion",
+		TextBody: "Bonjour,\nVoici le compte rendu.",
+		Attachments: []MailAttachment{
+			{Filename: "transcription-brute.docx", ContentType: DocxContentType, Data: []byte("docx-raw")},
+			{Filename: "rapport-cri.docx", ContentType: DocxContentType, Data: []byte("docx-cri")},
+		},
+	})
+	if err != nil {
+		t.Fatalf("SendMeetingSummaryEmail returned error: %v", err)
+	}
+
+	message := server.waitForMessage(t)
+	if !strings.Contains(message, "Subject: Compte rendu de reunion") {
+		t.Fatalf("expected subject in SMTP message, got %q", message)
+	}
+	if !strings.Contains(message, "transcription-brute.docx") || !strings.Contains(message, "rapport-cri.docx") {
+		t.Fatalf("expected attachments in SMTP message, got %q", message)
+	}
+}
+
 type smtpTestServer struct {
 	host       string
 	port       int

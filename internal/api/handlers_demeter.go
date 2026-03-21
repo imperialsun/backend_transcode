@@ -1,8 +1,14 @@
 package api
 
 import (
+	"bytes"
 	"context"
+	"fmt"
+	"io"
 	"log"
+	"mime"
+	"mime/multipart"
+	"net/textproto"
 	"sort"
 	"strconv"
 	"strings"
@@ -13,9 +19,10 @@ import (
 )
 
 const (
-	demeterModelsUpstreamPath              = "/v1/models"
-	demeterChatCompletionsUpstreamPath     = "/v1/chat/completions"
-	demeterAudioTranscriptionsUpstreamPath = "/v1/audio/transcriptions"
+	demeterModelsUpstreamPath               = "/v1/models"
+	demeterChatCompletionsUpstreamPath      = "/v1/chat/completions"
+	demeterAudioTranscriptionsUpstreamPath  = "/v1/audio/transcriptions"
+	defaultDemeterAudioTranscriptionModelID = "voxtral-mini-latest"
 )
 
 var demeterAudioSequenceCounter uint64
@@ -91,6 +98,22 @@ func (a *App) demeterAudioTranscriptions(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{Error: "multipart/form-data is required"})
 	}
 
+	normalizedBody, normalizedContentType, err := normalizeDemeterAudioTranscriptionRequest(requestBody, contentType)
+	if err != nil {
+		logDemeterRelayIssue(c, demeterAudioTranscriptionsUpstreamPath, fiber.StatusBadRequest, err.Error())
+		logDemeterAudioStage(c, seq, "sequence_end", map[string]string{
+			"result":            "invalid_multipart",
+			"total_duration_ms": strconv.FormatInt(time.Since(startedAt).Milliseconds(), 10),
+			"request_bytes":     strconv.Itoa(requestBytes),
+			"content_type":      contentType,
+			"message":           err.Error(),
+		})
+		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{Error: "invalid multipart form"})
+	}
+	requestBody = normalizedBody
+	contentType = normalizedContentType
+	requestBytes = len(requestBody)
+
 	logDemeterAudioStage(c, seq, "upstream_send_start", map[string]string{
 		"upstream":      demeterAudioTranscriptionsUpstreamPath,
 		"request_bytes": strconv.Itoa(requestBytes),
@@ -144,6 +167,78 @@ func (a *App) demeterAudioTranscriptions(c *fiber.Ctx) error {
 		"response_bytes":       strconv.Itoa(len(responseBody)),
 	})
 	return sendErr
+}
+
+type demeterMultipartPart struct {
+	header textproto.MIMEHeader
+	body   []byte
+}
+
+func normalizeDemeterAudioTranscriptionRequest(body []byte, contentType string) ([]byte, string, error) {
+	_, params, err := mime.ParseMediaType(contentType)
+	if err != nil {
+		return nil, "", fmt.Errorf("invalid multipart content type: %w", err)
+	}
+	boundary := strings.TrimSpace(params["boundary"])
+	if boundary == "" {
+		return nil, "", fmt.Errorf("multipart boundary is missing")
+	}
+
+	reader := multipart.NewReader(bytes.NewReader(body), boundary)
+	parts := make([]demeterMultipartPart, 0)
+	modelSeen := false
+
+	for {
+		part, err := reader.NextPart()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, "", fmt.Errorf("failed to read multipart body: %w", err)
+		}
+		data, err := io.ReadAll(part)
+		if err != nil {
+			return nil, "", fmt.Errorf("failed to read multipart part: %w", err)
+		}
+		name := strings.TrimSpace(part.FormName())
+		if name == "model" {
+			if strings.TrimSpace(string(data)) != "" {
+				modelSeen = true
+				parts = append(parts, demeterMultipartPart{header: cloneMultipartHeader(part.Header), body: data})
+			}
+			continue
+		}
+		parts = append(parts, demeterMultipartPart{header: cloneMultipartHeader(part.Header), body: data})
+	}
+
+	var buffer bytes.Buffer
+	writer := multipart.NewWriter(&buffer)
+	if !modelSeen {
+		if err := writer.WriteField("model", defaultDemeterAudioTranscriptionModelID); err != nil {
+			return nil, "", fmt.Errorf("failed to inject default model: %w", err)
+		}
+	}
+	for _, part := range parts {
+		dst, err := writer.CreatePart(part.header)
+		if err != nil {
+			return nil, "", fmt.Errorf("failed to rebuild multipart body: %w", err)
+		}
+		if _, err := dst.Write(part.body); err != nil {
+			return nil, "", fmt.Errorf("failed to write multipart body: %w", err)
+		}
+	}
+	if err := writer.Close(); err != nil {
+		return nil, "", fmt.Errorf("failed to finalize multipart body: %w", err)
+	}
+	return buffer.Bytes(), writer.FormDataContentType(), nil
+}
+
+func cloneMultipartHeader(src textproto.MIMEHeader) textproto.MIMEHeader {
+	dst := make(textproto.MIMEHeader, len(src))
+	for key, values := range src {
+		dst[key] = append([]string(nil), values...)
+	}
+	return dst
 }
 
 func nextDemeterAudioSequenceID() uint64 {

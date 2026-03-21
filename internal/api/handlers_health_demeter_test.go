@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"io"
 	"log"
+	"mime"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -418,6 +420,32 @@ func TestDemeterAudioTranscriptions_ProxiesMultipartBody(t *testing.T) {
 	}
 	if receivedContentType == "" || !bytes.Contains(receivedBody, []byte("wave-data")) {
 		t.Fatalf("unexpected upstream multipart request: contentType=%q body=%q", receivedContentType, string(receivedBody))
+	}
+	_, params, err := mime.ParseMediaType(receivedContentType)
+	if err != nil {
+		t.Fatalf("failed to parse upstream multipart content type: %v", err)
+	}
+	reader := multipart.NewReader(bytes.NewReader(receivedBody), params["boundary"])
+	parts := map[string][]byte{}
+	for {
+		part, err := reader.NextPart()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("failed to read upstream multipart: %v", err)
+		}
+		data, err := io.ReadAll(part)
+		if err != nil {
+			t.Fatalf("failed to read upstream multipart part: %v", err)
+		}
+		parts[part.FormName()] = data
+	}
+	if got := string(parts["model"]); got != defaultDemeterAudioTranscriptionModelID {
+		t.Fatalf("expected injected default model %q, got %q", defaultDemeterAudioTranscriptionModelID, got)
+	}
+	if got := string(parts["file"]); !strings.Contains(got, "wave-data") {
+		t.Fatalf("expected file part to be preserved, got %q", got)
 	}
 	var payload map[string]any
 	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {

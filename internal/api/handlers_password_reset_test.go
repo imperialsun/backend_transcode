@@ -36,6 +36,14 @@ func (m *fakePasswordResetMailer) SendPasswordResetEmail(_ context.Context, inpu
 	return nil
 }
 
+func (m *fakePasswordResetMailer) SendMeetingSummaryEmail(_ context.Context, input mailer.MeetingSummaryEmail) error {
+	if m.sendErr != nil {
+		return m.sendErr
+	}
+	_ = input
+	return nil
+}
+
 type passwordResetFixture struct {
 	app          *fiber.App
 	appCtx       *App
