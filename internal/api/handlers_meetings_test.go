@@ -92,7 +92,7 @@ func TestMeetingDraftsAndFinalizeSendsMailAndActivity(t *testing.T) {
 			"participants":      []string{"Alice", "Bob"},
 			"rawTranscriptText": "Bonjour tout le monde.",
 			"selectedFormats":   []string{"CRI", "CRO"},
-				"reportModelId":     "mistral-medium-latest",
+			"reportModelId":     "mistral-medium-latest",
 			"reportTemperature": 0,
 			"reportMaxTokens":   2048,
 		},

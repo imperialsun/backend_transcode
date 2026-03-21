@@ -23,13 +23,13 @@ type ReportSection struct {
 }
 
 type ReportJson struct {
-	Format      ReportFormat   `json:"format"`
-	Title       string         `json:"title"`
-	Subtitle    string         `json:"subtitle,omitempty"`
+	Format      ReportFormat    `json:"format"`
+	Title       string          `json:"title"`
+	Subtitle    string          `json:"subtitle,omitempty"`
 	Sections    []ReportSection `json:"sections"`
-	KeyPoints   []string       `json:"key_points,omitempty"`
-	ActionItems []string       `json:"action_items,omitempty"`
-	Caveats     []string       `json:"caveats,omitempty"`
+	KeyPoints   []string        `json:"key_points,omitempty"`
+	ActionItems []string        `json:"action_items,omitempty"`
+	Caveats     []string        `json:"caveats,omitempty"`
 }
 
 type ReportDraft struct {
@@ -47,9 +47,9 @@ type TranscriptSegment struct {
 }
 
 type SpeakerAssignment struct {
-	SpeakerID  string `json:"speakerId"`
-	FirstName  string `json:"firstName"`
-	LastName   string `json:"lastName"`
+	SpeakerID string `json:"speakerId"`
+	FirstName string `json:"firstName"`
+	LastName  string `json:"lastName"`
 }
 
 func ParseReportJSON(rawOutput string, expectedFormat ReportFormat) (ReportJson, error) {
