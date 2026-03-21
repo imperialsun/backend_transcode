@@ -235,10 +235,10 @@ func buildParagraphXML(paragraph docxParagraph) string {
 	if paragraph.SpaceBefore > 0 || paragraph.SpaceAfter > 0 {
 		builder.WriteString(`<w:spacing`)
 		if paragraph.SpaceBefore > 0 {
-			builder.WriteString(fmt.Sprintf(` w:before="%d"`, paragraph.SpaceBefore))
+			fmt.Fprintf(&builder, ` w:before="%d"`, paragraph.SpaceBefore)
 		}
 		if paragraph.SpaceAfter > 0 {
-			builder.WriteString(fmt.Sprintf(` w:after="%d"`, paragraph.SpaceAfter))
+			fmt.Fprintf(&builder, ` w:after="%d"`, paragraph.SpaceAfter)
 		}
 		builder.WriteString(`/>`)
 	}
@@ -249,7 +249,7 @@ func buildParagraphXML(paragraph docxParagraph) string {
 		builder.WriteString(`<w:b/>`)
 	}
 	if paragraph.SizeHalfPt > 0 {
-		builder.WriteString(fmt.Sprintf(`<w:sz w:val="%d"/><w:szCs w:val="%d"/>`, paragraph.SizeHalfPt, paragraph.SizeHalfPt))
+		fmt.Fprintf(&builder, `<w:sz w:val="%d"/><w:szCs w:val="%d"/>`, paragraph.SizeHalfPt, paragraph.SizeHalfPt)
 	}
 	builder.WriteString(`</w:rPr>`)
 	builder.WriteString(`<w:t xml:space="preserve">`)
