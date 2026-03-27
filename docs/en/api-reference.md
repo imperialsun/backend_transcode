@@ -98,6 +98,7 @@ Example `PUT /api/v1/settings`:
 | `POST` | `/api/v1/activity/events` | app session | none | ingests a batch of events with `eventId` idempotency |
 | `GET` | `/api/v1/admin/activity/summary` | admin session | `feature.admin` + admin scope | global summary for `super_admin`, current org summary otherwise |
 | `GET` | `/api/v1/admin/activity/organizations/:id/summary` | admin session | `feature.admin` + admin scope | forced summary for a specific organization |
+| `GET` | `/api/v1/admin/users/:id/activity/summary` | admin session | `feature.admin` + admin scope | user summary for the selected account |
 
 Example ingest payload:
 
@@ -145,6 +146,7 @@ All routes below require:
 | `POST` | `/api/v1/admin/organizations/:id/users` | creates a user and grants `user` + `org_member` |
 | `PATCH` | `/api/v1/admin/users/:id` | updates email, status, org (org only for `super_admin`) |
 | `DELETE` | `/api/v1/admin/users/:id` | permanently deletes the user; rejects self-deletion and deleting the last required admin |
+| `DELETE` | `/api/v1/admin/users/:id/activity` | purges all activity events for the user while keeping the account |
 | `PUT` | `/api/v1/admin/users/:id/password` | changes the password and revokes refresh sessions |
 | `PUT` | `/api/v1/admin/users/:id/global-roles` | reserved to `super_admin` |
 | `PUT` | `/api/v1/admin/users/:id/org-roles` | updates organization roles |

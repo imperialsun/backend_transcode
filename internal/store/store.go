@@ -142,6 +142,14 @@ type ActivitySummary struct {
 	Breakdown      ActivityBreakdown    `json:"breakdown"`
 }
 
+type UserActivitySummary struct {
+	User      User                `json:"user"`
+	Range     ActivityRange       `json:"range"`
+	Totals    ActivityTotals      `json:"totals"`
+	ByDay     []ActivityByDayItem `json:"byDay"`
+	Breakdown ActivityBreakdown   `json:"breakdown"`
+}
+
 func Open(ctx context.Context, path string) (*Store, error) {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -1354,6 +1362,104 @@ func (s *Store) GetOrganizationActivitySummary(
 		WHERE organization_id = ? AND day BETWEEN ? AND ? AND event_kind = 'report'
 		GROUP BY provider
 	`, organizationID, fromDay, toDay); err != nil {
+		return nil, err
+	}
+
+	return summary, nil
+}
+
+func (s *Store) GetUserActivitySummary(
+	ctx context.Context,
+	userID string,
+	fromDay string,
+	toDay string,
+) (*UserActivitySummary, error) {
+	user, err := s.GetUserByID(ctx, strings.TrimSpace(userID))
+	if err != nil || user == nil {
+		return nil, err
+	}
+
+	summary := &UserActivitySummary{
+		User: *user,
+		Range: ActivityRange{
+			From: fromDay,
+			To:   toDay,
+		},
+		Breakdown: ActivityBreakdown{
+			TranscriptionsByMode:     map[string]int{},
+			TranscriptionsByProvider: map[string]int{},
+			ReportsByMode:            map[string]int{},
+			ReportsByProvider:        map[string]int{},
+		},
+		ByDay: []ActivityByDayItem{},
+	}
+
+	err = s.DB.QueryRowContext(ctx, `
+		SELECT
+			COALESCE(SUM(CASE WHEN event_kind = 'transcription' THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN event_kind = 'report' THEN 1 ELSE 0 END), 0)
+		FROM activity_usage_events
+		WHERE user_id = ? AND day BETWEEN ? AND ?
+	`, userID, fromDay, toDay).Scan(&summary.Totals.Transcriptions, &summary.Totals.Reports)
+	if err != nil {
+		return nil, err
+	}
+
+	byDayRows, err := s.DB.QueryContext(ctx, `
+		SELECT
+			day,
+			COALESCE(SUM(CASE WHEN event_kind = 'transcription' THEN 1 ELSE 0 END), 0) AS transcriptions,
+			COALESCE(SUM(CASE WHEN event_kind = 'report' THEN 1 ELSE 0 END), 0) AS reports
+		FROM activity_usage_events
+		WHERE user_id = ? AND day BETWEEN ? AND ?
+		GROUP BY day
+		ORDER BY day ASC
+	`, userID, fromDay, toDay)
+	if err != nil {
+		return nil, err
+	}
+	defer closeRows(byDayRows)
+	for byDayRows.Next() {
+		var item ActivityByDayItem
+		if err := byDayRows.Scan(&item.Day, &item.Transcriptions, &item.Reports); err != nil {
+			return nil, err
+		}
+		summary.ByDay = append(summary.ByDay, item)
+	}
+	if err := byDayRows.Err(); err != nil {
+		return nil, err
+	}
+
+	if err := s.scanActivityBreakdown(ctx, summary.Breakdown.TranscriptionsByMode, `
+		SELECT source_mode, COUNT(*)
+		FROM activity_usage_events
+		WHERE user_id = ? AND day BETWEEN ? AND ? AND event_kind = 'transcription'
+		GROUP BY source_mode
+	`, userID, fromDay, toDay); err != nil {
+		return nil, err
+	}
+	if err := s.scanActivityBreakdown(ctx, summary.Breakdown.TranscriptionsByProvider, `
+		SELECT provider, COUNT(*)
+		FROM activity_usage_events
+		WHERE user_id = ? AND day BETWEEN ? AND ? AND event_kind = 'transcription'
+		GROUP BY provider
+	`, userID, fromDay, toDay); err != nil {
+		return nil, err
+	}
+	if err := s.scanActivityBreakdown(ctx, summary.Breakdown.ReportsByMode, `
+		SELECT source_mode, COUNT(*)
+		FROM activity_usage_events
+		WHERE user_id = ? AND day BETWEEN ? AND ? AND event_kind = 'report'
+		GROUP BY source_mode
+	`, userID, fromDay, toDay); err != nil {
+		return nil, err
+	}
+	if err := s.scanActivityBreakdown(ctx, summary.Breakdown.ReportsByProvider, `
+		SELECT provider, COUNT(*)
+		FROM activity_usage_events
+		WHERE user_id = ? AND day BETWEEN ? AND ? AND event_kind = 'report'
+		GROUP BY provider
+	`, userID, fromDay, toDay); err != nil {
 		return nil, err
 	}
 

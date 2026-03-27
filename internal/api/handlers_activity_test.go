@@ -335,6 +335,160 @@ func TestAdminActivitySummary_OrganizationQueryScopeAndValidation(t *testing.T) 
 	}
 }
 
+func TestAdminUserActivitySummary_OrganizationScopeAndValidation(t *testing.T) {
+	_, app, st := setupActivityTestApp(t)
+	ctx := context.Background()
+
+	orgA, err := st.CreateOrganization(ctx, "Org A", "org-a", "active")
+	if err != nil {
+		t.Fatalf("failed to create org A: %v", err)
+	}
+	orgB, err := st.CreateOrganization(ctx, "Org B", "org-b", "active")
+	if err != nil {
+		t.Fatalf("failed to create org B: %v", err)
+	}
+	orgAdmin, err := st.CreateUser(ctx, orgA.ID, "org-admin@example.com", "hash", "active")
+	if err != nil {
+		t.Fatalf("failed to create org admin: %v", err)
+	}
+	if err := st.SetUserGlobalRoles(ctx, orgAdmin.ID, []string{"user"}); err != nil {
+		t.Fatalf("failed to set global roles: %v", err)
+	}
+	if err := st.SetUserOrganizationRoles(ctx, orgAdmin.ID, []string{"org_admin"}); err != nil {
+		t.Fatalf("failed to set org roles: %v", err)
+	}
+	otherUser, err := st.CreateUser(ctx, orgB.ID, "other@example.com", "hash", "active")
+	if err != nil {
+		t.Fatalf("failed to create other user: %v", err)
+	}
+	if _, err := st.IngestActivityEvents(ctx, orgA.ID, orgAdmin.ID, []store.ActivityEventInput{
+		{
+			EventID:    "user-summary-a",
+			EventKind:  "transcription",
+			SourceMode: "local",
+			Provider:   "local_upload",
+			Status:     "success",
+			OccurredAt: time.Date(2026, time.March, 14, 8, 0, 0, 0, time.UTC),
+		},
+		{
+			EventID:    "user-summary-b",
+			EventKind:  "report",
+			SourceMode: "cloud_direct",
+			Provider:   "mistral",
+			Status:     "error",
+			OccurredAt: time.Date(2026, time.March, 15, 9, 0, 0, 0, time.UTC),
+		},
+	}); err != nil {
+		t.Fatalf("failed to ingest activity: %v", err)
+	}
+	if _, err := st.IngestActivityEvents(ctx, orgB.ID, otherUser.ID, []store.ActivityEventInput{{
+		EventID:    "user-summary-other",
+		EventKind:  "transcription",
+		SourceMode: "cloud_backend",
+		Provider:   "demeter_sante",
+		Status:     "success",
+		OccurredAt: time.Date(2026, time.March, 14, 8, 0, 0, 0, time.UTC),
+	}}); err != nil {
+		t.Fatalf("failed to ingest other activity: %v", err)
+	}
+
+	token := issueAdminActivityToken(t, "test-jwt-secret", orgAdmin)
+	resp := performJSONRequest(t, app, http.MethodGet, "/api/v1/admin/users/"+orgAdmin.ID+"/activity/summary?from=2026-03-14&to=2026-03-15", token, "")
+	if resp.StatusCode != fiber.StatusOK {
+		t.Fatalf("expected 200 for user summary, got %d", resp.StatusCode)
+	}
+	var summary store.UserActivitySummary
+	if err := json.Unmarshal(resp.Body, &summary); err != nil {
+		t.Fatalf("failed to decode user summary: %v", err)
+	}
+	if summary.User.ID != orgAdmin.ID {
+		t.Fatalf("unexpected user summary target: %+v", summary.User)
+	}
+	if summary.Totals.Transcriptions != 1 || summary.Totals.Reports != 1 {
+		t.Fatalf("unexpected user totals: %+v", summary.Totals)
+	}
+	if len(summary.ByDay) != 2 {
+		t.Fatalf("expected 2 day buckets, got %+v", summary.ByDay)
+	}
+	if got := summary.Breakdown.ReportsByProvider["mistral"]; got != 1 {
+		t.Fatalf("unexpected report provider breakdown: %d", got)
+	}
+
+	forbidden := performJSONRequest(t, app, http.MethodGet, "/api/v1/admin/users/"+otherUser.ID+"/activity/summary?from=2026-03-14&to=2026-03-15", token, "")
+	if forbidden.StatusCode != fiber.StatusForbidden {
+		t.Fatalf("expected 403 for cross-org user summary, got %d", forbidden.StatusCode)
+	}
+}
+
+func TestDeleteUserActivity_SucceedsAndWritesAudit(t *testing.T) {
+	appCtx, app, st := setupActivityTestApp(t)
+	ctx := context.Background()
+
+	org, err := st.CreateOrganization(ctx, "Org A", "org-a", "active")
+	if err != nil {
+		t.Fatalf("failed to create org: %v", err)
+	}
+	actor, err := st.CreateUser(ctx, org.ID, "actor@example.com", "hash", "active")
+	if err != nil {
+		t.Fatalf("failed to create actor: %v", err)
+	}
+	target, err := st.CreateUser(ctx, org.ID, "target@example.com", "hash", "active")
+	if err != nil {
+		t.Fatalf("failed to create target user: %v", err)
+	}
+	if err := st.SetUserGlobalRoles(ctx, actor.ID, []string{"user"}); err != nil {
+		t.Fatalf("failed to set actor global roles: %v", err)
+	}
+	if err := st.SetUserOrganizationRoles(ctx, actor.ID, []string{"org_admin"}); err != nil {
+		t.Fatalf("failed to set actor org roles: %v", err)
+	}
+	if _, err := st.IngestActivityEvents(ctx, org.ID, target.ID, []store.ActivityEventInput{
+		{
+			EventID:    "purge-a",
+			EventKind:  "transcription",
+			SourceMode: "local",
+			Provider:   "local_upload",
+			Status:     "success",
+			OccurredAt: time.Now().UTC(),
+		},
+	}); err != nil {
+		t.Fatalf("failed to ingest target activity: %v", err)
+	}
+
+	resp := performPasswordResetRequest(
+		t,
+		app,
+		http.MethodDelete,
+		"/api/v1/admin/users/"+target.ID+"/activity",
+		nil,
+		nil,
+		adminHeaders(t, actor, appCtx.Config.JWTSecret),
+	)
+	if resp.StatusCode != fiber.StatusNoContent {
+		t.Fatalf("expected 204 for successful activity purge, got %d", resp.StatusCode)
+	}
+
+	var count int
+	if err := st.DB.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM activity_usage_events WHERE user_id = ?
+	`, target.ID).Scan(&count); err != nil {
+		t.Fatalf("failed to count remaining activity rows: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("expected all activity rows to be deleted, got %d", count)
+	}
+
+	var auditCount int
+	if err := st.DB.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM audit_logs WHERE action = 'admin.user.activity.delete' AND target_id = ?
+	`, target.ID).Scan(&auditCount); err != nil {
+		t.Fatalf("failed to count purge audits: %v", err)
+	}
+	if auditCount != 1 {
+		t.Fatalf("expected one purge audit, got %d", auditCount)
+	}
+}
+
 func TestValidateActivityEvent(t *testing.T) {
 	tests := []struct {
 		name       string

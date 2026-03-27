@@ -234,3 +234,83 @@ func TestOrganizationActivitySummary_ExcludesOtherOrganizationsAndOrdersUsers(t 
 		t.Fatalf("expected by-user ordering by email on equal totals, got %+v", summary.ByUser)
 	}
 }
+
+func TestUserActivitySummaryAndDeleteUserActivity(t *testing.T) {
+	ctx := context.Background()
+	st := openTestStore(t, "activity-user.sqlite")
+
+	org := createOrg(t, st, "User Activity Org", "user-activity-org", "active")
+	userA := createUserWithPassword(t, st, org.ID, "user-a@example.com", "ChangeMe123!", "active")
+	userB := createUserWithPassword(t, st, org.ID, "user-b@example.com", "ChangeMe123!", "active")
+
+	dayOne := time.Date(2026, time.March, 14, 9, 0, 0, 0, time.UTC)
+	dayTwo := time.Date(2026, time.March, 15, 10, 0, 0, 0, time.UTC)
+	_, err := st.IngestActivityEvents(ctx, org.ID, userA.ID, []ActivityEventInput{
+		{EventID: "user-a-1", EventKind: "transcription", SourceMode: "local", Provider: "local_upload", Status: "success", OccurredAt: dayOne},
+		{EventID: "user-a-2", EventKind: "report", SourceMode: "cloud_direct", Provider: "mistral", Status: "error", OccurredAt: dayTwo},
+	})
+	if err != nil {
+		t.Fatalf("IngestActivityEvents failed: %v", err)
+	}
+	_, err = st.IngestActivityEvents(ctx, org.ID, userB.ID, []ActivityEventInput{
+		{EventID: "user-b-1", EventKind: "transcription", SourceMode: "cloud_backend", Provider: "demeter_sante", Status: "success", OccurredAt: dayOne},
+	})
+	if err != nil {
+		t.Fatalf("IngestActivityEvents failed: %v", err)
+	}
+
+	summary, err := st.GetUserActivitySummary(ctx, userA.ID, "2026-03-14", "2026-03-15")
+	if err != nil {
+		t.Fatalf("GetUserActivitySummary failed: %v", err)
+	}
+	if summary.User.ID != userA.ID || summary.User.Email != userA.Email {
+		t.Fatalf("unexpected user summary target: %+v", summary.User)
+	}
+	if summary.Totals.Transcriptions != 1 || summary.Totals.Reports != 1 {
+		t.Fatalf("unexpected totals: %+v", summary.Totals)
+	}
+	if len(summary.ByDay) != 2 {
+		t.Fatalf("expected 2 day buckets, got %+v", summary.ByDay)
+	}
+	if got := summary.Breakdown.TranscriptionsByMode["local"]; got != 1 {
+		t.Fatalf("unexpected local transcription breakdown: %d", got)
+	}
+	if got := summary.Breakdown.ReportsByProvider["mistral"]; got != 1 {
+		t.Fatalf("unexpected mistral report breakdown: %d", got)
+	}
+
+	deletedCount, err := st.DeleteUserActivity(ctx, userA.ID)
+	if err != nil {
+		t.Fatalf("DeleteUserActivity failed: %v", err)
+	}
+	if deletedCount != 2 {
+		t.Fatalf("expected 2 deleted activity rows, got %d", deletedCount)
+	}
+
+	afterDelete, err := st.GetUserActivitySummary(ctx, userA.ID, "2026-03-14", "2026-03-15")
+	if err != nil {
+		t.Fatalf("GetUserActivitySummary after delete failed: %v", err)
+	}
+	if afterDelete.Totals.Transcriptions != 0 || afterDelete.Totals.Reports != 0 {
+		t.Fatalf("expected empty summary after delete, got %+v", afterDelete.Totals)
+	}
+	if len(afterDelete.ByDay) != 0 {
+		t.Fatalf("expected no day buckets after delete, got %+v", afterDelete.ByDay)
+	}
+
+	var remainingUserACount int
+	if err := st.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM activity_usage_events WHERE user_id = ?`, userA.ID).Scan(&remainingUserACount); err != nil {
+		t.Fatalf("failed to count user A activity: %v", err)
+	}
+	if remainingUserACount != 0 {
+		t.Fatalf("expected user A activity to be removed, got %d rows", remainingUserACount)
+	}
+
+	var remainingUserBCount int
+	if err := st.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM activity_usage_events WHERE user_id = ?`, userB.ID).Scan(&remainingUserBCount); err != nil {
+		t.Fatalf("failed to count user B activity: %v", err)
+	}
+	if remainingUserBCount != 1 {
+		t.Fatalf("expected user B activity to remain, got %d rows", remainingUserBCount)
+	}
+}

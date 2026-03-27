@@ -98,6 +98,7 @@ Exemple `PUT /api/v1/settings`:
 | `POST` | `/api/v1/activity/events` | session app | aucune | ingere un batch d evenements avec idempotence sur `eventId` |
 | `GET` | `/api/v1/admin/activity/summary` | session admin | `feature.admin` + scope admin | resume global pour `super_admin`, sinon resume org courant |
 | `GET` | `/api/v1/admin/activity/organizations/:id/summary` | session admin | `feature.admin` + scope admin | resume force pour une organisation donnee |
+| `GET` | `/api/v1/admin/users/:id/activity/summary` | session admin | `feature.admin` + scope admin | resume d activite pour le compte selectionne |
 
 Exemple ingestion:
 
@@ -145,6 +146,7 @@ Toutes les routes ci-dessous exigent:
 | `POST` | `/api/v1/admin/organizations/:id/users` | cree un user, lui attribue `user` + `org_member` |
 | `PATCH` | `/api/v1/admin/users/:id` | met a jour email, statut, org (org seulement pour `super_admin`) |
 | `DELETE` | `/api/v1/admin/users/:id` | supprime definitivement l utilisateur; refuse l auto-suppression et la suppression du dernier admin requis |
+| `DELETE` | `/api/v1/admin/users/:id/activity` | purge tous les evenements d activite du user tout en conservant le compte |
 | `PUT` | `/api/v1/admin/users/:id/password` | change le mot de passe et revoque les refresh sessions |
 | `PUT` | `/api/v1/admin/users/:id/global-roles` | reserve a `super_admin` |
 | `PUT` | `/api/v1/admin/users/:id/org-roles` | maj roles organisation |

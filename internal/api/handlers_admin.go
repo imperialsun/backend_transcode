@@ -59,6 +59,8 @@ func (a *App) RegisterAdminRoutes(router fiber.Router) {
 	group.Post("/organizations/:id/users", a.createOrganizationUser)
 	group.Patch("/users/:id", a.patchUser)
 	group.Delete("/users/:id", a.deleteUser)
+	group.Get("/users/:id/activity/summary", a.userActivitySummary)
+	group.Delete("/users/:id/activity", a.deleteUserActivity)
 	group.Put("/users/:id/password", a.updateUserPassword)
 	group.Post("/users/:id/password-reset-email", a.sendUserPasswordResetEmail)
 	group.Put("/users/:id/global-roles", a.updateUserGlobalRoles)
@@ -337,6 +339,69 @@ func (a *App) deleteUser(c *fiber.Ctx) error {
 		"status":           target.Status,
 		"actorGlobalRoles": claims.GlobalRoles,
 		"actorOrgRoles":    claims.OrgRoles,
+	})
+	return c.SendStatus(fiber.StatusNoContent)
+}
+
+func (a *App) userActivitySummary(c *fiber.Ctx) error {
+	claims := MustClaims(c)
+	if claims == nil {
+		return c.Status(fiber.StatusUnauthorized).JSON(ErrorResponse{Error: "unauthorized"})
+	}
+
+	ctx := context.Background()
+	userID := strings.TrimSpace(c.Params("id"))
+	target, err := a.Store.GetUserByID(ctx, userID)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{Error: "failed to load user"})
+	}
+	if target == nil {
+		return c.Status(fiber.StatusNotFound).JSON(ErrorResponse{Error: "user not found"})
+	}
+	if !isSuperAdmin(claims) && claims.OrgID != target.OrganizationID {
+		return c.Status(fiber.StatusForbidden).JSON(ErrorResponse{Error: "forbidden organization scope"})
+	}
+
+	fromDay, toDay, err := resolveActivityRange(c.Query("from"), c.Query("to"))
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{Error: err.Error()})
+	}
+
+	summary, err := a.Store.GetUserActivitySummary(ctx, target.ID, fromDay, toDay)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{Error: "failed to load user activity summary"})
+	}
+	return c.JSON(summary)
+}
+
+func (a *App) deleteUserActivity(c *fiber.Ctx) error {
+	claims := MustClaims(c)
+	if claims == nil {
+		return c.Status(fiber.StatusUnauthorized).JSON(ErrorResponse{Error: "unauthorized"})
+	}
+
+	ctx := context.Background()
+	userID := strings.TrimSpace(c.Params("id"))
+	target, err := a.Store.GetUserByID(ctx, userID)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{Error: "failed to load user"})
+	}
+	if target == nil {
+		return c.Status(fiber.StatusNotFound).JSON(ErrorResponse{Error: "user not found"})
+	}
+	if !isSuperAdmin(claims) && claims.OrgID != target.OrganizationID {
+		return c.Status(fiber.StatusForbidden).JSON(ErrorResponse{Error: "forbidden organization scope"})
+	}
+
+	deletedCount, err := a.Store.DeleteUserActivity(ctx, target.ID)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{Error: "failed to delete user activity"})
+	}
+
+	a.writeAdminAudit(claims, "admin.user.activity.delete", "user", target.ID, fiber.Map{
+		"email":          target.Email,
+		"organizationId": target.OrganizationID,
+		"deletedCount":   deletedCount,
 	})
 	return c.SendStatus(fiber.StatusNoContent)
 }

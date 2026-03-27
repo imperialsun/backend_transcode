@@ -146,6 +146,22 @@ func (s *Store) DeleteUser(ctx context.Context, userID string) (bool, error) {
 	return true, nil
 }
 
+func (s *Store) DeleteUserActivity(ctx context.Context, userID string) (int64, error) {
+	result, err := s.DB.ExecContext(ctx, `
+		DELETE FROM activity_usage_events
+		WHERE user_id = ?
+	`, strings.TrimSpace(userID))
+	if err != nil {
+		return 0, err
+	}
+
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+	return affected, nil
+}
+
 func (s *Store) InsertAuditLog(ctx context.Context, input AuditLogInput) error {
 	payload := input.PayloadJSON
 	if len(strings.TrimSpace(string(payload))) == 0 && input.Payload != nil {

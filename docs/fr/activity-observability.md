@@ -56,6 +56,8 @@ Routes disponibles:
 
 - `GET /api/v1/admin/activity/summary`
 - `GET /api/v1/admin/activity/organizations/:id/summary`
+- `GET /api/v1/admin/users/:id/activity/summary`
+- `DELETE /api/v1/admin/users/:id/activity`
 
 Le resume expose:
 
@@ -63,6 +65,8 @@ Le resume expose:
 - `byDay`,
 - `byUser`,
 - `breakdown` par mode et provider.
+
+Le resume specifique a un utilisateur retourne le champ `user` selectionne avec les memes mesures de periode, et la route de purge supprime les lignes d activite de ce compte sans supprimer le compte.
 
 ## Fenetre temporelle
 
@@ -77,6 +81,7 @@ Si `from > to`, la route retourne `400`.
 - `super_admin` peut lire la synthese globale ou cibler une org.
 - `org_admin` reste limite a son organisation.
 - Les evenements ingeres utilisent toujours `claims.OrgID` et `claims.UserID`, pas des valeurs envoyees par le client.
+- Purger l activite d un utilisateur conserve le compte, les refresh sessions, les roles et les permissions.
 
 ## Observabilite technique
 

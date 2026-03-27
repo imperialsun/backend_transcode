@@ -56,6 +56,8 @@ Available routes:
 
 - `GET /api/v1/admin/activity/summary`
 - `GET /api/v1/admin/activity/organizations/:id/summary`
+- `GET /api/v1/admin/users/:id/activity/summary`
+- `DELETE /api/v1/admin/users/:id/activity`
 
 The summary exposes:
 
@@ -63,6 +65,8 @@ The summary exposes:
 - `byDay`,
 - `byUser`,
 - `breakdown` by mode and provider.
+
+The user-specific summary returns the selected `user` plus the same period metrics, and the purge route deletes that user's activity rows without deleting the account.
 
 ## Time window
 
@@ -77,6 +81,7 @@ If `from > to`, the route returns `400`.
 - `super_admin` can read the global summary or target a specific org.
 - `org_admin` stays limited to its organization.
 - Ingested events always use `claims.OrgID` and `claims.UserID`, not values sent by the client.
+- Purging a user's activity keeps the user account, refresh sessions, roles, and permissions intact.
 
 ## Technical observability
 
