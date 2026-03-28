@@ -1,6 +1,8 @@
-FROM golang:1.26.1 AS builder
+FROM golang:1.25.7 AS builder
 
 WORKDIR /src
+
+ENV CGO_ENABLED=0
 
 COPY go.mod go.sum ./
 RUN go mod download

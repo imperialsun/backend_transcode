@@ -21,7 +21,7 @@ Le repo fournit:
 | `ADMIN_ACCESS_TTL_MINUTES` | `10` | TTL access admin |
 | `ADMIN_REFRESH_TTL_HOURS` | `12` | TTL refresh admin |
 | `COOKIE_SECURE` | `false` en dev, `true` en prod | flag `Secure` des cookies |
-| `APP_CORS_ORIGINS` | `http://localhost:3000,http://localhost:5173` | origines app |
+| `APP_CORS_ORIGINS` | `http://localhost:3000,http://localhost:4173` | origines app |
 | `ADMIN_CORS_ORIGINS` | `http://localhost:4173` | origines admin + filtre d origine |
 | `CORS_ORIGINS` | meme valeur que app origins | fallback legacy pour `APP_CORS_ORIGINS` |
 | `MISTRAL_API_BASE_URL` | `https://api.mistral.ai` | base URL upstream |
@@ -50,7 +50,7 @@ Le script:
 ### Build
 
 ```bash
-docker build -t demeter-backend .
+docker build -t transcode-backend:local .
 ```
 
 ### Run
@@ -62,7 +62,7 @@ docker run --rm \
   -e APP_ENV=production \
   -e JWT_SECRET=change-me \
   -e MISTRAL_API_KEY=change-me \
-  demeter-backend
+  transcode-backend:local
 ```
 
 Caracteristiques de l image:
@@ -95,6 +95,7 @@ docker compose -f compose.dev.yml up
 Specificites Compose:
 
 - toutes les variables runtime sont declarees inline dans `environment:`,
+- les defaults locaux de `APP_PUBLIC_URL` et `ADMIN_PUBLIC_URL` pointent vers les ports localhost du front et de l admin pour que les liens de reset restent fonctionnels en dev,
 - `compose.yml` persiste SQLite dans le volume nomme `backend-data`,
 - `compose.dev.yml` utilise des volumes nommes separes pour SQLite et les caches Go,
 - les vrais secrets doivent toujours venir de la substitution d environnement, pas de valeurs committees,

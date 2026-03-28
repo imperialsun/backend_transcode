@@ -40,7 +40,7 @@ type Config struct {
 
 func Load() Config {
 	appEnv := getEnv("APP_ENV", "development")
-	legacyAppOrigins := getEnv("CORS_ORIGINS", "http://localhost:3000,http://localhost:5173")
+	legacyAppOrigins := getEnv("CORS_ORIGINS", "http://localhost:3000,http://localhost:4173")
 	cfg := Config{
 		AppEnv:                 appEnv,
 		Port:                   getEnv("PORT", "8080"),

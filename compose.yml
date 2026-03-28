@@ -1,5 +1,6 @@
 services:
   backend:
+    image: transcode-backend:local
     build:
       context: .
     ports:
@@ -15,11 +16,13 @@ services:
       ADMIN_ACCESS_TTL_MINUTES: "${ADMIN_ACCESS_TTL_MINUTES:-10}"
       ADMIN_REFRESH_TTL_HOURS: "${ADMIN_REFRESH_TTL_HOURS:-12}"
       COOKIE_SECURE: "${COOKIE_SECURE:-true}"
-      APP_CORS_ORIGINS: "${APP_CORS_ORIGINS:-http://localhost:3000,http://localhost:5173}"
+      APP_CORS_ORIGINS: "${APP_CORS_ORIGINS:-http://localhost:3000,http://localhost:4173}"
       ADMIN_CORS_ORIGINS: "${ADMIN_CORS_ORIGINS:-http://localhost:4173}"
-      CORS_ORIGINS: "${CORS_ORIGINS:-http://localhost:3000,http://localhost:5173}"
+      CORS_ORIGINS: "${CORS_ORIGINS:-http://localhost:3000,http://localhost:4173}"
       MISTRAL_API_BASE_URL: "${MISTRAL_API_BASE_URL:-https://api.mistral.ai}"
       MISTRAL_API_KEY: "${MISTRAL_API_KEY:-}"
+      APP_PUBLIC_URL: "${APP_PUBLIC_URL:-http://localhost:3000}"
+      ADMIN_PUBLIC_URL: "${ADMIN_PUBLIC_URL:-http://localhost:4173}"
       BOOTSTRAP_ADMIN_EMAIL: "${BOOTSTRAP_ADMIN_EMAIL:-}"
       BOOTSTRAP_ADMIN_PASSWORD: "${BOOTSTRAP_ADMIN_PASSWORD:-}"
       BOOTSTRAP_ORG_NAME: "${BOOTSTRAP_ORG_NAME:-Default Organization}"

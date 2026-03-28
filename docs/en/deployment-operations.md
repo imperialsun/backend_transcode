@@ -21,7 +21,7 @@ The repo provides:
 | `ADMIN_ACCESS_TTL_MINUTES` | `10` | admin access TTL |
 | `ADMIN_REFRESH_TTL_HOURS` | `12` | admin refresh TTL |
 | `COOKIE_SECURE` | `false` in dev, `true` in prod | cookie `Secure` flag |
-| `APP_CORS_ORIGINS` | `http://localhost:3000,http://localhost:5173` | app origins |
+| `APP_CORS_ORIGINS` | `http://localhost:3000,http://localhost:4173` | app origins |
 | `ADMIN_CORS_ORIGINS` | `http://localhost:4173` | admin origins and origin filter |
 | `CORS_ORIGINS` | same value as app origins | legacy fallback for `APP_CORS_ORIGINS` |
 | `MISTRAL_API_BASE_URL` | `https://api.mistral.ai` | upstream base URL |
@@ -50,7 +50,7 @@ The script:
 ### Build
 
 ```bash
-docker build -t demeter-backend .
+docker build -t transcode-backend:local .
 ```
 
 ### Run
@@ -62,7 +62,7 @@ docker run --rm \
   -e APP_ENV=production \
   -e JWT_SECRET=change-me \
   -e MISTRAL_API_KEY=change-me \
-  demeter-backend
+  transcode-backend:local
 ```
 
 Image characteristics:
@@ -95,6 +95,7 @@ docker compose -f compose.dev.yml up
 Compose specifics:
 
 - all runtime variables are declared inline under `environment:`,
+- local Compose defaults `APP_PUBLIC_URL` and `ADMIN_PUBLIC_URL` to the front and admin localhost ports so password reset links keep working in dev,
 - `compose.yml` persists SQLite in the named volume `backend-data`,
 - `compose.dev.yml` uses separate named volumes for SQLite and Go build caches,
 - real secrets should still come from environment substitution, not committed literal values,

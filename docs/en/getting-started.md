@@ -2,9 +2,9 @@
 
 ## Prerequisites
 
-- Go `1.24.0` or compatible with `go.mod`.
+- Go `1.25.7` or compatible with `go.mod`.
 - `make` for the standard repo commands.
-- Docker is optional if you want to run the production image locally.
+- Docker is optional if you want to run the containerized stacks locally.
 - A `MISTRAL_API_KEY` if you want to use the Demeter routes or get a green `readyz`.
 
 ## Local setup
@@ -52,14 +52,14 @@ The bootstrap password is hashed with Argon2id before insertion.
 ## Docker execution
 
 ```bash
-docker build -t demeter-backend .
+docker build -t transcode-backend:local .
 docker run --rm \
   -p 8080:8080 \
   -v "$(pwd)/data:/data" \
   -e APP_ENV=production \
   -e JWT_SECRET=change-me \
   -e MISTRAL_API_KEY=change-me \
-  demeter-backend
+  transcode-backend:local
 ```
 
 The image writes SQLite to `/data/backend.sqlite` by default.
