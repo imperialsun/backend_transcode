@@ -11,6 +11,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"demeter-backend/internal/observability"
 )
 
 const maxLoggedBodyPreview = 512
@@ -57,8 +59,16 @@ func (c *Client) DoJSON(ctx context.Context, method, path string, body []byte) (
 	if len(body) == 0 {
 		body = []byte("{}")
 	}
+	logUpstreamStep(ctx, path, "request_start", map[string]any{
+		"method":        method,
+		"request_bytes": len(body),
+	})
 	req, err := http.NewRequestWithContext(ctx, method, c.BaseURL+path, bytes.NewReader(body))
 	if err != nil {
+		logUpstreamStep(ctx, path, "request_error", map[string]any{
+			"method": method,
+			"error":  err,
+		})
 		return 0, nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+c.APIKey)
@@ -67,16 +77,16 @@ func (c *Client) DoJSON(ctx context.Context, method, path string, body []byte) (
 	startedAt := time.Now()
 	res, err := c.HTTP.Do(req)
 	if err != nil {
-		logUpstreamTransportError(method, c.BaseURL+path, time.Since(startedAt), err)
+		logUpstreamTransportError(ctx, method, path, time.Since(startedAt), err)
 		return 0, nil, err
 	}
 	defer closeSilently(res.Body)
 	data, err := io.ReadAll(res.Body)
 	if err != nil {
-		logUpstreamReadError(method, c.BaseURL+path, res.StatusCode, time.Since(startedAt), err)
+		logUpstreamReadError(ctx, method, path, res.StatusCode, time.Since(startedAt), err)
 		return 0, nil, err
 	}
-	logUpstreamResponse(method, c.BaseURL+path, res.StatusCode, res.Header.Get("Content-Type"), time.Since(startedAt), data)
+	logUpstreamResponse(ctx, method, path, res.StatusCode, res.Header.Get("Content-Type"), time.Since(startedAt), data)
 	return res.StatusCode, data, nil
 }
 
@@ -86,8 +96,17 @@ func (c *Client) DoMultipart(ctx context.Context, path string, body []byte, cont
 	}
 	ctx, cancel := withTimeout(ctx, c.MultipartTimeout)
 	defer cancel()
+	logUpstreamStep(ctx, path, "request_start", map[string]any{
+		"method":        http.MethodPost,
+		"request_bytes": len(body),
+		"content_type":  strings.TrimSpace(contentType),
+	})
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.BaseURL+path, bytes.NewReader(body))
 	if err != nil {
+		logUpstreamStep(ctx, path, "request_error", map[string]any{
+			"method": http.MethodPost,
+			"error":  err,
+		})
 		return 0, nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+c.APIKey)
@@ -98,16 +117,16 @@ func (c *Client) DoMultipart(ctx context.Context, path string, body []byte, cont
 	startedAt := time.Now()
 	res, err := c.HTTP.Do(req)
 	if err != nil {
-		logUpstreamTransportError(http.MethodPost, c.BaseURL+path, time.Since(startedAt), err)
+		logUpstreamTransportError(ctx, http.MethodPost, path, time.Since(startedAt), err)
 		return 0, nil, err
 	}
 	defer closeSilently(res.Body)
 	data, err := io.ReadAll(res.Body)
 	if err != nil {
-		logUpstreamReadError(http.MethodPost, c.BaseURL+path, res.StatusCode, time.Since(startedAt), err)
+		logUpstreamReadError(ctx, http.MethodPost, path, res.StatusCode, time.Since(startedAt), err)
 		return 0, nil, err
 	}
-	logUpstreamResponse(http.MethodPost, c.BaseURL+path, res.StatusCode, res.Header.Get("Content-Type"), time.Since(startedAt), data)
+	logUpstreamResponse(ctx, http.MethodPost, path, res.StatusCode, res.Header.Get("Content-Type"), time.Since(startedAt), data)
 	return res.StatusCode, data, nil
 }
 
@@ -117,63 +136,73 @@ func (c *Client) DoGet(ctx context.Context, path string) (int, []byte, error) {
 	}
 	ctx, cancel := withTimeout(ctx, c.RequestTimeout)
 	defer cancel()
+	logUpstreamStep(ctx, path, "request_start", map[string]any{
+		"method": http.MethodGet,
+	})
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.BaseURL+path, nil)
 	if err != nil {
+		logUpstreamStep(ctx, path, "request_error", map[string]any{
+			"method": http.MethodGet,
+			"error":  err,
+		})
 		return 0, nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+c.APIKey)
 	startedAt := time.Now()
 	res, err := c.HTTP.Do(req)
 	if err != nil {
-		logUpstreamTransportError(http.MethodGet, c.BaseURL+path, time.Since(startedAt), err)
+		logUpstreamTransportError(ctx, http.MethodGet, path, time.Since(startedAt), err)
 		return 0, nil, err
 	}
 	defer closeSilently(res.Body)
 	data, err := io.ReadAll(res.Body)
 	if err != nil {
-		logUpstreamReadError(http.MethodGet, c.BaseURL+path, res.StatusCode, time.Since(startedAt), err)
+		logUpstreamReadError(ctx, http.MethodGet, path, res.StatusCode, time.Since(startedAt), err)
 		return 0, nil, err
 	}
-	logUpstreamResponse(http.MethodGet, c.BaseURL+path, res.StatusCode, res.Header.Get("Content-Type"), time.Since(startedAt), data)
+	logUpstreamResponse(ctx, http.MethodGet, path, res.StatusCode, res.Header.Get("Content-Type"), time.Since(startedAt), data)
 	return res.StatusCode, data, nil
 }
 
-func logUpstreamTransportError(method, url string, duration time.Duration, err error) {
-	log.Printf(
-		"[mistral] upstream transport error method=%s url=%q duration_ms=%d error=%q",
-		method,
-		url,
-		duration.Milliseconds(),
-		err,
-	)
+func logUpstreamStep(ctx context.Context, route, step string, fields map[string]any) {
+	log.Print(observability.FormatStepLine("mistral", route, step, observability.TraceIDFromContext(ctx), observability.DefaultTraceID, observability.DefaultTraceID, "", fields))
 }
 
-func logUpstreamReadError(method, url string, status int, duration time.Duration, err error) {
-	log.Printf(
-		"[mistral] upstream read error method=%s url=%q status=%d duration_ms=%d error=%q",
-		method,
-		url,
-		status,
-		duration.Milliseconds(),
-		err,
-	)
+func logUpstreamTransportError(ctx context.Context, method, route string, duration time.Duration, err error) {
+	logUpstreamStep(ctx, route, "transport_error", map[string]any{
+		"method":      method,
+		"duration_ms": duration.Milliseconds(),
+		"error":       err,
+	})
 }
 
-func logUpstreamResponse(method, url string, status int, contentType string, duration time.Duration, body []byte) {
-	if status < http.StatusBadRequest {
+func logUpstreamReadError(ctx context.Context, method, route string, status int, duration time.Duration, err error) {
+	logUpstreamStep(ctx, route, "read_error", map[string]any{
+		"method":      method,
+		"status":      status,
+		"duration_ms": duration.Milliseconds(),
+		"error":       err,
+	})
+}
+
+func logUpstreamResponse(ctx context.Context, method, route string, status int, contentType string, duration time.Duration, body []byte) {
+	fields := map[string]any{
+		"method":         method,
+		"status":         status,
+		"duration_ms":    duration.Milliseconds(),
+		"content_type":   strings.TrimSpace(contentType),
+		"response_bytes": len(body),
+	}
+	if status >= http.StatusBadRequest {
+		summary, preview := summarizeUpstreamBody(body)
+		fields["summary"] = summary
+		if preview != "" {
+			fields["preview"] = preview
+		}
+		logUpstreamStep(ctx, route, "upstream_error_response", fields)
 		return
 	}
-	summary, preview := summarizeUpstreamBody(body)
-	log.Printf(
-		"[mistral] upstream error response method=%s url=%q status=%d duration_ms=%d content_type=%q summary=%q body_preview=%q",
-		method,
-		url,
-		status,
-		duration.Milliseconds(),
-		strings.TrimSpace(contentType),
-		summary,
-		preview,
-	)
+	logUpstreamStep(ctx, route, "response_received", fields)
 }
 
 func summarizeUpstreamBody(body []byte) (string, string) {

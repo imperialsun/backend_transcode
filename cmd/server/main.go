@@ -2,14 +2,10 @@ package main
 
 import (
 	"context"
-	"log"
 	"os"
-	"os/signal"
-	"syscall"
 	"time"
 
 	"demeter-backend/internal/api"
-	"demeter-backend/internal/auth"
 	"demeter-backend/internal/config"
 	"demeter-backend/internal/mailer"
 	"demeter-backend/internal/mistral"
@@ -22,56 +18,8 @@ import (
 
 func main() {
 	cfg := config.Load()
-	ctx := context.Background()
-
-	st, err := store.Open(ctx, cfg.SQLitePath)
-	if err != nil {
-		log.Fatalf("failed to open store: %v", err)
-	}
-	defer func() {
-		_ = st.Close()
-	}()
-
-	bootstrapHash := ""
-	if cfg.BootstrapAdminPassword != "" {
-		bootstrapHash, err = auth.HashPassword(cfg.BootstrapAdminPassword)
-		if err != nil {
-			log.Fatalf("invalid bootstrap admin password: %v", err)
-		}
-	}
-	if err := st.EnsureBootstrap(ctx, cfg.BootstrapAdminEmail, bootstrapHash, cfg.BootstrapOrgName); err != nil {
-		log.Fatalf("failed to bootstrap catalog/admin: %v", err)
-	}
-
-	app := buildApp(cfg, st, mistral.NewClient(
-		cfg.MistralAPIBaseURL,
-		cfg.MistralAPIKey,
-		cfg.MistralRequestTimeout,
-		cfg.MistralAudioTimeout,
-	), mailer.NewSMTPMailer(mailer.Config{
-		Host:      cfg.SMTPHost,
-		Port:      cfg.SMTPPort,
-		Username:  cfg.SMTPUsername,
-		Password:  cfg.SMTPPassword,
-		FromEmail: cfg.SMTPFromEmail,
-		FromName:  cfg.SMTPFromName,
-	}))
-
-	go func() {
-		if err := app.Listen(":" + cfg.Port); err != nil {
-			log.Printf("fiber listen stopped: %v", err)
-		}
-	}()
-	log.Printf("backend started on :%s", cfg.Port)
-
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-	<-sigCh
-
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if err := app.ShutdownWithContext(shutdownCtx); err != nil {
-		log.Printf("graceful shutdown failed: %v", err)
+	if err := run(context.Background(), cfg); err != nil {
+		os.Exit(1)
 	}
 }
 
@@ -88,6 +36,7 @@ func buildApp(cfg config.Config, st *store.Store, mistralClient *mistral.Client,
 		BodyLimit:             cfg.BodyLimitBytes,
 		DisableStartupMessage: true,
 	})
+	app.Use(appCtx.RequestTrace())
 	app.Use(appCtx.RequestLogger())
 	app.Use(recovermw.New())
 	app.Use(appCtx.EnforceAdminOrigin())

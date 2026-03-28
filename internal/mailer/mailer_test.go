@@ -1,7 +1,12 @@
 package mailer
 
 import (
+	"bytes"
 	"context"
+	"io"
+	"mime"
+	"mime/multipart"
+	"net/mail"
 	"strings"
 	"testing"
 	"time"
@@ -69,6 +74,109 @@ func TestBuildMeetingSummaryMessageIncludesAttachments(t *testing.T) {
 	}
 	if !strings.Contains(raw, "multipart/mixed") || !strings.Contains(raw, "multipart/alternative") {
 		t.Fatalf("expected nested multipart body, got %q", raw)
+	}
+}
+
+func TestBuildMeetingSummaryMessageEncodesAccentedHeaders(t *testing.T) {
+	mailer := NewSMTPMailer(Config{
+		Host:      "smtp.demeter.test",
+		Port:      587,
+		FromEmail: "noreply@demeter.test",
+		FromName:  "Équipe Démo",
+	})
+
+	message, err := mailer.buildMeetingSummaryMessage(MeetingSummaryEmail{
+		ToEmail:  "user@example.com",
+		Subject:  "Compte rendu de réunion - Revue qualité",
+		TextBody: "Bonjour,\nVoici le compte rendu.",
+		Attachments: []MailAttachment{
+			{Filename: "rapport-équipe.docx", ContentType: DocxContentType, Data: []byte("docx-1")},
+		},
+	})
+	if err != nil {
+		t.Fatalf("buildMeetingSummaryMessage returned error: %v", err)
+	}
+
+	msg, err := mail.ReadMessage(bytes.NewReader(message))
+	if err != nil {
+		t.Fatalf("failed to parse built message: %v", err)
+	}
+
+	rawSubject := msg.Header.Get("Subject")
+	if !strings.Contains(rawSubject, "=?utf-8?") {
+		t.Fatalf("expected encoded subject header, got %q", rawSubject)
+	}
+	rawFrom := msg.Header.Get("From")
+	if !strings.Contains(rawFrom, "=?utf-8?") {
+		t.Fatalf("expected encoded from header, got %q", rawFrom)
+	}
+
+	decoder := mime.WordDecoder{}
+	subject, err := decoder.DecodeHeader(rawSubject)
+	if err != nil {
+		t.Fatalf("failed to decode subject: %v", err)
+	}
+	if subject != "Compte rendu de réunion - Revue qualité" {
+		t.Fatalf("expected decoded subject with accents, got %q", subject)
+	}
+
+	from, err := decoder.DecodeHeader(rawFrom)
+	if err != nil {
+		t.Fatalf("failed to decode from header: %v", err)
+	}
+	if from != "Équipe Démo <noreply@demeter.test>" {
+		t.Fatalf("expected decoded from header with accents, got %q", from)
+	}
+
+	mediaType, params, err := mime.ParseMediaType(msg.Header.Get("Content-Type"))
+	if err != nil {
+		t.Fatalf("failed to parse top-level content type: %v", err)
+	}
+	if mediaType != "multipart/mixed" {
+		t.Fatalf("expected multipart/mixed top-level content type, got %q", mediaType)
+	}
+	boundary := params["boundary"]
+	if boundary == "" {
+		t.Fatal("expected multipart boundary")
+	}
+
+	reader := multipart.NewReader(msg.Body, boundary)
+	textPart, err := reader.NextPart()
+	if err != nil {
+		t.Fatalf("failed to read text part: %v", err)
+	}
+	if got := textPart.Header.Get("Content-Type"); !strings.HasPrefix(got, "text/plain") {
+		t.Fatalf("expected first part to be text/plain, got %q", got)
+	}
+
+	attachmentPart, err := reader.NextPart()
+	if err != nil {
+		t.Fatalf("failed to read attachment part: %v", err)
+	}
+	if _, err := reader.NextPart(); err != io.EOF {
+		t.Fatalf("expected only one attachment part, got err=%v", err)
+	}
+
+	attachmentType, attachmentParams, err := mime.ParseMediaType(attachmentPart.Header.Get("Content-Type"))
+	if err != nil {
+		t.Fatalf("failed to parse attachment content type: %v", err)
+	}
+	if attachmentType != DocxContentType {
+		t.Fatalf("expected docx attachment type, got %q", attachmentType)
+	}
+	if got := attachmentParams["name"]; got != "rapport-équipe.docx" {
+		t.Fatalf("expected decoded attachment name, got %q", got)
+	}
+
+	dispositionType, dispositionParams, err := mime.ParseMediaType(attachmentPart.Header.Get("Content-Disposition"))
+	if err != nil {
+		t.Fatalf("failed to parse attachment content disposition: %v", err)
+	}
+	if dispositionType != "attachment" {
+		t.Fatalf("expected attachment disposition, got %q", dispositionType)
+	}
+	if got := dispositionParams["filename"]; got != "rapport-équipe.docx" {
+		t.Fatalf("expected decoded attachment filename, got %q", got)
 	}
 }
 

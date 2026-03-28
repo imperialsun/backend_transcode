@@ -107,8 +107,10 @@ func (s *Store) CountActiveUsersByOrganizationRole(ctx context.Context, organiza
 }
 
 func (s *Store) DeleteUser(ctx context.Context, userID string) (bool, error) {
+	logStoreStep(ctx, "delete_start", "user", map[string]any{"user_id": strings.TrimSpace(userID)})
 	tx, err := s.DB.BeginTx(ctx, nil)
 	if err != nil {
+		logStoreStep(ctx, "delete_error", "user", map[string]any{"error": err, "user_id": strings.TrimSpace(userID)})
 		return false, err
 	}
 	defer rollbackTx(tx)
@@ -118,6 +120,7 @@ func (s *Store) DeleteUser(ctx context.Context, userID string) (bool, error) {
 		SET requested_by_user_id = NULL
 		WHERE requested_by_user_id = ?
 	`, strings.TrimSpace(userID)); err != nil {
+		logStoreStep(ctx, "delete_error", "user", map[string]any{"error": err, "user_id": strings.TrimSpace(userID)})
 		return false, err
 	}
 	if _, err := tx.ExecContext(ctx, `
@@ -125,40 +128,50 @@ func (s *Store) DeleteUser(ctx context.Context, userID string) (bool, error) {
 		SET actor_user_id = NULL
 		WHERE actor_user_id = ?
 	`, strings.TrimSpace(userID)); err != nil {
+		logStoreStep(ctx, "delete_error", "user", map[string]any{"error": err, "user_id": strings.TrimSpace(userID)})
 		return false, err
 	}
 
 	result, err := tx.ExecContext(ctx, `DELETE FROM users WHERE id = ?`, strings.TrimSpace(userID))
 	if err != nil {
+		logStoreStep(ctx, "delete_error", "user", map[string]any{"error": err, "user_id": strings.TrimSpace(userID)})
 		return false, err
 	}
 	affected, err := result.RowsAffected()
 	if err != nil {
+		logStoreStep(ctx, "delete_error", "user", map[string]any{"error": err, "user_id": strings.TrimSpace(userID)})
 		return false, err
 	}
 	if affected == 0 {
+		logStoreStep(ctx, "delete_skipped", "user", map[string]any{"user_id": strings.TrimSpace(userID), "reason": "missing"})
 		return false, nil
 	}
 
 	if err := tx.Commit(); err != nil {
+		logStoreStep(ctx, "delete_error", "user", map[string]any{"error": err, "user_id": strings.TrimSpace(userID)})
 		return false, err
 	}
+	logStoreStep(ctx, "delete_success", "user", map[string]any{"user_id": strings.TrimSpace(userID)})
 	return true, nil
 }
 
 func (s *Store) DeleteUserActivity(ctx context.Context, userID string) (int64, error) {
+	logStoreStep(ctx, "delete_start", "activity", map[string]any{"user_id": strings.TrimSpace(userID)})
 	result, err := s.DB.ExecContext(ctx, `
 		DELETE FROM activity_usage_events
 		WHERE user_id = ?
 	`, strings.TrimSpace(userID))
 	if err != nil {
+		logStoreStep(ctx, "delete_error", "activity", map[string]any{"error": err, "user_id": strings.TrimSpace(userID)})
 		return 0, err
 	}
 
 	affected, err := result.RowsAffected()
 	if err != nil {
+		logStoreStep(ctx, "delete_error", "activity", map[string]any{"error": err, "user_id": strings.TrimSpace(userID)})
 		return 0, err
 	}
+	logStoreStep(ctx, "delete_success", "activity", map[string]any{"user_id": strings.TrimSpace(userID), "deleted_count": affected})
 	return affected, nil
 }
 

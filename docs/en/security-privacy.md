@@ -48,6 +48,12 @@ SQLite access:
 - audio content and prompts sent to `Demeter Sante` leave the backend toward Mistral,
 - the provider key stays hidden on the server.
 
+### Application logging
+
+- runtime logs use a shared per-request `trace_id` to connect HTTP handlers, internal helpers, and `mistral` / `mailer` calls,
+- step logs stay limited to routes, statuses, counters, technical identifiers, and compact error summaries,
+- mail bodies, transcripts, passwords, tokens, and other sensitive payloads are not logged in plain text.
+
 ## Image and runtime
 
 - final `distroless` non-root image,

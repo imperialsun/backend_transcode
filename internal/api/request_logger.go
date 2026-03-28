@@ -5,12 +5,16 @@ import (
 	"strings"
 	"time"
 
+	"demeter-backend/internal/observability"
+
 	"github.com/gofiber/fiber/v2"
 )
 
 // RequestLogger logs every HTTP request handled by the backend.
 func (a *App) RequestLogger() fiber.Handler {
 	return func(c *fiber.Ctx) error {
+		traceID := requestTraceID(c)
+		route := requestRoutePath(c)
 		startedAt := time.Now()
 		err := c.Next()
 
@@ -18,6 +22,9 @@ func (a *App) RequestLogger() fiber.Handler {
 		status := c.Response().StatusCode()
 		if status == 0 {
 			status = fiber.StatusOK
+		}
+		if err != nil && status < fiber.StatusBadRequest {
+			status = fiber.StatusInternalServerError
 		}
 
 		userID := "-"
@@ -36,33 +43,20 @@ func (a *App) RequestLogger() fiber.Handler {
 			userAgent = "-"
 		}
 
+		fields := map[string]any{
+			"method":      c.Method(),
+			"status":      status,
+			"duration_ms": durationMs,
+			"ip":          c.IP(),
+			"ua":          userAgent,
+		}
 		if err != nil {
-			log.Printf(
-				"[http] method=%s path=%q status=%d duration_ms=%d ip=%s user=%s org=%s ua=%q error=%q",
-				c.Method(),
-				c.OriginalURL(),
-				status,
-				durationMs,
-				c.IP(),
-				userID,
-				orgID,
-				userAgent,
-				err.Error(),
-			)
+			fields["error"] = err
+			log.Print(observability.FormatStepLine("http", route, "request_failed", traceID, userID, orgID, "request", fields))
 			return err
 		}
 
-		log.Printf(
-			"[http] method=%s path=%q status=%d duration_ms=%d ip=%s user=%s org=%s ua=%q",
-			c.Method(),
-			c.OriginalURL(),
-			status,
-			durationMs,
-			c.IP(),
-			userID,
-			orgID,
-			userAgent,
-		)
+		log.Print(observability.FormatStepLine("http", route, "request_completed", traceID, userID, orgID, "request", fields))
 		return nil
 	}
 }

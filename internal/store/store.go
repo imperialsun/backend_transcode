@@ -157,23 +157,29 @@ const (
 )
 
 func Open(ctx context.Context, path string) (*Store, error) {
+	logStoreStep(ctx, "open_start", "store", map[string]any{"path": path})
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
+		logStoreStep(ctx, "open_error", "store", map[string]any{"path": path, "error": err})
 		return nil, fmt.Errorf("mkdir db dir: %w", err)
 	}
 	db, err := sql.Open("sqlite", sqliteDSN(path))
 	if err != nil {
+		logStoreStep(ctx, "open_error", "store", map[string]any{"path": path, "error": err})
 		return nil, fmt.Errorf("open sqlite: %w", err)
 	}
 	db.SetMaxOpenConns(sqliteMaxOpenConns)
 	db.SetMaxIdleConns(sqliteMaxIdleConns)
 	store := &Store{DB: db}
 	if err := store.Migrate(ctx); err != nil {
+		logStoreStep(ctx, "open_error", "store", map[string]any{"path": path, "error": err})
 		return nil, err
 	}
 	if err := store.SeedBaseCatalog(ctx); err != nil {
+		logStoreStep(ctx, "open_error", "store", map[string]any{"path": path, "error": err})
 		return nil, err
 	}
+	logStoreStep(ctx, "open_success", "store", map[string]any{"path": path})
 	return store, nil
 }
 
@@ -197,12 +203,6 @@ func sqliteDSN(path string) string {
 }
 
 func (s *Store) Migrate(ctx context.Context) error {
-	tx, err := s.DB.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer rollbackTx(tx)
-
 	stmts := []string{
 		`CREATE TABLE IF NOT EXISTS organizations (
 			id TEXT PRIMARY KEY,
@@ -344,18 +344,32 @@ func (s *Store) Migrate(ctx context.Context) error {
 		`CREATE INDEX IF NOT EXISTS idx_activity_kind_org_day ON activity_usage_events(event_kind, organization_id, day);`,
 		`CREATE INDEX IF NOT EXISTS idx_activity_provider_org_day ON activity_usage_events(provider, organization_id, day);`,
 	}
+	logStoreStep(ctx, "migrate_start", "schema", map[string]any{"statement_count": len(stmts)})
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		logStoreStep(ctx, "migrate_error", "schema", map[string]any{"error": err})
+		return err
+	}
+	defer rollbackTx(tx)
 
 	for _, stmt := range stmts {
 		if _, err := tx.ExecContext(ctx, stmt); err != nil {
+			logStoreStep(ctx, "migrate_error", "schema", map[string]any{"error": err})
 			return err
 		}
 	}
 
 	if err := ensureColumnExists(ctx, tx, "refresh_sessions", "session_type", `ALTER TABLE refresh_sessions ADD COLUMN session_type TEXT NOT NULL DEFAULT 'app'`); err != nil {
+		logStoreStep(ctx, "migrate_error", "schema", map[string]any{"error": err})
 		return err
 	}
 
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		logStoreStep(ctx, "migrate_error", "schema", map[string]any{"error": err})
+		return err
+	}
+	logStoreStep(ctx, "migrate_success", "schema", map[string]any{"statement_count": len(stmts)})
+	return nil
 }
 
 func (s *Store) SeedBaseCatalog(ctx context.Context) error {
@@ -378,21 +392,31 @@ func (s *Store) SeedBaseCatalog(ctx context.Context) error {
 		{"provider.llm.mistral", "Provider llm Mistral", "provider_llm"},
 		{"provider.llm.demeter_sante", "Provider llm Demeter Sante", "provider_llm"},
 	}
+	logStoreStep(ctx, "seed_start", "catalog", map[string]any{
+		"permission_count":  len(permissions),
+		"global_role_count": 2,
+		"org_role_count":    2,
+	})
 	for _, p := range permissions {
 		if err := s.upsertPermission(ctx, p.Code, p.Label, p.Scope); err != nil {
+			logStoreStep(ctx, "seed_error", "catalog", map[string]any{"error": err})
 			return err
 		}
 	}
 	if err := s.upsertGlobalRole(ctx, "super_admin", "Super Admin"); err != nil {
+		logStoreStep(ctx, "seed_error", "catalog", map[string]any{"error": err})
 		return err
 	}
 	if err := s.upsertGlobalRole(ctx, "user", "User"); err != nil {
+		logStoreStep(ctx, "seed_error", "catalog", map[string]any{"error": err})
 		return err
 	}
 	if err := s.upsertOrganizationRole(ctx, "org_admin", "Organization Admin"); err != nil {
+		logStoreStep(ctx, "seed_error", "catalog", map[string]any{"error": err})
 		return err
 	}
 	if err := s.upsertOrganizationRole(ctx, "org_member", "Organization Member"); err != nil {
+		logStoreStep(ctx, "seed_error", "catalog", map[string]any{"error": err})
 		return err
 	}
 
@@ -401,6 +425,7 @@ func (s *Store) SeedBaseCatalog(ctx context.Context) error {
 		allCodes = append(allCodes, p.Code)
 	}
 	if err := s.SetGlobalRolePermissionsByCode(ctx, "super_admin", allCodes); err != nil {
+		logStoreStep(ctx, "seed_error", "catalog", map[string]any{"error": err})
 		return err
 	}
 	if err := s.SetGlobalRolePermissionsByCode(ctx, "user", []string{
@@ -417,9 +442,11 @@ func (s *Store) SeedBaseCatalog(ctx context.Context) error {
 		"provider.llm.mistral",
 		"provider.llm.demeter_sante",
 	}); err != nil {
+		logStoreStep(ctx, "seed_error", "catalog", map[string]any{"error": err})
 		return err
 	}
 	if err := s.SetOrganizationRolePermissionsByCode(ctx, "org_admin", allCodes); err != nil {
+		logStoreStep(ctx, "seed_error", "catalog", map[string]any{"error": err})
 		return err
 	}
 	if err := s.SetOrganizationRolePermissionsByCode(ctx, "org_member", []string{
@@ -436,36 +463,51 @@ func (s *Store) SeedBaseCatalog(ctx context.Context) error {
 		"provider.llm.mistral",
 		"provider.llm.demeter_sante",
 	}); err != nil {
+		logStoreStep(ctx, "seed_error", "catalog", map[string]any{"error": err})
 		return err
 	}
+	logStoreStep(ctx, "seed_success", "catalog", map[string]any{"permission_count": len(permissions)})
 	return nil
 }
 
 func (s *Store) EnsureBootstrap(ctx context.Context, adminEmail, passwordHash, orgName string) error {
+	logStoreStep(ctx, "bootstrap_start", "bootstrap", map[string]any{
+		"admin_email_present": strings.TrimSpace(adminEmail) != "",
+		"password_present":    strings.TrimSpace(passwordHash) != "",
+		"org_name_present":    strings.TrimSpace(orgName) != "",
+	})
 	var count int
 	if err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM users`).Scan(&count); err != nil {
+		logStoreStep(ctx, "bootstrap_error", "bootstrap", map[string]any{"error": err})
 		return err
 	}
 	if count > 0 {
+		logStoreStep(ctx, "bootstrap_skipped", "bootstrap", map[string]any{"reason": "existing_users", "user_count": count})
 		return nil
 	}
 	if strings.TrimSpace(adminEmail) == "" || strings.TrimSpace(passwordHash) == "" {
+		logStoreStep(ctx, "bootstrap_skipped", "bootstrap", map[string]any{"reason": "missing_credentials"})
 		return nil
 	}
 	org, err := s.CreateOrganization(ctx, strings.TrimSpace(orgName), normalizeOrgCode(orgName), "active")
 	if err != nil {
+		logStoreStep(ctx, "bootstrap_error", "bootstrap", map[string]any{"error": err})
 		return err
 	}
 	user, err := s.CreateUser(ctx, org.ID, strings.ToLower(strings.TrimSpace(adminEmail)), passwordHash, "active")
 	if err != nil {
+		logStoreStep(ctx, "bootstrap_error", "bootstrap", map[string]any{"error": err, "organization_id": org.ID})
 		return err
 	}
 	if err := s.SetUserGlobalRoles(ctx, user.ID, []string{"super_admin", "user"}); err != nil {
+		logStoreStep(ctx, "bootstrap_error", "bootstrap", map[string]any{"error": err, "user_id": user.ID})
 		return err
 	}
 	if err := s.SetUserOrganizationRoles(ctx, user.ID, []string{"org_admin", "org_member"}); err != nil {
+		logStoreStep(ctx, "bootstrap_error", "bootstrap", map[string]any{"error": err, "user_id": user.ID})
 		return err
 	}
+	logStoreStep(ctx, "bootstrap_success", "bootstrap", map[string]any{"organization_id": org.ID, "user_id": user.ID})
 	return nil
 }
 
@@ -533,6 +575,10 @@ func (s *Store) GetOrganizationByID(ctx context.Context, id string) (*Organizati
 }
 
 func (s *Store) CreateOrganization(ctx context.Context, name, code, status string) (*Organization, error) {
+	logStoreStep(ctx, "create_start", "organization", map[string]any{
+		"status": normalizeStatus(status),
+		"code":   normalizeOrgCode(code),
+	})
 	now := time.Now().UTC()
 	org := &Organization{
 		ID:        uuid.NewString(),
@@ -547,14 +593,27 @@ func (s *Store) CreateOrganization(ctx context.Context, name, code, status strin
 		VALUES(?, ?, ?, ?, ?, ?)
 	`, org.ID, org.Name, org.Code, org.Status, org.CreatedAt, org.UpdatedAt)
 	if err != nil {
+		logStoreStep(ctx, "create_error", "organization", map[string]any{"error": err, "code": org.Code})
 		return nil, err
 	}
+	logStoreStep(ctx, "create_success", "organization", map[string]any{"organization_id": org.ID, "code": org.Code, "status": org.Status})
 	return org, nil
 }
 
 func (s *Store) UpdateOrganization(ctx context.Context, id string, name, code, status *string) (*Organization, error) {
+	logStoreStep(ctx, "update_start", "organization", map[string]any{
+		"organization_id": id,
+		"has_name":        name != nil,
+		"has_code":        code != nil,
+		"has_status":      status != nil,
+	})
 	current, err := s.GetOrganizationByID(ctx, id)
 	if err != nil || current == nil {
+		if err != nil {
+			logStoreStep(ctx, "update_error", "organization", map[string]any{"error": err, "organization_id": id})
+		} else {
+			logStoreStep(ctx, "update_missing", "organization", map[string]any{"organization_id": id})
+		}
 		return current, err
 	}
 	if name != nil {
@@ -571,8 +630,10 @@ func (s *Store) UpdateOrganization(ctx context.Context, id string, name, code, s
 		UPDATE organizations SET name = ?, code = ?, status = ?, updated_at = ? WHERE id = ?
 	`, current.Name, current.Code, current.Status, current.UpdatedAt, current.ID)
 	if err != nil {
+		logStoreStep(ctx, "update_error", "organization", map[string]any{"error": err, "organization_id": id})
 		return nil, err
 	}
+	logStoreStep(ctx, "update_success", "organization", map[string]any{"organization_id": current.ID, "code": current.Code, "status": current.Status})
 	return current, nil
 }
 
@@ -629,6 +690,10 @@ func (s *Store) ListUsersByOrganization(ctx context.Context, organizationID stri
 }
 
 func (s *Store) CreateUser(ctx context.Context, organizationID, email, passwordHash, status string) (*User, error) {
+	logStoreStep(ctx, "create_start", "user", map[string]any{
+		"organization_id": strings.TrimSpace(organizationID),
+		"status":          normalizeStatus(status),
+	})
 	now := time.Now().UTC()
 	u := &User{
 		ID:             uuid.NewString(),
@@ -644,12 +709,20 @@ func (s *Store) CreateUser(ctx context.Context, organizationID, email, passwordH
 		VALUES(?, ?, ?, ?, ?, ?, ?)
 	`, u.ID, u.OrganizationID, u.Email, u.PasswordHash, u.Status, u.CreatedAt, u.UpdatedAt)
 	if err != nil {
+		logStoreStep(ctx, "create_error", "user", map[string]any{"error": err, "organization_id": u.OrganizationID})
 		return nil, err
 	}
+	logStoreStep(ctx, "create_success", "user", map[string]any{"user_id": u.ID, "organization_id": u.OrganizationID, "status": u.Status})
 	return u, nil
 }
 
 func (s *Store) CreateUserWithRoles(ctx context.Context, organizationID, email, passwordHash, status string, globalRoleCodes, organizationRoleCodes []string) (*User, error) {
+	logStoreStep(ctx, "create_start", "user_roles", map[string]any{
+		"organization_id":         strings.TrimSpace(organizationID),
+		"global_role_count":       len(globalRoleCodes),
+		"organization_role_count": len(organizationRoleCodes),
+		"status":                  normalizeStatus(status),
+	})
 	now := time.Now().UTC()
 	u := &User{
 		ID:             uuid.NewString(),
@@ -663,6 +736,7 @@ func (s *Store) CreateUserWithRoles(ctx context.Context, organizationID, email, 
 
 	tx, err := s.DB.BeginTx(ctx, nil)
 	if err != nil {
+		logStoreStep(ctx, "create_error", "user_roles", map[string]any{"error": err, "organization_id": u.OrganizationID})
 		return nil, err
 	}
 	defer rollbackTx(tx)
@@ -671,23 +745,39 @@ func (s *Store) CreateUserWithRoles(ctx context.Context, organizationID, email, 
 		INSERT INTO users(id, organization_id, email, password_hash, status, created_at, updated_at)
 		VALUES(?, ?, ?, ?, ?, ?, ?)
 	`, u.ID, u.OrganizationID, u.Email, u.PasswordHash, u.Status, u.CreatedAt, u.UpdatedAt); err != nil {
+		logStoreStep(ctx, "create_error", "user_roles", map[string]any{"error": err, "organization_id": u.OrganizationID})
 		return nil, err
 	}
 	if err := s.setUserGlobalRolesTx(ctx, tx, u.ID, globalRoleCodes); err != nil {
+		logStoreStep(ctx, "create_error", "user_roles", map[string]any{"error": err, "organization_id": u.OrganizationID})
 		return nil, err
 	}
 	if err := s.setUserOrganizationRolesTx(ctx, tx, u.ID, organizationRoleCodes); err != nil {
+		logStoreStep(ctx, "create_error", "user_roles", map[string]any{"error": err, "organization_id": u.OrganizationID})
 		return nil, err
 	}
 	if err := tx.Commit(); err != nil {
+		logStoreStep(ctx, "create_error", "user_roles", map[string]any{"error": err, "organization_id": u.OrganizationID})
 		return nil, err
 	}
+	logStoreStep(ctx, "create_success", "user_roles", map[string]any{"user_id": u.ID, "organization_id": u.OrganizationID})
 	return u, nil
 }
 
 func (s *Store) UpdateUser(ctx context.Context, userID string, input UpdateUserInput) (*User, error) {
+	logStoreStep(ctx, "update_start", "user", map[string]any{
+		"user_id":             strings.TrimSpace(userID),
+		"has_email":           input.Email != nil,
+		"has_status":          input.Status != nil,
+		"has_organization_id": input.OrganizationID != nil,
+	})
 	current, err := s.GetUserByID(ctx, userID)
 	if err != nil || current == nil {
+		if err != nil {
+			logStoreStep(ctx, "update_error", "user", map[string]any{"error": err, "user_id": userID})
+		} else {
+			logStoreStep(ctx, "update_missing", "user", map[string]any{"user_id": userID})
+		}
 		return current, err
 	}
 	if input.Email != nil {
@@ -704,21 +794,31 @@ func (s *Store) UpdateUser(ctx context.Context, userID string, input UpdateUserI
 		UPDATE users SET organization_id = ?, email = ?, status = ?, updated_at = ? WHERE id = ?
 	`, current.OrganizationID, current.Email, current.Status, current.UpdatedAt, current.ID)
 	if err != nil {
+		logStoreStep(ctx, "update_error", "user", map[string]any{"error": err, "user_id": userID})
 		return nil, err
 	}
+	logStoreStep(ctx, "update_success", "user", map[string]any{"user_id": current.ID, "organization_id": current.OrganizationID, "status": current.Status})
 	return current, nil
 }
 
 func (s *Store) UpdateUserPassword(ctx context.Context, userID, passwordHash string) error {
+	logStoreStep(ctx, "password_update_start", "user", map[string]any{"user_id": strings.TrimSpace(userID)})
 	_, err := s.DB.ExecContext(ctx, `
 		UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?
 	`, passwordHash, time.Now().UTC(), userID)
+	if err != nil {
+		logStoreStep(ctx, "password_update_error", "user", map[string]any{"error": err, "user_id": strings.TrimSpace(userID)})
+		return err
+	}
+	logStoreStep(ctx, "password_update_success", "user", map[string]any{"user_id": strings.TrimSpace(userID)})
 	return err
 }
 
 func (s *Store) ChangeUserPassword(ctx context.Context, userID, passwordHash string) error {
+	logStoreStep(ctx, "password_change_start", "user", map[string]any{"user_id": strings.TrimSpace(userID)})
 	tx, err := s.DB.BeginTx(ctx, nil)
 	if err != nil {
+		logStoreStep(ctx, "password_change_error", "user", map[string]any{"error": err, "user_id": strings.TrimSpace(userID)})
 		return err
 	}
 	defer rollbackTx(tx)
@@ -727,19 +827,27 @@ func (s *Store) ChangeUserPassword(ctx context.Context, userID, passwordHash str
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?
 	`, passwordHash, now, userID); err != nil {
+		logStoreStep(ctx, "password_change_error", "user", map[string]any{"error": err, "user_id": strings.TrimSpace(userID)})
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE refresh_sessions SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL
 	`, now, userID); err != nil {
+		logStoreStep(ctx, "password_change_error", "user", map[string]any{"error": err, "user_id": strings.TrimSpace(userID)})
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE password_reset_tokens SET used_at = ? WHERE user_id = ? AND used_at IS NULL
 	`, now, userID); err != nil {
+		logStoreStep(ctx, "password_change_error", "user", map[string]any{"error": err, "user_id": strings.TrimSpace(userID)})
 		return err
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		logStoreStep(ctx, "password_change_error", "user", map[string]any{"error": err, "user_id": strings.TrimSpace(userID)})
+		return err
+	}
+	logStoreStep(ctx, "password_change_success", "user", map[string]any{"user_id": strings.TrimSpace(userID)})
+	return nil
 }
 
 func (s *Store) IsUserInOrganization(ctx context.Context, userID, organizationID string) (bool, error) {
@@ -845,15 +953,29 @@ func (s *Store) ResolveEffectivePermissions(ctx context.Context, userID string) 
 }
 
 func (s *Store) SetUserGlobalRoles(ctx context.Context, userID string, roleCodes []string) error {
+	logStoreStep(ctx, "update_start", "user_global_roles", map[string]any{
+		"user_id":    strings.TrimSpace(userID),
+		"role_count": len(roleCodes),
+	})
 	tx, err := s.DB.BeginTx(ctx, nil)
 	if err != nil {
+		logStoreStep(ctx, "update_error", "user_global_roles", map[string]any{"error": err, "user_id": strings.TrimSpace(userID)})
 		return err
 	}
 	defer rollbackTx(tx)
 	if err := s.setUserGlobalRolesTx(ctx, tx, userID, roleCodes); err != nil {
+		logStoreStep(ctx, "update_error", "user_global_roles", map[string]any{"error": err, "user_id": strings.TrimSpace(userID)})
 		return err
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		logStoreStep(ctx, "update_error", "user_global_roles", map[string]any{"error": err, "user_id": strings.TrimSpace(userID)})
+		return err
+	}
+	logStoreStep(ctx, "update_success", "user_global_roles", map[string]any{
+		"user_id":    strings.TrimSpace(userID),
+		"role_count": len(roleCodes),
+	})
+	return nil
 }
 
 func (s *Store) setUserGlobalRolesTx(ctx context.Context, tx *sql.Tx, userID string, roleCodes []string) error {
@@ -876,15 +998,29 @@ func (s *Store) setUserGlobalRolesTx(ctx context.Context, tx *sql.Tx, userID str
 }
 
 func (s *Store) SetUserOrganizationRoles(ctx context.Context, userID string, roleCodes []string) error {
+	logStoreStep(ctx, "update_start", "user_org_roles", map[string]any{
+		"user_id":    strings.TrimSpace(userID),
+		"role_count": len(roleCodes),
+	})
 	tx, err := s.DB.BeginTx(ctx, nil)
 	if err != nil {
+		logStoreStep(ctx, "update_error", "user_org_roles", map[string]any{"error": err, "user_id": strings.TrimSpace(userID)})
 		return err
 	}
 	defer rollbackTx(tx)
 	if err := s.setUserOrganizationRolesTx(ctx, tx, userID, roleCodes); err != nil {
+		logStoreStep(ctx, "update_error", "user_org_roles", map[string]any{"error": err, "user_id": strings.TrimSpace(userID)})
 		return err
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		logStoreStep(ctx, "update_error", "user_org_roles", map[string]any{"error": err, "user_id": strings.TrimSpace(userID)})
+		return err
+	}
+	logStoreStep(ctx, "update_success", "user_org_roles", map[string]any{
+		"user_id":    strings.TrimSpace(userID),
+		"role_count": len(roleCodes),
+	})
+	return nil
 }
 
 func (s *Store) setUserOrganizationRolesTx(ctx context.Context, tx *sql.Tx, userID string, roleCodes []string) error {
@@ -907,14 +1043,21 @@ func (s *Store) setUserOrganizationRolesTx(ctx context.Context, tx *sql.Tx, user
 }
 
 func (s *Store) SetUserPermissionOverrides(ctx context.Context, userID string, overrides []UserPermissionOverrideInput) error {
+	logStoreStep(ctx, "update_start", "user_overrides", map[string]any{
+		"user_id":        strings.TrimSpace(userID),
+		"override_count": len(overrides),
+	})
 	tx, err := s.DB.BeginTx(ctx, nil)
 	if err != nil {
+		logStoreStep(ctx, "update_error", "user_overrides", map[string]any{"error": err, "user_id": strings.TrimSpace(userID)})
 		return err
 	}
 	defer rollbackTx(tx)
 	if _, err := tx.ExecContext(ctx, `DELETE FROM user_permission_overrides WHERE user_id = ?`, userID); err != nil {
+		logStoreStep(ctx, "update_error", "user_overrides", map[string]any{"error": err, "user_id": strings.TrimSpace(userID)})
 		return err
 	}
+	appliedCount := 0
 	for _, override := range overrides {
 		code := strings.TrimSpace(override.PermissionCode)
 		effect := strings.ToLower(strings.TrimSpace(override.Effect))
@@ -923,6 +1066,7 @@ func (s *Store) SetUserPermissionOverrides(ctx context.Context, userID string, o
 		}
 		permID, err := s.lookupPermissionID(ctx, tx, code)
 		if err != nil {
+			logStoreStep(ctx, "update_error", "user_overrides", map[string]any{"error": err, "user_id": strings.TrimSpace(userID)})
 			return err
 		}
 		if permID == "" {
@@ -932,72 +1076,125 @@ func (s *Store) SetUserPermissionOverrides(ctx context.Context, userID string, o
 			INSERT INTO user_permission_overrides(user_id, permission_id, effect)
 			VALUES(?, ?, ?)
 		`, userID, permID, effect); err != nil {
+			logStoreStep(ctx, "update_error", "user_overrides", map[string]any{"error": err, "user_id": strings.TrimSpace(userID)})
 			return err
 		}
+		appliedCount++
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		logStoreStep(ctx, "update_error", "user_overrides", map[string]any{"error": err, "user_id": strings.TrimSpace(userID)})
+		return err
+	}
+	logStoreStep(ctx, "update_success", "user_overrides", map[string]any{
+		"user_id":        strings.TrimSpace(userID),
+		"override_count": len(overrides),
+		"applied_count":  appliedCount,
+	})
+	return nil
 }
 
 func (s *Store) SetGlobalRolePermissionsByCode(ctx context.Context, roleCode string, permissionCodes []string) error {
+	logStoreStep(ctx, "update_start", "global_role_permissions", map[string]any{
+		"role_code":        strings.TrimSpace(roleCode),
+		"permission_count": len(permissionCodes),
+	})
 	tx, err := s.DB.BeginTx(ctx, nil)
 	if err != nil {
+		logStoreStep(ctx, "update_error", "global_role_permissions", map[string]any{"error": err, "role_code": strings.TrimSpace(roleCode)})
 		return err
 	}
 	defer rollbackTx(tx)
 	roleID, err := s.lookupGlobalRoleID(ctx, tx, roleCode)
 	if err != nil {
+		logStoreStep(ctx, "update_error", "global_role_permissions", map[string]any{"error": err, "role_code": strings.TrimSpace(roleCode)})
 		return err
 	}
 	if roleID == "" {
+		logStoreStep(ctx, "update_skipped", "global_role_permissions", map[string]any{"role_code": strings.TrimSpace(roleCode), "reason": "missing_role"})
 		return nil
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM global_role_permissions WHERE global_role_id = ?`, roleID); err != nil {
+		logStoreStep(ctx, "update_error", "global_role_permissions", map[string]any{"error": err, "role_code": strings.TrimSpace(roleCode)})
 		return err
 	}
+	mappedCount := 0
 	for _, code := range uniqueNormalizedCodes(permissionCodes) {
 		permID, err := s.lookupPermissionID(ctx, tx, code)
 		if err != nil {
+			logStoreStep(ctx, "update_error", "global_role_permissions", map[string]any{"error": err, "role_code": strings.TrimSpace(roleCode)})
 			return err
 		}
 		if permID == "" {
 			continue
 		}
 		if _, err := tx.ExecContext(ctx, `INSERT INTO global_role_permissions(global_role_id, permission_id) VALUES(?, ?)`, roleID, permID); err != nil {
+			logStoreStep(ctx, "update_error", "global_role_permissions", map[string]any{"error": err, "role_code": strings.TrimSpace(roleCode)})
 			return err
 		}
+		mappedCount++
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		logStoreStep(ctx, "update_error", "global_role_permissions", map[string]any{"error": err, "role_code": strings.TrimSpace(roleCode)})
+		return err
+	}
+	logStoreStep(ctx, "update_success", "global_role_permissions", map[string]any{
+		"role_code":        strings.TrimSpace(roleCode),
+		"permission_count": len(permissionCodes),
+		"mapped_count":     mappedCount,
+	})
+	return nil
 }
 
 func (s *Store) SetOrganizationRolePermissionsByCode(ctx context.Context, roleCode string, permissionCodes []string) error {
+	logStoreStep(ctx, "update_start", "org_role_permissions", map[string]any{
+		"role_code":        strings.TrimSpace(roleCode),
+		"permission_count": len(permissionCodes),
+	})
 	tx, err := s.DB.BeginTx(ctx, nil)
 	if err != nil {
+		logStoreStep(ctx, "update_error", "org_role_permissions", map[string]any{"error": err, "role_code": strings.TrimSpace(roleCode)})
 		return err
 	}
 	defer rollbackTx(tx)
 	roleID, err := s.lookupOrganizationRoleID(ctx, tx, roleCode)
 	if err != nil {
+		logStoreStep(ctx, "update_error", "org_role_permissions", map[string]any{"error": err, "role_code": strings.TrimSpace(roleCode)})
 		return err
 	}
 	if roleID == "" {
+		logStoreStep(ctx, "update_skipped", "org_role_permissions", map[string]any{"role_code": strings.TrimSpace(roleCode), "reason": "missing_role"})
 		return nil
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM organization_role_permissions WHERE organization_role_id = ?`, roleID); err != nil {
+		logStoreStep(ctx, "update_error", "org_role_permissions", map[string]any{"error": err, "role_code": strings.TrimSpace(roleCode)})
 		return err
 	}
+	mappedCount := 0
 	for _, code := range uniqueNormalizedCodes(permissionCodes) {
 		permID, err := s.lookupPermissionID(ctx, tx, code)
 		if err != nil {
+			logStoreStep(ctx, "update_error", "org_role_permissions", map[string]any{"error": err, "role_code": strings.TrimSpace(roleCode)})
 			return err
 		}
 		if permID == "" {
 			continue
 		}
 		if _, err := tx.ExecContext(ctx, `INSERT INTO organization_role_permissions(organization_role_id, permission_id) VALUES(?, ?)`, roleID, permID); err != nil {
+			logStoreStep(ctx, "update_error", "org_role_permissions", map[string]any{"error": err, "role_code": strings.TrimSpace(roleCode)})
 			return err
 		}
+		mappedCount++
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		logStoreStep(ctx, "update_error", "org_role_permissions", map[string]any{"error": err, "role_code": strings.TrimSpace(roleCode)})
+		return err
+	}
+	logStoreStep(ctx, "update_success", "org_role_permissions", map[string]any{
+		"role_code":        strings.TrimSpace(roleCode),
+		"permission_count": len(permissionCodes),
+		"mapped_count":     mappedCount,
+	})
+	return nil
 }
 
 func (s *Store) ListGlobalRolesCatalog(ctx context.Context) ([]map[string]string, error) {
@@ -1039,10 +1236,26 @@ func (s *Store) SaveRefreshSession(ctx context.Context, session RefreshSession) 
 	if strings.TrimSpace(session.SessionType) == "" {
 		session.SessionType = "app"
 	}
+	logStoreStep(ctx, "save_start", "refresh_session", map[string]any{
+		"session_id":      strings.TrimSpace(session.ID),
+		"user_id":         strings.TrimSpace(session.UserID),
+		"organization_id": strings.TrimSpace(session.OrganizationID),
+		"session_type":    strings.TrimSpace(session.SessionType),
+		"expires_at":      session.ExpiresAt.UTC().Format(time.RFC3339Nano),
+	})
 	_, err := s.DB.ExecContext(ctx, `
 		INSERT INTO refresh_sessions(id, user_id, organization_id, session_type, refresh_hash, expires_at, revoked_at, created_at)
 		VALUES(?, ?, ?, ?, ?, ?, ?, ?)
 	`, session.ID, session.UserID, session.OrganizationID, session.SessionType, session.TokenHash, session.ExpiresAt, nil, session.CreatedAt)
+	if err != nil {
+		logStoreStep(ctx, "save_error", "refresh_session", map[string]any{"error": err, "session_id": strings.TrimSpace(session.ID), "user_id": strings.TrimSpace(session.UserID)})
+		return err
+	}
+	logStoreStep(ctx, "save_success", "refresh_session", map[string]any{
+		"session_id":   strings.TrimSpace(session.ID),
+		"user_id":      strings.TrimSpace(session.UserID),
+		"session_type": strings.TrimSpace(session.SessionType),
+	})
 	return err
 }
 
@@ -1065,21 +1278,42 @@ func (s *Store) GetRefreshSessionByID(ctx context.Context, id string) (*RefreshS
 }
 
 func (s *Store) RotateRefreshSession(ctx context.Context, id, newHash string, expiresAt time.Time) error {
+	logStoreStep(ctx, "rotate_start", "refresh_session", map[string]any{
+		"session_id": strings.TrimSpace(id),
+		"expires_at": expiresAt.UTC().Format(time.RFC3339Nano),
+	})
 	_, err := s.DB.ExecContext(ctx, `
 		UPDATE refresh_sessions
 		SET refresh_hash = ?, expires_at = ?, revoked_at = NULL
 		WHERE id = ?
 	`, newHash, expiresAt, id)
+	if err != nil {
+		logStoreStep(ctx, "rotate_error", "refresh_session", map[string]any{"error": err, "session_id": strings.TrimSpace(id)})
+		return err
+	}
+	logStoreStep(ctx, "rotate_success", "refresh_session", map[string]any{"session_id": strings.TrimSpace(id)})
 	return err
 }
 
 func (s *Store) RevokeRefreshSession(ctx context.Context, id string) error {
+	logStoreStep(ctx, "revoke_start", "refresh_session", map[string]any{"session_id": strings.TrimSpace(id)})
 	_, err := s.DB.ExecContext(ctx, `UPDATE refresh_sessions SET revoked_at = ? WHERE id = ?`, time.Now().UTC(), id)
+	if err != nil {
+		logStoreStep(ctx, "revoke_error", "refresh_session", map[string]any{"error": err, "session_id": strings.TrimSpace(id)})
+		return err
+	}
+	logStoreStep(ctx, "revoke_success", "refresh_session", map[string]any{"session_id": strings.TrimSpace(id)})
 	return err
 }
 
 func (s *Store) RevokeRefreshSessionsByUser(ctx context.Context, userID string) error {
+	logStoreStep(ctx, "revoke_start", "refresh_sessions", map[string]any{"user_id": strings.TrimSpace(userID)})
 	_, err := s.DB.ExecContext(ctx, `UPDATE refresh_sessions SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL`, time.Now().UTC(), userID)
+	if err != nil {
+		logStoreStep(ctx, "revoke_error", "refresh_sessions", map[string]any{"error": err, "user_id": strings.TrimSpace(userID)})
+		return err
+	}
+	logStoreStep(ctx, "revoke_success", "refresh_sessions", map[string]any{"user_id": strings.TrimSpace(userID)})
 	return err
 }
 
@@ -1093,11 +1327,27 @@ func (s *Store) SavePasswordResetToken(ctx context.Context, token PasswordResetT
 	if token.CreatedAt.IsZero() {
 		token.CreatedAt = time.Now().UTC()
 	}
+	logStoreStep(ctx, "save_start", "password_reset", map[string]any{
+		"token_id":        strings.TrimSpace(token.ID),
+		"user_id":         strings.TrimSpace(token.UserID),
+		"session_type":    strings.TrimSpace(token.SessionType),
+		"requested_by_id": strings.TrimSpace(token.RequestedByUserID.String),
+		"expires_at":      token.ExpiresAt.UTC().Format(time.RFC3339Nano),
+	})
 	_, err := s.DB.ExecContext(ctx, `
 		INSERT INTO password_reset_tokens(
 			id, user_id, session_type, token_hash, expires_at, used_at, requested_by_user_id, created_at
 		) VALUES(?, ?, ?, ?, ?, ?, ?, ?)
 	`, token.ID, token.UserID, token.SessionType, token.TokenHash, token.ExpiresAt, nil, nullableString(token.RequestedByUserID.String), token.CreatedAt)
+	if err != nil {
+		logStoreStep(ctx, "save_error", "password_reset", map[string]any{"error": err, "token_id": strings.TrimSpace(token.ID), "user_id": strings.TrimSpace(token.UserID)})
+		return err
+	}
+	logStoreStep(ctx, "save_success", "password_reset", map[string]any{
+		"token_id":     strings.TrimSpace(token.ID),
+		"user_id":      strings.TrimSpace(token.UserID),
+		"session_type": strings.TrimSpace(token.SessionType),
+	})
 	return err
 }
 
@@ -1130,15 +1380,34 @@ func (s *Store) GetPasswordResetTokenByHash(ctx context.Context, hash string) (*
 }
 
 func (s *Store) ConsumePasswordResetToken(ctx context.Context, id string) error {
-	_, err := s.DB.ExecContext(ctx, `
+	logStoreStep(ctx, "consume_start", "password_reset", map[string]any{"token_id": strings.TrimSpace(id)})
+	result, err := s.DB.ExecContext(ctx, `
 		UPDATE password_reset_tokens
 		SET used_at = ?
 		WHERE id = ? AND used_at IS NULL
 	`, time.Now().UTC(), strings.TrimSpace(id))
+	if err != nil {
+		logStoreStep(ctx, "consume_error", "password_reset", map[string]any{"error": err, "token_id": strings.TrimSpace(id)})
+		return err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		logStoreStep(ctx, "consume_error", "password_reset", map[string]any{"error": err, "token_id": strings.TrimSpace(id)})
+		return err
+	}
+	if affected == 0 {
+		logStoreStep(ctx, "consume_skipped", "password_reset", map[string]any{"token_id": strings.TrimSpace(id), "reason": "missing_or_used"})
+		return nil
+	}
+	logStoreStep(ctx, "consume_success", "password_reset", map[string]any{"token_id": strings.TrimSpace(id), "updated_count": affected})
 	return err
 }
 
 func (s *Store) RevokePasswordResetTokensByUser(ctx context.Context, userID string, sessionType string) error {
+	logStoreStep(ctx, "revoke_start", "password_reset_tokens", map[string]any{
+		"user_id":      strings.TrimSpace(userID),
+		"session_type": strings.TrimSpace(sessionType),
+	})
 	query := `
 		UPDATE password_reset_tokens
 		SET used_at = ?
@@ -1149,13 +1418,31 @@ func (s *Store) RevokePasswordResetTokensByUser(ctx context.Context, userID stri
 		query += ` AND session_type = ?`
 		args = append(args, strings.TrimSpace(sessionType))
 	}
-	_, err := s.DB.ExecContext(ctx, query, args...)
+	result, err := s.DB.ExecContext(ctx, query, args...)
+	if err != nil {
+		logStoreStep(ctx, "revoke_error", "password_reset_tokens", map[string]any{"error": err, "user_id": strings.TrimSpace(userID), "session_type": strings.TrimSpace(sessionType)})
+		return err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		logStoreStep(ctx, "revoke_error", "password_reset_tokens", map[string]any{"error": err, "user_id": strings.TrimSpace(userID), "session_type": strings.TrimSpace(sessionType)})
+		return err
+	}
+	logStoreStep(ctx, "revoke_success", "password_reset_tokens", map[string]any{
+		"user_id":       strings.TrimSpace(userID),
+		"session_type":  strings.TrimSpace(sessionType),
+		"revoked_count": affected,
+	})
 	return err
 }
 
 func (s *Store) ApplyPasswordReset(ctx context.Context, tokenHash string, passwordHash string, sessionType string) (*PasswordResetToken, error) {
+	logStoreStep(ctx, "apply_start", "password_reset", map[string]any{
+		"session_type": strings.TrimSpace(sessionType),
+	})
 	tx, err := s.DB.BeginTx(ctx, nil)
 	if err != nil {
+		logStoreStep(ctx, "apply_error", "password_reset", map[string]any{"error": err, "session_type": strings.TrimSpace(sessionType)})
 		return nil, err
 	}
 	defer rollbackTx(tx)
@@ -1177,8 +1464,10 @@ func (s *Store) ApplyPasswordReset(ctx context.Context, tokenHash string, passwo
 	)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
+			logStoreStep(ctx, "apply_skipped", "password_reset", map[string]any{"session_type": strings.TrimSpace(sessionType), "reason": "not_found"})
 			return nil, nil
 		}
+		logStoreStep(ctx, "apply_error", "password_reset", map[string]any{"error": err, "session_type": strings.TrimSpace(sessionType)})
 		return nil, err
 	}
 	if strings.TrimSpace(record.SessionType) == "" {
@@ -1186,7 +1475,16 @@ func (s *Store) ApplyPasswordReset(ctx context.Context, tokenHash string, passwo
 	}
 
 	now := time.Now().UTC()
-	if record.SessionType != strings.TrimSpace(sessionType) || record.UsedAt.Valid || record.ExpiresAt.Before(now) {
+	if record.SessionType != strings.TrimSpace(sessionType) {
+		logStoreStep(ctx, "apply_skipped", "password_reset", map[string]any{"token_id": record.ID, "user_id": record.UserID, "session_type": strings.TrimSpace(sessionType), "reason": "session_type_mismatch"})
+		return nil, nil
+	}
+	if record.UsedAt.Valid {
+		logStoreStep(ctx, "apply_skipped", "password_reset", map[string]any{"token_id": record.ID, "user_id": record.UserID, "session_type": strings.TrimSpace(sessionType), "reason": "already_used"})
+		return nil, nil
+	}
+	if record.ExpiresAt.Before(now) {
+		logStoreStep(ctx, "apply_skipped", "password_reset", map[string]any{"token_id": record.ID, "user_id": record.UserID, "session_type": strings.TrimSpace(sessionType), "reason": "expired"})
 		return nil, nil
 	}
 
@@ -1194,19 +1492,23 @@ func (s *Store) ApplyPasswordReset(ctx context.Context, tokenHash string, passwo
 		UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?
 	`, passwordHash, now, record.UserID)
 	if err != nil {
+		logStoreStep(ctx, "apply_error", "password_reset", map[string]any{"error": err, "token_id": record.ID, "user_id": record.UserID, "session_type": strings.TrimSpace(sessionType)})
 		return nil, err
 	}
 	affected, err := result.RowsAffected()
 	if err != nil {
+		logStoreStep(ctx, "apply_error", "password_reset", map[string]any{"error": err, "token_id": record.ID, "user_id": record.UserID, "session_type": strings.TrimSpace(sessionType)})
 		return nil, err
 	}
 	if affected == 0 {
+		logStoreStep(ctx, "apply_skipped", "password_reset", map[string]any{"token_id": record.ID, "user_id": record.UserID, "session_type": strings.TrimSpace(sessionType), "reason": "user_missing"})
 		return nil, nil
 	}
 
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE refresh_sessions SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL
 	`, now, record.UserID); err != nil {
+		logStoreStep(ctx, "apply_error", "password_reset", map[string]any{"error": err, "token_id": record.ID, "user_id": record.UserID, "session_type": strings.TrimSpace(sessionType)})
 		return nil, err
 	}
 	if _, err := tx.ExecContext(ctx, `
@@ -1214,13 +1516,20 @@ func (s *Store) ApplyPasswordReset(ctx context.Context, tokenHash string, passwo
 		SET used_at = ?
 		WHERE user_id = ? AND used_at IS NULL
 	`, now, record.UserID); err != nil {
+		logStoreStep(ctx, "apply_error", "password_reset", map[string]any{"error": err, "token_id": record.ID, "user_id": record.UserID, "session_type": strings.TrimSpace(sessionType)})
 		return nil, err
 	}
 
 	record.UsedAt = sql.NullTime{Time: now, Valid: true}
 	if err := tx.Commit(); err != nil {
+		logStoreStep(ctx, "apply_error", "password_reset", map[string]any{"error": err, "token_id": record.ID, "user_id": record.UserID, "session_type": strings.TrimSpace(sessionType)})
 		return nil, err
 	}
+	logStoreStep(ctx, "apply_success", "password_reset", map[string]any{
+		"token_id":     record.ID,
+		"user_id":      record.UserID,
+		"session_type": strings.TrimSpace(sessionType),
+	})
 	return &record, nil
 }
 
@@ -1251,6 +1560,12 @@ func (s *Store) SaveUserSettings(ctx context.Context, userID, organizationID str
 	if schemaVersion <= 0 {
 		schemaVersion = 1
 	}
+	logStoreStep(ctx, "save_start", "settings", map[string]any{
+		"user_id":         strings.TrimSpace(userID),
+		"organization_id": strings.TrimSpace(organizationID),
+		"schema_version":  schemaVersion,
+		"settings_bytes":  len(payload),
+	})
 	_, err := s.DB.ExecContext(ctx, `
 		INSERT INTO user_settings(user_id, organization_id, settings_json, version, schema_version, updated_at)
 		VALUES(?, ?, ?, 1, ?, ?)
@@ -1259,12 +1574,24 @@ func (s *Store) SaveUserSettings(ctx context.Context, userID, organizationID str
 			settings_json = excluded.settings_json,
 			version = user_settings.version + 1,
 			schema_version = excluded.schema_version,
-			updated_at = excluded.updated_at
+		updated_at = excluded.updated_at
 	`, userID, organizationID, payload, schemaVersion, now)
 	if err != nil {
+		logStoreStep(ctx, "save_error", "settings", map[string]any{"error": err, "user_id": strings.TrimSpace(userID), "organization_id": strings.TrimSpace(organizationID)})
 		return nil, err
 	}
-	return s.GetUserSettings(ctx, userID)
+	record, err := s.GetUserSettings(ctx, userID)
+	if err != nil {
+		logStoreStep(ctx, "save_error", "settings", map[string]any{"error": err, "user_id": strings.TrimSpace(userID), "organization_id": strings.TrimSpace(organizationID)})
+		return nil, err
+	}
+	logStoreStep(ctx, "save_success", "settings", map[string]any{
+		"user_id":         strings.TrimSpace(userID),
+		"organization_id": strings.TrimSpace(organizationID),
+		"version":         record.Version,
+		"schema_version":  record.SchemaVersion,
+	})
+	return record, nil
 }
 
 func (s *Store) ResetUserSettings(ctx context.Context, userID, organizationID string) (*SettingsRecord, error) {
@@ -1278,12 +1605,24 @@ func (s *Store) IngestActivityEvents(
 	events []ActivityEventInput,
 ) (ActivityIngestResult, error) {
 	result := ActivityIngestResult{}
+	logStoreStep(ctx, "ingest_start", "activity", map[string]any{
+		"organization_id": strings.TrimSpace(organizationID),
+		"user_id":         strings.TrimSpace(userID),
+		"event_count":     len(events),
+	})
 	if len(events) == 0 {
+		logStoreStep(ctx, "ingest_success", "activity", map[string]any{
+			"organization_id": strings.TrimSpace(organizationID),
+			"user_id":         strings.TrimSpace(userID),
+			"accepted":        0,
+			"duplicates":      0,
+		})
 		return result, nil
 	}
 
 	tx, err := s.DB.BeginTx(ctx, nil)
 	if err != nil {
+		logStoreStep(ctx, "ingest_error", "activity", map[string]any{"error": err, "organization_id": strings.TrimSpace(organizationID), "user_id": strings.TrimSpace(userID)})
 		return result, err
 	}
 	defer rollbackTx(tx)
@@ -1317,14 +1656,22 @@ func (s *Store) IngestActivityEvents(
 				result.Duplicates++
 				continue
 			}
+			logStoreStep(ctx, "ingest_error", "activity", map[string]any{"error": err, "organization_id": strings.TrimSpace(organizationID), "user_id": strings.TrimSpace(userID), "accepted": result.Accepted, "duplicates": result.Duplicates})
 			return result, err
 		}
 		result.Accepted++
 	}
 
 	if err := tx.Commit(); err != nil {
+		logStoreStep(ctx, "ingest_error", "activity", map[string]any{"error": err, "organization_id": strings.TrimSpace(organizationID), "user_id": strings.TrimSpace(userID), "accepted": result.Accepted, "duplicates": result.Duplicates})
 		return result, err
 	}
+	logStoreStep(ctx, "ingest_success", "activity", map[string]any{
+		"organization_id": strings.TrimSpace(organizationID),
+		"user_id":         strings.TrimSpace(userID),
+		"accepted":        result.Accepted,
+		"duplicates":      result.Duplicates,
+	})
 	return result, nil
 }
 

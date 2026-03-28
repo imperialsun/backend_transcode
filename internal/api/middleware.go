@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"demeter-backend/internal/auth"
+	"demeter-backend/internal/observability"
 	"demeter-backend/internal/rbac"
 	"github.com/gofiber/fiber/v2"
 )
@@ -23,53 +24,57 @@ func (a *App) AdminAuthRequired() fiber.Handler {
 
 func (a *App) AuthRequired(sessionType auth.SessionType) fiber.Handler {
 	return func(c *fiber.Ctx) error {
+		traceID := requestTraceID(c)
 		raw := readAccessToken(c, sessionType)
 		if raw == "" {
 			return c.Status(fiber.StatusUnauthorized).JSON(ErrorResponse{Error: "missing access token"})
 		}
 		tokenClaims, err := auth.ParseAccessToken(a.Config.JWTSecret, raw)
 		if err != nil {
-			log.Printf("[auth] access denied reason=invalid_token session=%s path=%q ip=%s", sessionType, c.Path(), c.IP())
+			logAuthAccessDenied(c, traceID, sessionType, "invalid_token", nil, nil, map[string]any{
+				"path": c.Path(),
+				"ip":   c.IP(),
+			})
 			return c.Status(fiber.StatusUnauthorized).JSON(ErrorResponse{Error: "invalid access token"})
 		}
 		claims, status, err := a.resolveLiveClaims(requestContext(c), tokenClaims, sessionType)
 		if err != nil {
 			if status == fiber.StatusForbidden {
-				log.Printf(
-					"[auth] access denied reason=live_forbidden session=%s user=%s org=%s path=%q ip=%s",
-					sessionType,
-					tokenClaims.UserID,
-					tokenClaims.OrgID,
-					c.Path(),
-					c.IP(),
-				)
+				logAuthAccessDenied(c, traceID, sessionType, "live_forbidden", tokenClaims, nil, map[string]any{
+					"path": c.Path(),
+					"ip":   c.IP(),
+				})
 				return c.Status(fiber.StatusForbidden).JSON(ErrorResponse{Error: "forbidden"})
 			}
 			if status == fiber.StatusUnauthorized {
-				log.Printf(
-					"[auth] access denied reason=invalid_audience session=%s user=%s org=%s path=%q ip=%s",
-					sessionType,
-					tokenClaims.UserID,
-					tokenClaims.OrgID,
-					c.Path(),
-					c.IP(),
-				)
+				logAuthAccessDenied(c, traceID, sessionType, "invalid_audience", tokenClaims, nil, map[string]any{
+					"path": c.Path(),
+					"ip":   c.IP(),
+				})
 				return c.Status(fiber.StatusUnauthorized).JSON(ErrorResponse{Error: "invalid access token"})
 			}
-			log.Printf(
-				"[auth] access denied reason=resolve_claims_failed session=%s user=%s org=%s path=%q ip=%s err=%v",
-				sessionType,
-				tokenClaims.UserID,
-				tokenClaims.OrgID,
-				c.Path(),
-				c.IP(),
-				err,
-			)
+			logAuthAccessDenied(c, traceID, sessionType, "resolve_claims_failed", tokenClaims, err, map[string]any{
+				"path": c.Path(),
+				"ip":   c.IP(),
+			})
 			return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{Error: "failed to resolve authorization context"})
 		}
 		c.Locals(claimsContextKey, claims)
 		return c.Next()
 	}
+}
+
+func logAuthAccessDenied(c *fiber.Ctx, traceID string, sessionType auth.SessionType, reason string, claims *auth.Claims, err error, fields map[string]any) {
+	if fields == nil {
+		fields = map[string]any{}
+	}
+	fields["reason"] = reason
+	fields["session"] = sessionType.String()
+	if err != nil {
+		fields["error"] = err
+	}
+	userID, orgID := claimsActorIDs(claims)
+	log.Print(observability.FormatStepLine("auth", requestRoutePath(c), "access_denied", traceID, userID, orgID, "access denied", fields))
 }
 
 func (a *App) resolveLiveClaims(ctx context.Context, tokenClaims *auth.Claims, sessionType auth.SessionType) (*auth.Claims, int, error) {

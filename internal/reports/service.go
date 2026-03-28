@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"strings"
 
 	"demeter-backend/internal/mistral"
+	"demeter-backend/internal/observability"
 )
 
 const (
@@ -31,6 +33,10 @@ type GeneratedReport struct {
 }
 
 type GeneratedReports map[ReportFormat]GeneratedReport
+
+func logReportStep(ctx context.Context, step, title string, fields map[string]any) {
+	log.Print(observability.FormatStepLine("reports", "generator", step, observability.TraceIDFromContext(ctx), observability.DefaultTraceID, observability.DefaultTraceID, title, fields))
+}
 
 func (g *Generator) GenerateReports(ctx context.Context, meetingTitle string, participants []string, sourceText string, formats []ReportFormat) (GeneratedReports, error) {
 	if g == nil || g.Client == nil || !g.Client.IsConfigured() {
@@ -58,10 +64,36 @@ func (g *Generator) GenerateReports(ctx context.Context, meetingTitle string, pa
 		selectedFormats = AllReportFormats()
 	}
 
+	logReportStep(ctx, "generate_start", "reports", map[string]any{
+		"meeting_title_present": strings.TrimSpace(meetingTitle) != "",
+		"participants_count":    len(participants),
+		"source_bytes":          len(sourceText),
+		"format_count":          len(selectedFormats),
+		"model_id":              modelID,
+		"max_tokens":            maxTokens,
+		"temperature":           temperature,
+	})
+
 	results := make(GeneratedReports, len(selectedFormats))
-	for _, format := range selectedFormats {
+	for index, format := range selectedFormats {
+		formatName := ReportFormatDisplayName(format)
+		logReportStep(ctx, "generate_format_start", formatName, map[string]any{
+			"index":  index + 1,
+			"format": formatName,
+		})
+
 		report, raw, err := g.generateOne(ctx, modelID, meetingTitle, participants, sourceText, format, maxTokens, temperature)
 		if err != nil {
+			logReportStep(ctx, "generate_format_error", formatName, map[string]any{
+				"index":  index + 1,
+				"format": formatName,
+				"error":  err,
+			})
+			logReportStep(ctx, "generate_error", "reports", map[string]any{
+				"format_count": len(selectedFormats),
+				"completed":    len(results),
+				"error":        err,
+			})
 			return nil, err
 		}
 		results[format] = GeneratedReport{
@@ -69,7 +101,18 @@ func (g *Generator) GenerateReports(ctx context.Context, meetingTitle string, pa
 			Report: report,
 			Raw:    raw,
 		}
+		logReportStep(ctx, "generate_format_success", formatName, map[string]any{
+			"index":        index + 1,
+			"format":       formatName,
+			"sections":     len(report.Sections),
+			"key_points":   len(report.KeyPoints),
+			"action_items": len(report.ActionItems),
+			"caveats":      len(report.Caveats),
+		})
 	}
+	logReportStep(ctx, "generate_success", "reports", map[string]any{
+		"format_count": len(results),
+	})
 	return results, nil
 }
 

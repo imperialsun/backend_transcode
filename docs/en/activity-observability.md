@@ -87,16 +87,20 @@ If `from > to`, the route returns `400`.
 
 ### Request logger
 
-Each HTTP request logs:
+Each HTTP request logs a trace-shaped line with:
 
+- route path, not the raw URL,
+- `step=request_completed` or `step=request_failed`,
+- `trace_id`,
 - method,
-- URL,
 - status,
 - duration,
 - IP,
 - user ID when known,
 - org ID when known,
 - user-agent.
+
+Auth denials and timeout paths follow the same shape with `step=access_denied` and `step=request_timeout`.
 
 ### Audit logs
 

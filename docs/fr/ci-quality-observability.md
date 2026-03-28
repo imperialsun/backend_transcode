@@ -61,7 +61,12 @@ go build ./cmd/server
 
 ## Observabilite runtime
 
-- `RequestLogger` loggue toutes les requetes HTTP avec contexte user/org si disponible.
+- `RequestTrace` recupere `X-Request-ID` ou genere un `trace_id` et le propage dans tout le backend.
+- `RequestLogger` loggue chaque requete HTTP comme une ligne tracee avec le chemin de route, `step=request_completed` ou `step=request_failed`, `trace_id`, contexte user/org si disponible, et les champs de statut/duree finaux.
+- `RequestTimeout` emet `step=request_timeout`, et les refus d auth emettent `step=access_denied`, pour relier une requete de bout en bout.
+- Les handlers non triviaux ecrivent des logs d etapes courtes sur les flux auth, settings, activity, admin, demeter, meetings, mistral, mailer, lifecycle store, et generation reports.
+- Les services sortants ne logguent ni corps de mail, ni transcripts, ni mots de passe, ni tokens; seulement des compteurs, statuts, et resumes compacts d erreur.
+- Les logs restent limites aux frontieres et utilisent des routes stables plutot que des URLs brutes, afin de ne jamais exposer de query strings.
 - `GET /healthz` et `GET /readyz` servent de probes.
 - `audit_logs` capture l activite admin sensible.
 - Les endpoints activity admin servent d observabilite metier lightweight.

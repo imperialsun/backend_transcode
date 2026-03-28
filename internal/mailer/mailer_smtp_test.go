@@ -2,8 +2,10 @@ package mailer
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"fmt"
+	"log"
 	"net"
 	"strings"
 	"sync"
@@ -11,9 +13,17 @@ import (
 	"time"
 
 	"demeter-backend/internal/auth"
+	"demeter-backend/internal/observability"
 )
 
 func TestSMTPMailerSendPasswordResetEmail_Success(t *testing.T) {
+	var logBuf bytes.Buffer
+	previousWriter := log.Writer()
+	log.SetOutput(&logBuf)
+	t.Cleanup(func() {
+		log.SetOutput(previousWriter)
+	})
+
 	server := startSMTPTestServer(t, false)
 
 	m := NewSMTPMailer(Config{
@@ -23,7 +33,8 @@ func TestSMTPMailerSendPasswordResetEmail_Success(t *testing.T) {
 		FromName:  "Demeter",
 	})
 
-	err := m.SendPasswordResetEmail(context.Background(), PasswordResetEmail{
+	ctx := observability.WithTraceID(context.Background(), "mailer-reset-trace")
+	err := m.SendPasswordResetEmail(ctx, PasswordResetEmail{
 		ToEmail:     "user@example.com",
 		ResetURL:    "https://app.demeter.test/reset-password?token=abc",
 		ExpiresAt:   time.Date(2026, time.March, 14, 20, 0, 0, 0, time.UTC),
@@ -40,9 +51,22 @@ func TestSMTPMailerSendPasswordResetEmail_Success(t *testing.T) {
 	if !strings.Contains(message, "https://app.demeter.test/reset-password?token=abc") {
 		t.Fatalf("expected reset url in SMTP message, got %q", message)
 	}
+	if !strings.Contains(logBuf.String(), "trace_id=mailer-reset-trace") {
+		t.Fatalf("expected trace id in mailer logs, got %q", logBuf.String())
+	}
+	if !strings.Contains(logBuf.String(), "step=smtp_send_complete") {
+		t.Fatalf("expected smtp completion log, got %q", logBuf.String())
+	}
 }
 
 func TestSMTPMailerSendPasswordResetEmail_RCPTFailure(t *testing.T) {
+	var logBuf bytes.Buffer
+	previousWriter := log.Writer()
+	log.SetOutput(&logBuf)
+	t.Cleanup(func() {
+		log.SetOutput(previousWriter)
+	})
+
 	server := startSMTPTestServer(t, true)
 
 	m := NewSMTPMailer(Config{
@@ -51,7 +75,8 @@ func TestSMTPMailerSendPasswordResetEmail_RCPTFailure(t *testing.T) {
 		FromEmail: "noreply@demeter.test",
 	})
 
-	err := m.SendPasswordResetEmail(context.Background(), PasswordResetEmail{
+	ctx := observability.WithTraceID(context.Background(), "mailer-reset-failure-trace")
+	err := m.SendPasswordResetEmail(ctx, PasswordResetEmail{
 		ToEmail:     "user@example.com",
 		ResetURL:    "https://app.demeter.test/reset-password?token=abc",
 		ExpiresAt:   time.Now().UTC().Add(time.Hour),
@@ -62,6 +87,12 @@ func TestSMTPMailerSendPasswordResetEmail_RCPTFailure(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "550") {
 		t.Fatalf("expected SMTP 550 error, got %v", err)
+	}
+	if !strings.Contains(logBuf.String(), "trace_id=mailer-reset-failure-trace") {
+		t.Fatalf("expected trace id in mailer failure logs, got %q", logBuf.String())
+	}
+	if !strings.Contains(logBuf.String(), "step=smtp_rcpt_to_error") {
+		t.Fatalf("expected rcpt failure log, got %q", logBuf.String())
 	}
 }
 

@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"demeter-backend/internal/observability"
 )
 
 func TestClient_IsConfigured(t *testing.T) {
@@ -25,6 +27,13 @@ func TestClient_IsConfigured(t *testing.T) {
 }
 
 func TestDoJSON_RedirectsResponseBody(t *testing.T) {
+	var logBuf bytes.Buffer
+	previousWriter := log.Writer()
+	log.SetOutput(&logBuf)
+	t.Cleanup(func() {
+		log.SetOutput(previousWriter)
+	})
+
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusTeapot)
 		_, _ = w.Write([]byte(`{"error":"teapot"}`))
@@ -32,7 +41,8 @@ func TestDoJSON_RedirectsResponseBody(t *testing.T) {
 	defer server.Close()
 
 	client := NewClient(server.URL, "key", 1*time.Second, 1*time.Second)
-	status, body, err := client.DoJSON(context.Background(), http.MethodPost, "/test", []byte(`{}`))
+	ctx := observability.WithTraceID(context.Background(), "mistral-test-trace")
+	status, body, err := client.DoJSON(ctx, http.MethodPost, "/test", []byte(`{}`))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -41,6 +51,13 @@ func TestDoJSON_RedirectsResponseBody(t *testing.T) {
 	}
 	if string(body) != `{"error":"teapot"}` {
 		t.Fatalf("unexpected body: %q", body)
+	}
+	logged := logBuf.String()
+	if !strings.Contains(logged, "trace_id=mistral-test-trace") {
+		t.Fatalf("expected trace id in mistral logs, got %q", logged)
+	}
+	if !strings.Contains(logged, "step=upstream_error_response") {
+		t.Fatalf("expected upstream error response log, got %q", logged)
 	}
 }
 
@@ -91,9 +108,13 @@ func TestHelperFunctions_LogTimeoutPreviewAndClose(t *testing.T) {
 	defer log.SetOutput(originalWriter)
 	defer log.SetFlags(originalFlags)
 
-	logUpstreamReadError(http.MethodGet, "https://example.test/models", http.StatusBadGateway, 25*time.Millisecond, errors.New("read failed"))
-	if !strings.Contains(logBuf.String(), "upstream read error") {
+	ctx := observability.WithTraceID(context.Background(), "mistral-helper-trace")
+	logUpstreamReadError(ctx, http.MethodGet, "https://example.test/models", http.StatusBadGateway, 25*time.Millisecond, errors.New("read failed"))
+	if !strings.Contains(logBuf.String(), "step=read_error") {
 		t.Fatalf("expected read error log output, got %q", logBuf.String())
+	}
+	if !strings.Contains(logBuf.String(), "trace_id=mistral-helper-trace") {
+		t.Fatalf("expected trace id in helper log output, got %q", logBuf.String())
 	}
 
 	longBody := []byte(strings.Repeat("  too-long ", 80))

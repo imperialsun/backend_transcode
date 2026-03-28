@@ -1,11 +1,14 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
+	"log"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"demeter-backend/internal/auth"
@@ -37,12 +40,37 @@ func TestAuthRequired_MissingTokenReturns401(t *testing.T) {
 }
 
 func TestAuthRequired_InvalidTokenReturns401(t *testing.T) {
+	var buf bytes.Buffer
+	previousWriter := log.Writer()
+	log.SetOutput(&buf)
+	t.Cleanup(func() {
+		log.SetOutput(previousWriter)
+	})
+
 	appCtx, _, _, _, _ := setupAuthMiddlewareTest(t)
 	app := newProtectedTestApp(appCtx, false)
 
-	resp := performProtectedRequest(t, app, "not-a-valid-token")
+	req := httptest.NewRequest(http.MethodGet, "/protected", nil)
+	req.Header.Set(fiber.HeaderAuthorization, "Bearer not-a-valid-token")
+	req.Header.Set(fiber.HeaderXRequestID, "auth-deny-trace")
+	resp, err := app.Test(req, 5_000)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer func() {
+		_ = resp.Body.Close()
+	}()
 	if resp.StatusCode != fiber.StatusUnauthorized {
 		t.Fatalf("expected 401, got %d", resp.StatusCode)
+	}
+	if !strings.Contains(buf.String(), "[auth] route=/protected step=access_denied") {
+		t.Fatalf("expected trace-shaped auth denial log, got %q", buf.String())
+	}
+	if !strings.Contains(buf.String(), "trace_id=auth-deny-trace") {
+		t.Fatalf("expected trace id in auth denial log, got %q", buf.String())
+	}
+	if !strings.Contains(buf.String(), "reason=\"invalid_token\"") {
+		t.Fatalf("expected denial reason in auth log, got %q", buf.String())
 	}
 }
 

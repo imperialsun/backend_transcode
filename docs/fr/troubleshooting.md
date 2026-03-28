@@ -32,10 +32,10 @@
 
 Chercher en priorite:
 
-- erreurs `failed to open store`,
-- logs `[auth] access denied ...`,
-- logs `[http] ... status=5xx`,
-- erreurs `failed to reach mistral`.
+- `step=boot_error` ou `step=listen_error` sur le composant `server`,
+- `step=access_denied` sur le composant `auth`,
+- `step=request_failed`, `step=request_timeout` ou `step=request_completed` avec `status=5xx` sur le composant `http`,
+- `step=transport_error` ou `step=upstream_error_response` sur le composant `mistral`.
 
 ## Liens
 

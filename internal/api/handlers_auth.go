@@ -130,67 +130,102 @@ func (a *App) adminResetPassword(c *fiber.Ctx) error {
 }
 
 func (a *App) changePassword(c *fiber.Ctx) error {
+	route := requestRoutePath(c)
+	logAPIStep(c, "auth", route, "request_received", "change_password", nil)
+
 	claims := MustClaims(c)
 	if claims == nil {
+		logAPIStep(c, "auth", route, "request_unauthorized", "change_password", nil)
 		return c.Status(fiber.StatusUnauthorized).JSON(ErrorResponse{Error: "unauthorized"})
 	}
 
 	var req changePasswordRequest
 	if err := c.BodyParser(&req); err != nil {
+		logAPIStep(c, "auth", route, "request_parse_error", "change_password", map[string]any{"error": err})
 		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{Error: "invalid payload"})
 	}
 
 	currentPassword := strings.TrimSpace(req.CurrentPassword)
 	newPassword := strings.TrimSpace(req.Password)
 	if currentPassword == "" || newPassword == "" {
+		logAPIStep(c, "auth", route, "request_validation_error", "change_password", map[string]any{
+			"current_password_present": currentPassword != "",
+			"new_password_present":     newPassword != "",
+		})
 		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{Error: "current password and new password are required"})
 	}
 
 	ctx := requestContext(c)
+	logAPIStep(c, "auth", route, "user_lookup_start", "change_password", nil)
 	user, err := a.Store.GetUserByID(ctx, claims.UserID)
 	if err != nil {
+		logAPIStep(c, "auth", route, "user_lookup_error", "change_password", map[string]any{"error": err})
 		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{Error: "failed to load user"})
 	}
 	if user == nil {
+		logAPIStep(c, "auth", route, "user_lookup_missing", "change_password", nil)
 		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{Error: "failed to load user"})
 	}
 	if !auth.VerifyPassword(user.PasswordHash, req.CurrentPassword) {
+		logAPIStep(c, "auth", route, "current_password_rejected", "change_password", nil)
 		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{Error: "invalid current password"})
 	}
 
+	logAPIStep(c, "auth", route, "password_hash_start", "change_password", nil)
 	passwordHash, err := auth.HashPassword(req.Password)
 	if err != nil {
+		logAPIStep(c, "auth", route, "password_hash_error", "change_password", map[string]any{"error": err})
 		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{Error: err.Error()})
 	}
 
+	logAPIStep(c, "auth", route, "password_update_start", "change_password", nil)
 	if err := a.Store.ChangeUserPassword(ctx, user.ID, passwordHash); err != nil {
+		logAPIStep(c, "auth", route, "password_update_error", "change_password", map[string]any{"error": err})
 		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{Error: "failed to change password"})
 	}
+	logAPIStep(c, "auth", route, "response_ready", "change_password", nil)
 	return c.SendStatus(fiber.StatusNoContent)
 }
 
 func (a *App) loginForSession(c *fiber.Ctx, sessionType auth.SessionType) error {
+	route := requestRoutePath(c)
+	logAPIStep(c, "auth", route, "request_received", sessionType.String(), map[string]any{"session_type": sessionType.String()})
+
 	var req loginRequest
 	if err := c.BodyParser(&req); err != nil {
+		logAPIStep(c, "auth", route, "request_parse_error", sessionType.String(), map[string]any{"error": err})
 		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{Error: "invalid payload"})
 	}
 	email := strings.ToLower(strings.TrimSpace(req.Email))
 	if email == "" || strings.TrimSpace(req.Password) == "" {
+		logAPIStep(c, "auth", route, "request_validation_error", sessionType.String(), map[string]any{
+			"email_present":    email != "",
+			"password_present": strings.TrimSpace(req.Password) != "",
+		})
 		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{Error: "email and password are required"})
 	}
 	ctx := requestContext(c)
+	logAPIStep(c, "auth", route, "user_lookup_start", sessionType.String(), map[string]any{"session_type": sessionType.String()})
 	user, err := a.Store.FindUserByEmail(ctx, email)
 	if err != nil {
+		logAPIStep(c, "auth", route, "user_lookup_error", sessionType.String(), map[string]any{"error": err})
 		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{Error: "failed to load user"})
 	}
 	if user == nil || !auth.VerifyPassword(user.PasswordHash, req.Password) {
+		logAPIStep(c, "auth", route, "credentials_rejected", sessionType.String(), nil)
 		return c.Status(fiber.StatusUnauthorized).JSON(ErrorResponse{Error: "invalid credentials"})
 	}
 	if user.Status != "active" {
+		logAPIStep(c, "auth", route, "user_inactive", sessionType.String(), nil)
 		return c.Status(fiber.StatusForbidden).JSON(ErrorResponse{Error: "user is inactive"})
 	}
+	logAPIStep(c, "auth", route, "session_issue_start", sessionType.String(), map[string]any{"session_type": sessionType.String()})
 	payload, status, err := a.issueSession(ctx, user, sessionType)
 	if err != nil {
+		logAPIStep(c, "auth", route, "session_issue_error", sessionType.String(), map[string]any{
+			"status": status,
+			"error":  err,
+		})
 		if status == fiber.StatusForbidden {
 			return c.Status(status).JSON(ErrorResponse{Error: "admin scope required"})
 		}
@@ -200,6 +235,7 @@ func (a *App) loginForSession(c *fiber.Ctx, sessionType auth.SessionType) error 
 	if sessionType == auth.SessionTypeAdmin {
 		a.auditLogLogin(ctx, payload.Response)
 	}
+	logAPIStep(c, "auth", route, "response_ready", sessionType.String(), map[string]any{"session_type": sessionType.String()})
 	return c.JSON(payload.Response)
 }
 
@@ -212,51 +248,72 @@ func (a *App) adminRefresh(c *fiber.Ctx) error {
 }
 
 func (a *App) refreshSession(c *fiber.Ctx, sessionType auth.SessionType) error {
+	route := requestRoutePath(c)
+	logAPIStep(c, "auth", route, "request_received", sessionType.String(), map[string]any{"session_type": sessionType.String()})
+
 	raw := strings.TrimSpace(c.Cookies(sessionType.RefreshCookieName()))
 	if raw == "" {
+		logAPIStep(c, "auth", route, "refresh_token_missing", sessionType.String(), nil)
 		return c.Status(fiber.StatusUnauthorized).JSON(ErrorResponse{Error: "missing refresh token"})
 	}
+	logAPIStep(c, "auth", route, "refresh_token_parse_start", sessionType.String(), nil)
 	sessionID, _, err := auth.ParseRefreshToken(raw)
 	if err != nil {
+		logAPIStep(c, "auth", route, "refresh_token_parse_error", sessionType.String(), map[string]any{"error": err})
 		return c.Status(fiber.StatusUnauthorized).JSON(ErrorResponse{Error: "invalid refresh token"})
 	}
 	ctx := requestContext(c)
+	logAPIStep(c, "auth", route, "refresh_session_load_start", sessionType.String(), nil)
 	session, err := a.Store.GetRefreshSessionByID(ctx, sessionID)
 	if err != nil {
+		logAPIStep(c, "auth", route, "refresh_session_load_error", sessionType.String(), map[string]any{"error": err})
 		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{Error: "failed to load refresh session"})
 	}
 	if session == nil || session.RevokedAt.Valid || session.ExpiresAt.Before(time.Now().UTC()) || session.SessionType != sessionType.String() {
+		logAPIStep(c, "auth", route, "refresh_session_invalid", sessionType.String(), map[string]any{
+			"revoked": session != nil && session.RevokedAt.Valid,
+		})
 		return c.Status(fiber.StatusUnauthorized).JSON(ErrorResponse{Error: "refresh token expired"})
 	}
 	if !auth.VerifyRefreshHash(session.TokenHash, raw) {
 		_ = a.Store.RevokeRefreshSession(ctx, session.ID)
+		logAPIStep(c, "auth", route, "refresh_token_rejected", sessionType.String(), nil)
 		return c.Status(fiber.StatusUnauthorized).JSON(ErrorResponse{Error: "invalid refresh token"})
 	}
+	logAPIStep(c, "auth", route, "user_lookup_start", sessionType.String(), nil)
 	user, err := a.Store.GetUserByID(ctx, session.UserID)
 	if err != nil {
+		logAPIStep(c, "auth", route, "user_lookup_error", sessionType.String(), map[string]any{"error": err})
 		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{Error: "failed to load user"})
 	}
 	if user == nil || user.Status != "active" {
 		_ = a.Store.RevokeRefreshSession(ctx, session.ID)
+		logAPIStep(c, "auth", route, "user_unavailable", sessionType.String(), nil)
 		return c.Status(fiber.StatusUnauthorized).JSON(ErrorResponse{Error: "user unavailable"})
 	}
 
 	csrfToken := ""
 	if sessionType == auth.SessionTypeAdmin {
+		logAPIStep(c, "auth", route, "csrf_token_start", sessionType.String(), nil)
 		csrfToken, err = auth.NewCSRFToken()
 		if err != nil {
+			logAPIStep(c, "auth", route, "csrf_token_error", sessionType.String(), map[string]any{"error": err})
 			return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{Error: "failed to refresh session"})
 		}
 	}
+	logAPIStep(c, "auth", route, "response_build_start", sessionType.String(), nil)
 	response, err := a.buildAuthResponse(ctx, user, runtimeModeForSession(sessionType), csrfToken)
 	if err != nil {
+		logAPIStep(c, "auth", route, "response_build_error", sessionType.String(), map[string]any{"error": err})
 		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{Error: "failed to refresh session"})
 	}
 	if sessionType == auth.SessionTypeAdmin && !canUseAdminPanel(response) {
 		_ = a.Store.RevokeRefreshSession(ctx, session.ID)
+		logAPIStep(c, "auth", route, "admin_scope_required", sessionType.String(), nil)
 		return c.Status(fiber.StatusForbidden).JSON(ErrorResponse{Error: "admin scope required"})
 	}
 
+	logAPIStep(c, "auth", route, "access_token_issue_start", sessionType.String(), nil)
 	accessToken, accessExp, err := auth.NewAccessToken(a.Config.JWTSecret, accessTTLForSession(a.Config, sessionType), auth.Claims{
 		UserID:      user.ID,
 		OrgID:       user.OrganizationID,
@@ -270,19 +327,25 @@ func (a *App) refreshSession(c *fiber.Ctx, sessionType auth.SessionType) error {
 		},
 	})
 	if err != nil {
+		logAPIStep(c, "auth", route, "access_token_issue_error", sessionType.String(), map[string]any{"error": err})
 		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{Error: "failed to refresh access token"})
 	}
+	logAPIStep(c, "auth", route, "refresh_token_issue_start", sessionType.String(), nil)
 	newRefresh, err := auth.NewRefreshToken(refreshTTLForSession(a.Config, sessionType))
 	if err != nil {
+		logAPIStep(c, "auth", route, "refresh_token_issue_error", sessionType.String(), map[string]any{"error": err})
 		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{Error: "failed to refresh token"})
 	}
 	_, tokenPart, err := auth.ParseRefreshToken(newRefresh.RawToken)
 	if err != nil {
+		logAPIStep(c, "auth", route, "refresh_token_parse_error", sessionType.String(), map[string]any{"error": err})
 		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{Error: "failed to parse refresh token"})
 	}
 	rotatedRaw := session.ID + "." + tokenPart
 	rotatedHash := auth.HashRefreshToken(rotatedRaw)
+	logAPIStep(c, "auth", route, "refresh_session_rotate_start", sessionType.String(), nil)
 	if err := a.Store.RotateRefreshSession(ctx, session.ID, rotatedHash, newRefresh.ExpiresAt); err != nil {
+		logAPIStep(c, "auth", route, "refresh_session_rotate_error", sessionType.String(), map[string]any{"error": err})
 		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{Error: "failed to rotate refresh session"})
 	}
 	setSessionCookies(c, &sessionPayload{
@@ -294,6 +357,7 @@ func (a *App) refreshSession(c *fiber.Ctx, sessionType auth.SessionType) error {
 		RefreshExpiresAt:   newRefresh.ExpiresAt,
 		Response:           response,
 	}, a.Config.CookieSecure)
+	logAPIStep(c, "auth", route, "response_ready", sessionType.String(), map[string]any{"session_type": sessionType.String()})
 	return c.JSON(response)
 }
 
@@ -306,18 +370,25 @@ func (a *App) adminLogout(c *fiber.Ctx) error {
 }
 
 func (a *App) logoutSession(c *fiber.Ctx, sessionType auth.SessionType) error {
+	route := requestRoutePath(c)
+	logAPIStep(c, "auth", route, "request_received", sessionType.String(), map[string]any{"session_type": sessionType.String()})
+
 	raw := strings.TrimSpace(c.Cookies(sessionType.RefreshCookieName()))
 	if raw != "" {
+		logAPIStep(c, "auth", route, "refresh_token_parse_start", sessionType.String(), nil)
 		sessionID, _, err := auth.ParseRefreshToken(raw)
 		if err == nil {
 			ctx := requestContext(c)
+			logAPIStep(c, "auth", route, "refresh_session_load_start", sessionType.String(), nil)
 			session, loadErr := a.Store.GetRefreshSessionByID(ctx, sessionID)
 			if loadErr == nil && session != nil && session.SessionType == sessionType.String() {
 				_ = a.Store.RevokeRefreshSession(ctx, sessionID)
+				logAPIStep(c, "auth", route, "refresh_session_revoked", sessionType.String(), nil)
 			}
 		}
 	}
 	clearSessionCookies(c, a.Config.CookieSecure, sessionType)
+	logAPIStep(c, "auth", route, "response_ready", sessionType.String(), nil)
 	return c.SendStatus(fiber.StatusNoContent)
 }
 
@@ -330,25 +401,36 @@ func (a *App) adminMe(c *fiber.Ctx) error {
 }
 
 func (a *App) meForSession(c *fiber.Ctx, sessionType auth.SessionType) error {
+	route := requestRoutePath(c)
+	logAPIStep(c, "auth", route, "request_received", sessionType.String(), map[string]any{"session_type": sessionType.String()})
+
 	claims := MustClaims(c)
 	if claims == nil {
+		logAPIStep(c, "auth", route, "request_unauthorized", sessionType.String(), nil)
 		return c.Status(fiber.StatusUnauthorized).JSON(ErrorResponse{Error: "unauthorized"})
 	}
 	ctx := requestContext(c)
+	logAPIStep(c, "auth", route, "user_lookup_start", sessionType.String(), nil)
 	user, err := a.Store.GetUserByID(ctx, claims.UserID)
 	if err != nil {
+		logAPIStep(c, "auth", route, "user_lookup_error", sessionType.String(), map[string]any{"error": err})
 		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{Error: "failed to load user"})
 	}
 	if user == nil || user.Status != "active" {
+		logAPIStep(c, "auth", route, "user_unavailable", sessionType.String(), nil)
 		return c.Status(fiber.StatusUnauthorized).JSON(ErrorResponse{Error: "user unavailable"})
 	}
+	logAPIStep(c, "auth", route, "response_build_start", sessionType.String(), nil)
 	response, err := a.buildAuthResponse(ctx, user, runtimeModeForSession(sessionType), claims.CSRFToken)
 	if err != nil {
+		logAPIStep(c, "auth", route, "response_build_error", sessionType.String(), map[string]any{"error": err})
 		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{Error: "failed to resolve user context"})
 	}
 	if sessionType == auth.SessionTypeAdmin && !canUseAdminPanel(response) {
+		logAPIStep(c, "auth", route, "admin_scope_required", sessionType.String(), nil)
 		return c.Status(fiber.StatusForbidden).JSON(ErrorResponse{Error: "admin scope required"})
 	}
+	logAPIStep(c, "auth", route, "response_ready", sessionType.String(), nil)
 	return c.JSON(response)
 }
 

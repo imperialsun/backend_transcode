@@ -12,6 +12,7 @@ import (
 
 	"demeter-backend/internal/auth"
 	"demeter-backend/internal/mailer"
+	"demeter-backend/internal/observability"
 	meetingreports "demeter-backend/internal/reports"
 	"demeter-backend/internal/store"
 	"github.com/gofiber/fiber/v2"
@@ -21,6 +22,8 @@ import (
 const (
 	meetingReportSourceMode = "cloud_backend"
 	meetingReportProvider   = "demeter_sante"
+	meetingDraftsRoute      = "/api/v1/meetings/reports/drafts"
+	meetingFinalizeRoute    = "/api/v1/meetings/finalize"
 )
 
 type meetingRequest struct {
@@ -91,40 +94,81 @@ func (a *App) RegisterMeetingRoutes(router fiber.Router) {
 }
 
 func (a *App) postMeetingReportDrafts(c *fiber.Ctx) error {
+	traceID := requestTraceID(c)
+	logMeetingStage(c, meetingDraftsRoute, traceID, "request_received", "", nil)
+
 	claims := MustClaims(c)
 	if claims == nil {
+		logMeetingStage(c, meetingDraftsRoute, traceID, "request_unauthorized", "", map[string]any{
+			"error": "unauthorized",
+		})
 		return c.Status(fiber.StatusUnauthorized).JSON(ErrorResponse{Error: "unauthorized"})
 	}
 
 	var req meetingRequest
 	if err := c.BodyParser(&req); err != nil {
+		logMeetingStage(c, meetingDraftsRoute, traceID, "request_parse_error", "", map[string]any{
+			"error": err.Error(),
+		})
 		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{Error: "invalid payload"})
 	}
 
 	title := normalizeMeetingTitle(req.MeetingTitle)
 	participants := normalizeStringList(req.Participants)
 	sourceText := resolveMeetingSourceText(req.EditedTranscriptText, req.RawTranscriptText)
+	logMeetingStage(c, meetingDraftsRoute, traceID, "request_parsed", title, map[string]any{
+		"participant_count":      len(participants),
+		"selected_format_count":  len(req.SelectedFormats),
+		"source_text_present":    sourceText != "",
+		"requested_report_model": strings.TrimSpace(req.ReportModelID),
+	})
 	if sourceText == "" {
+		logMeetingStage(c, meetingDraftsRoute, traceID, "validation_error", title, map[string]any{
+			"error": "transcript text is required",
+		})
 		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{Error: "transcript text is required"})
 	}
 
 	selectedFormats := normalizeMeetingFormats(req.SelectedFormats)
+	logMeetingStage(c, meetingDraftsRoute, traceID, "request_normalized", title, map[string]any{
+		"participant_count":     len(participants),
+		"selected_format_count": len(selectedFormats),
+		"selected_formats":      strings.Join(selectedFormatsToStrings(selectedFormats), ","),
+	})
 	reportModelID := strings.TrimSpace(req.ReportModelID)
 	reportMaxTokens := meetingReportMaxTokens(req.ReportMaxTokens)
 	reportTemperature := meetingReportTemperature(req.ReportTemperature)
+	logMeetingStage(c, meetingDraftsRoute, traceID, "generator_configured", title, map[string]any{
+		"model_id":    reportModelID,
+		"max_tokens":  reportMaxTokens,
+		"temperature": reportTemperature,
+	})
 	generator, err := a.newMeetingReportGenerator(reportModelID, reportMaxTokens, reportTemperature)
 	if err != nil {
+		logMeetingStage(c, meetingDraftsRoute, traceID, "generator_error", title, map[string]any{
+			"error": err.Error(),
+		})
 		return c.Status(fiber.StatusServiceUnavailable).JSON(ErrorResponse{Error: err.Error()})
 	}
 
 	generatedAt := time.Now().UTC().Format(time.RFC3339)
 	sourceTokenCount := approximateTokenCount(sourceText)
-	draftsByFormat, err := a.generateMeetingReportDrafts(context.Background(), generator, title, participants, sourceText, selectedFormats, generatedAt, sourceTokenCount)
+	logMeetingStage(c, meetingDraftsRoute, traceID, "generate_start", title, map[string]any{
+		"selected_format_count": len(selectedFormats),
+		"source_token_count":    sourceTokenCount,
+	})
+	draftsByFormat, err := a.generateMeetingReportDrafts(requestContext(c), generator, title, participants, sourceText, selectedFormats, generatedAt, sourceTokenCount)
 	if err != nil {
+		logMeetingStage(c, meetingDraftsRoute, traceID, "generate_error", title, map[string]any{
+			"error": err.Error(),
+		})
 		return a.meetingDraftErrorResponse(c, err)
 	}
+	logMeetingStage(c, meetingDraftsRoute, traceID, "generate_success", title, map[string]any{
+		"draft_count": len(draftsByFormat),
+	})
 
-	return c.JSON(meetingDraftResponse{
+	response := meetingDraftResponse{
 		MeetingTitle:     title,
 		Participants:     participants,
 		SelectedFormats:  selectedFormatsToStrings(selectedFormats),
@@ -134,17 +178,31 @@ func (a *App) postMeetingReportDrafts(c *fiber.Ctx) error {
 		GeneratedAt:      generatedAt,
 		SourceTokenCount: sourceTokenCount,
 		Reports:          buildMeetingReportEnvelopeList(selectedFormats, draftsByFormat),
+	}
+	logMeetingStage(c, meetingDraftsRoute, traceID, "response_ready", title, map[string]any{
+		"draft_count": len(response.Reports),
+		"model_id":    response.ModelID,
 	})
+	return c.JSON(response)
 }
 
 func (a *App) finalizeMeeting(c *fiber.Ctx) error {
+	traceID := requestTraceID(c)
+	logMeetingStage(c, meetingFinalizeRoute, traceID, "request_received", "", nil)
+
 	claims := MustClaims(c)
 	if claims == nil {
+		logMeetingStage(c, meetingFinalizeRoute, traceID, "request_unauthorized", "", map[string]any{
+			"error": "unauthorized",
+		})
 		return c.Status(fiber.StatusUnauthorized).JSON(ErrorResponse{Error: "unauthorized"})
 	}
 
 	var req meetingRequest
 	if err := c.BodyParser(&req); err != nil {
+		logMeetingStage(c, meetingFinalizeRoute, traceID, "request_parse_error", "", map[string]any{
+			"error": err.Error(),
+		})
 		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{Error: "invalid payload"})
 	}
 
@@ -152,12 +210,26 @@ func (a *App) finalizeMeeting(c *fiber.Ctx) error {
 	participants := normalizeStringList(req.Participants)
 	rawTranscript := resolveMeetingTranscriptForMail(req.RawTranscriptText, req.EditedTranscriptText)
 	reportSourceText := buildMeetingReportSourceText(req.EditedTranscriptText, req.RawTranscriptText, req.SpeakerAssignments)
+	logMeetingStage(c, meetingFinalizeRoute, traceID, "request_parsed", title, map[string]any{
+		"participant_count":         len(participants),
+		"speaker_assignment_count":  len(req.SpeakerAssignments),
+		"selected_format_count":     len(req.SelectedFormats),
+		"recipient_count_requested": len(req.RecipientEmails),
+		"source_text_present":       rawTranscript != "",
+		"report_source_present":     reportSourceText != "",
+	})
 	if rawTranscript == "" || reportSourceText == "" {
+		logMeetingStage(c, meetingFinalizeRoute, traceID, "validation_error", title, map[string]any{
+			"error": "transcript text is required",
+		})
 		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{Error: "transcript text is required"})
 	}
 
 	transcriptionSourceMode, transcriptionProvider, err := normalizeMeetingTranscriptionSource(req.TranscriptionSourceMode, req.TranscriptionProvider)
 	if err != nil {
+		logMeetingStage(c, meetingFinalizeRoute, traceID, "source_normalization_error", title, map[string]any{
+			"error": err.Error(),
+		})
 		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{Error: err.Error()})
 	}
 
@@ -168,6 +240,13 @@ func (a *App) finalizeMeeting(c *fiber.Ctx) error {
 	if len(selectedFormats) == 0 {
 		selectedFormats = meetingreports.AllReportFormats()
 	}
+	logMeetingStage(c, meetingFinalizeRoute, traceID, "request_normalized", title, map[string]any{
+		"participant_count":         len(participants),
+		"selected_format_count":     len(selectedFormats),
+		"selected_formats":          strings.Join(selectedFormatsToStrings(selectedFormats), ","),
+		"transcription_source_mode": transcriptionSourceMode,
+		"transcription_provider":    transcriptionProvider,
+	})
 
 	if err := a.recordMeetingActivityEvent(claims, "transcription", transcriptionSourceMode, transcriptionProvider, "success", map[string]any{
 		"title":                  title,
@@ -177,11 +256,18 @@ func (a *App) finalizeMeeting(c *fiber.Ctx) error {
 		"editedTranscriptTokens": approximateTokenCount(reportSourceText),
 		"selectedFormats":        selectedFormatsToStrings(selectedFormats),
 	}); err != nil {
-		log.Printf("[meetings] transcription activity ingest failed: %v", err)
+		logMeetingStage(c, meetingFinalizeRoute, traceID, "activity_ingest_error", title, map[string]any{
+			"error": err.Error(),
+		})
 	}
 
+	logMeetingStage(c, meetingFinalizeRoute, traceID, "documents_start", title, map[string]any{
+		"report_model_id":       req.ReportModelID,
+		"selected_format_count": len(selectedFormats),
+		"participant_count":     len(participants),
+	})
 	attachments, reportEnvelopes, err := a.buildMeetingDocuments(
-		context.Background(),
+		requestContext(c),
 		req.ReportModelID,
 		meetingReportMaxTokens(req.ReportMaxTokens),
 		meetingReportTemperature(req.ReportTemperature),
@@ -194,6 +280,9 @@ func (a *App) finalizeMeeting(c *fiber.Ctx) error {
 		req.Reports,
 	)
 	if err != nil {
+		logMeetingStage(c, meetingFinalizeRoute, traceID, "documents_error", title, map[string]any{
+			"error": err.Error(),
+		})
 		_ = a.recordMeetingActivityEvent(claims, "report", meetingReportSourceMode, meetingReportProvider, "error", map[string]any{
 			"title":           title,
 			"selectedFormats": selectedFormatsToStrings(selectedFormats),
@@ -201,11 +290,18 @@ func (a *App) finalizeMeeting(c *fiber.Ctx) error {
 		})
 		return a.meetingFinalizeErrorResponse(c, err)
 	}
+	logMeetingStage(c, meetingFinalizeRoute, traceID, "documents_success", title, map[string]any{
+		"attachment_count": len(attachments),
+		"report_count":     len(reportEnvelopes),
+	})
 
 	toEmail := strings.TrimSpace(claims.Email)
 	if toEmail == "" {
-		user, userErr := a.Store.GetUserByID(context.Background(), claims.UserID)
+		user, userErr := a.Store.GetUserByID(requestContext(c), claims.UserID)
 		if userErr != nil || user == nil || strings.TrimSpace(user.Email) == "" {
+			logMeetingStage(c, meetingFinalizeRoute, traceID, "recipient_resolution_error", title, map[string]any{
+				"error": "recipient email unavailable",
+			})
 			_ = a.recordMeetingActivityEvent(claims, "report", meetingReportSourceMode, meetingReportProvider, "error", map[string]any{
 				"title":           title,
 				"selectedFormats": selectedFormatsToStrings(selectedFormats),
@@ -218,9 +314,15 @@ func (a *App) finalizeMeeting(c *fiber.Ctx) error {
 
 	recipients, err := normalizeRecipientEmails(append([]string{toEmail}, req.RecipientEmails...))
 	if err != nil {
+		logMeetingStage(c, meetingFinalizeRoute, traceID, "recipient_normalization_error", title, map[string]any{
+			"error": "invalid recipient email",
+		})
 		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{Error: err.Error()})
 	}
 	if len(recipients) == 0 {
+		logMeetingStage(c, meetingFinalizeRoute, traceID, "recipient_resolution_error", title, map[string]any{
+			"error": "recipient email unavailable",
+		})
 		_ = a.recordMeetingActivityEvent(claims, "report", meetingReportSourceMode, meetingReportProvider, "error", map[string]any{
 			"title":           title,
 			"selectedFormats": selectedFormatsToStrings(selectedFormats),
@@ -228,8 +330,14 @@ func (a *App) finalizeMeeting(c *fiber.Ctx) error {
 		})
 		return c.Status(fiber.StatusServiceUnavailable).JSON(ErrorResponse{Error: "recipient email unavailable"})
 	}
+	logMeetingStage(c, meetingFinalizeRoute, traceID, "recipients_resolved", title, map[string]any{
+		"recipient_count": len(recipients),
+	})
 
 	if a.Mailer == nil {
+		logMeetingStage(c, meetingFinalizeRoute, traceID, "mailer_unavailable", title, map[string]any{
+			"error": "mailer unavailable",
+		})
 		_ = a.recordMeetingActivityEvent(claims, "report", meetingReportSourceMode, meetingReportProvider, "error", map[string]any{
 			"title":           title,
 			"selectedFormats": selectedFormatsToStrings(selectedFormats),
@@ -238,6 +346,9 @@ func (a *App) finalizeMeeting(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusServiceUnavailable).JSON(ErrorResponse{Error: "mailer unavailable"})
 	}
 	if err := a.Mailer.Ready(); err != nil {
+		logMeetingStage(c, meetingFinalizeRoute, traceID, "mailer_ready_error", title, map[string]any{
+			"error": err.Error(),
+		})
 		_ = a.recordMeetingActivityEvent(claims, "report", meetingReportSourceMode, meetingReportProvider, "error", map[string]any{
 			"title":           title,
 			"selectedFormats": selectedFormatsToStrings(selectedFormats),
@@ -245,17 +356,29 @@ func (a *App) finalizeMeeting(c *fiber.Ctx) error {
 		})
 		return c.Status(fiber.StatusServiceUnavailable).JSON(ErrorResponse{Error: "mailer unavailable"})
 	}
+	logMeetingStage(c, meetingFinalizeRoute, traceID, "mailer_ready", title, map[string]any{
+		"recipient_count": len(recipients),
+	})
 
 	subject := buildMeetingSubject(title)
 	textBody, htmlBody := buildMeetingEmailBodies(title, participants, transcriptionSourceMode, reportEnvelopes)
-	for _, recipient := range recipients {
-		if err := a.Mailer.SendMeetingSummaryEmail(context.Background(), mailer.MeetingSummaryEmail{
+	for index, recipient := range recipients {
+		logMeetingStage(c, meetingFinalizeRoute, traceID, "send_start", title, map[string]any{
+			"recipient_index": index + 1,
+			"recipient_count": len(recipients),
+		})
+		if err := a.Mailer.SendMeetingSummaryEmail(requestContext(c), mailer.MeetingSummaryEmail{
 			ToEmail:     recipient,
 			Subject:     subject,
 			TextBody:    textBody,
 			HTMLBody:    htmlBody,
 			Attachments: attachments,
 		}); err != nil {
+			logMeetingStage(c, meetingFinalizeRoute, traceID, "send_error", title, map[string]any{
+				"recipient_index": index + 1,
+				"recipient_count": len(recipients),
+				"error":           err.Error(),
+			})
 			_ = a.recordMeetingActivityEvent(claims, "report", meetingReportSourceMode, meetingReportProvider, "error", map[string]any{
 				"title":           title,
 				"selectedFormats": selectedFormatsToStrings(selectedFormats),
@@ -264,6 +387,10 @@ func (a *App) finalizeMeeting(c *fiber.Ctx) error {
 			})
 			return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{Error: "failed to send meeting email"})
 		}
+		logMeetingStage(c, meetingFinalizeRoute, traceID, "send_success", title, map[string]any{
+			"recipient_index": index + 1,
+			"recipient_count": len(recipients),
+		})
 	}
 
 	_ = a.recordMeetingActivityEvent(claims, "report", meetingReportSourceMode, meetingReportProvider, "success", map[string]any{
@@ -273,7 +400,7 @@ func (a *App) finalizeMeeting(c *fiber.Ctx) error {
 		"recipientCount":  len(recipients),
 	})
 
-	return c.JSON(meetingFinalizeResponse{
+	response := meetingFinalizeResponse{
 		MeetingTitle:            title,
 		Participants:            participants,
 		TranscriptionSourceMode: transcriptionSourceMode,
@@ -287,7 +414,12 @@ func (a *App) finalizeMeeting(c *fiber.Ctx) error {
 		TranscriptDocxFilename:  extractTranscriptFilename(attachments),
 		ReportDocxFilenames:     extractReportFilenames(attachments),
 		Attachments:             summarizeAttachments(attachments),
+	}
+	logMeetingStage(c, meetingFinalizeRoute, traceID, "response_ready", title, map[string]any{
+		"attachment_count": len(attachments),
+		"recipient_count":  len(recipients),
 	})
+	return c.JSON(response)
 }
 
 func (a *App) newMeetingReportGenerator(modelID string, maxTokens int, temperature float64) (*meetingreports.Generator, error) {
@@ -861,6 +993,11 @@ func summarizeAttachments(attachments []mailer.MailAttachment) []meetingAttachme
 		})
 	}
 	return out
+}
+
+func logMeetingStage(c *fiber.Ctx, route, traceID, step, title string, fields map[string]any) {
+	userID, orgID := demeterActorIDs(c)
+	log.Print(observability.FormatStepLine("meetings", route, step, traceID, userID, orgID, title, fields))
 }
 
 func (a *App) recordMeetingActivityEvent(

@@ -320,7 +320,7 @@ func TestDemeterHelperFunctions_LogOnlyErrorsAndExposeActorIDs(t *testing.T) {
 			t.Fatalf("expected missing actor ids to default to dashes, got %q %q", userID, orgID)
 		}
 
-		logDemeterUpstreamStatus(c, demeterModelsUpstreamPath, fiber.StatusOK)
+		logDemeterUpstreamStatus(c, "/helpers", fiber.StatusOK)
 		if buffer.Len() != 0 {
 			t.Fatalf("expected no log for successful upstream status, got %q", buffer.String())
 		}
@@ -331,8 +331,8 @@ func TestDemeterHelperFunctions_LogOnlyErrorsAndExposeActorIDs(t *testing.T) {
 			t.Fatalf("unexpected actor ids: %q %q", userID, orgID)
 		}
 
-		logDemeterUpstreamStatus(c, demeterModelsUpstreamPath, fiber.StatusBadGateway)
-		if !strings.Contains(buffer.String(), "upstream error") {
+		logDemeterUpstreamStatus(c, "/helpers", fiber.StatusBadGateway)
+		if !strings.Contains(buffer.String(), "step=upstream_error") {
 			t.Fatalf("expected upstream error log, got %q", buffer.String())
 		}
 		return c.SendStatus(fiber.StatusNoContent)

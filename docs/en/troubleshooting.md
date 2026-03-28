@@ -32,10 +32,10 @@
 
 Look first for:
 
-- `failed to open store`,
-- `[auth] access denied ...`,
-- `[http] ... status=5xx`,
-- `failed to reach mistral`.
+- `step=boot_error` or `step=listen_error` on the `server` component,
+- `step=access_denied` on the `auth` component,
+- `step=request_failed`, `step=request_timeout`, or `step=request_completed` with `status=5xx` on the `http` component,
+- `step=transport_error` or `step=upstream_error_response` on the `mistral` component.
 
 ## Links
 

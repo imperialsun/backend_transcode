@@ -24,24 +24,41 @@ func (a *App) RegisterSettingsRoutes(router fiber.Router) {
 }
 
 func (a *App) getSettings(c *fiber.Ctx) error {
+	route := requestRoutePath(c)
+	logAPIStep(c, "settings", route, "request_received", "", nil)
+
 	claims := MustClaims(c)
 	if claims == nil {
+		logAPIStep(c, "settings", route, "request_unauthorized", "", nil)
 		return c.Status(fiber.StatusUnauthorized).JSON(ErrorResponse{Error: "unauthorized"})
 	}
+	logAPIStep(c, "settings", route, "load_start", "", nil)
 	record, err := a.Store.GetUserSettings(requestContext(c), claims.UserID)
 	if err != nil {
+		logAPIStep(c, "settings", route, "load_error", "", map[string]any{"error": err})
 		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{Error: "failed to load settings"})
 	}
+	fields := map[string]any{"schema_version": 0}
+	if record != nil {
+		fields["schema_version"] = record.SchemaVersion
+		fields["settings_present"] = len(record.Settings) > 0
+	}
+	logAPIStep(c, "settings", route, "response_ready", "", fields)
 	return c.JSON(toSettingsEnvelope(record))
 }
 
 func (a *App) putSettings(c *fiber.Ctx) error {
+	route := requestRoutePath(c)
+	logAPIStep(c, "settings", route, "request_received", "", nil)
+
 	claims := MustClaims(c)
 	if claims == nil {
+		logAPIStep(c, "settings", route, "request_unauthorized", "", nil)
 		return c.Status(fiber.StatusUnauthorized).JSON(ErrorResponse{Error: "unauthorized"})
 	}
 	var req putSettingsRequest
 	if err := c.BodyParser(&req); err != nil {
+		logAPIStep(c, "settings", route, "request_parse_error", "", map[string]any{"error": err})
 		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{Error: "invalid payload"})
 	}
 	payload := strings.TrimSpace(string(req.Settings))
@@ -49,28 +66,47 @@ func (a *App) putSettings(c *fiber.Ctx) error {
 		payload = "{}"
 	}
 	if !json.Valid([]byte(payload)) {
+		logAPIStep(c, "settings", route, "request_validation_error", "", map[string]any{"reason": "invalid_json"})
 		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{Error: "settings must be valid JSON"})
 	}
+	logAPIStep(c, "settings", route, "sanitize_start", "", map[string]any{
+		"schema_version": req.SchemaVersion,
+		"payload_bytes":  len(payload),
+	})
 	sanitizedPayload, err := sanitizeSettingsPayload(json.RawMessage(payload))
 	if err != nil {
+		logAPIStep(c, "settings", route, "sanitize_error", "", map[string]any{"error": err})
 		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{Error: "settings must be valid JSON"})
 	}
+	logAPIStep(c, "settings", route, "save_start", "", map[string]any{
+		"schema_version": req.SchemaVersion,
+		"payload_bytes":  len(sanitizedPayload),
+	})
 	record, err := a.Store.SaveUserSettings(requestContext(c), claims.UserID, claims.OrgID, sanitizedPayload, req.SchemaVersion)
 	if err != nil {
+		logAPIStep(c, "settings", route, "save_error", "", map[string]any{"error": err})
 		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{Error: "failed to save settings"})
 	}
+	logAPIStep(c, "settings", route, "response_ready", "", map[string]any{"schema_version": record.SchemaVersion})
 	return c.JSON(toSettingsEnvelope(record))
 }
 
 func (a *App) resetSettings(c *fiber.Ctx) error {
+	route := requestRoutePath(c)
+	logAPIStep(c, "settings", route, "request_received", "", nil)
+
 	claims := MustClaims(c)
 	if claims == nil {
+		logAPIStep(c, "settings", route, "request_unauthorized", "", nil)
 		return c.Status(fiber.StatusUnauthorized).JSON(ErrorResponse{Error: "unauthorized"})
 	}
+	logAPIStep(c, "settings", route, "reset_start", "", nil)
 	record, err := a.Store.ResetUserSettings(requestContext(c), claims.UserID, claims.OrgID)
 	if err != nil {
+		logAPIStep(c, "settings", route, "reset_error", "", map[string]any{"error": err})
 		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{Error: "failed to reset settings"})
 	}
+	logAPIStep(c, "settings", route, "response_ready", "", map[string]any{"schema_version": record.SchemaVersion})
 	return c.JSON(toSettingsEnvelope(record))
 }
 

@@ -74,19 +74,26 @@ func (a *App) registerAdminActivityRoutes(group fiber.Router) {
 }
 
 func (a *App) postActivityEvents(c *fiber.Ctx) error {
+	route := requestRoutePath(c)
+	logAPIStep(c, "activity", route, "request_received", "", nil)
+
 	claims := MustClaims(c)
 	if claims == nil {
+		logAPIStep(c, "activity", route, "request_unauthorized", "", nil)
 		return c.Status(fiber.StatusUnauthorized).JSON(ErrorResponse{Error: "unauthorized"})
 	}
 
 	var req activityEventsRequest
 	if err := c.BodyParser(&req); err != nil {
+		logAPIStep(c, "activity", route, "request_parse_error", "", map[string]any{"error": err})
 		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{Error: "invalid payload"})
 	}
 	if len(req.Events) == 0 {
+		logAPIStep(c, "activity", route, "request_validation_error", "", map[string]any{"reason": "missing_events"})
 		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{Error: "events are required"})
 	}
 
+	logAPIStep(c, "activity", route, "validation_start", "", map[string]any{"event_count": len(req.Events)})
 	validInputs := make([]store.ActivityEventInput, 0, len(req.Events))
 	rejected := make([]activityRejectedEvent, 0)
 	for _, raw := range req.Events {
@@ -103,13 +110,23 @@ func (a *App) postActivityEvents(c *fiber.Ctx) error {
 
 	result := store.ActivityIngestResult{}
 	if len(validInputs) > 0 {
+		logAPIStep(c, "activity", route, "ingest_start", "", map[string]any{
+			"valid_count":    len(validInputs),
+			"rejected_count": len(rejected),
+		})
 		var err error
 		result, err = a.Store.IngestActivityEvents(requestContext(c), claims.OrgID, claims.UserID, validInputs)
 		if err != nil {
+			logAPIStep(c, "activity", route, "ingest_error", "", map[string]any{"error": err})
 			return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{Error: "failed to ingest activity events"})
 		}
 	}
 
+	logAPIStep(c, "activity", route, "response_ready", "", map[string]any{
+		"accepted":   result.Accepted,
+		"duplicates": result.Duplicates,
+		"rejected":   len(rejected),
+	})
 	return c.JSON(activityEventsResponse{
 		Accepted:   result.Accepted,
 		Duplicates: result.Duplicates,
@@ -118,81 +135,127 @@ func (a *App) postActivityEvents(c *fiber.Ctx) error {
 }
 
 func (a *App) adminOrganizationActivitySummary(c *fiber.Ctx) error {
+	route := requestRoutePath(c)
+	logAPIStep(c, "activity", route, "request_received", "", nil)
+
 	claims := MustClaims(c)
 	if claims == nil {
+		logAPIStep(c, "activity", route, "request_unauthorized", "", nil)
 		return c.Status(fiber.StatusUnauthorized).JSON(ErrorResponse{Error: "unauthorized"})
 	}
 
 	orgID := strings.TrimSpace(c.Params("id"))
 	if orgID == "" {
+		logAPIStep(c, "activity", route, "request_validation_error", "", map[string]any{"reason": "missing_organization_id"})
 		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{Error: "organization id is required"})
 	}
 	if !isSuperAdmin(claims) && claims.OrgID != orgID {
+		logAPIStep(c, "activity", route, "request_forbidden", "", map[string]any{"organization_id": orgID})
 		return c.Status(fiber.StatusForbidden).JSON(ErrorResponse{Error: "forbidden organization scope"})
 	}
 
+	logAPIStep(c, "activity", route, "load_start", "", map[string]any{"organization_id": orgID})
 	org, err := a.Store.GetOrganizationByID(requestContext(c), orgID)
 	if err != nil {
+		logAPIStep(c, "activity", route, "load_error", "", map[string]any{"error": err})
 		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{Error: "failed to load organization"})
 	}
 	if org == nil {
+		logAPIStep(c, "activity", route, "load_missing", "", map[string]any{"organization_id": orgID})
 		return c.Status(fiber.StatusNotFound).JSON(ErrorResponse{Error: "organization not found"})
 	}
 
 	fromDay, toDay, err := resolveActivityRange(c.Query("from"), c.Query("to"))
 	if err != nil {
+		logAPIStep(c, "activity", route, "range_error", "", map[string]any{"error": err})
 		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{Error: err.Error()})
 	}
 
+	logAPIStep(c, "activity", route, "summary_load_start", "", map[string]any{
+		"organization_id": orgID,
+		"from":            fromDay,
+		"to":              toDay,
+	})
 	summary, err := a.Store.GetOrganizationActivitySummary(requestContext(c), orgID, fromDay, toDay)
 	if err != nil {
+		logAPIStep(c, "activity", route, "summary_load_error", "", map[string]any{"error": err})
 		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{Error: "failed to load organization activity summary"})
 	}
+	logAPIStep(c, "activity", route, "response_ready", "", map[string]any{"organization_id": orgID})
 	return c.JSON(summary)
 }
 
 func (a *App) adminActivitySummary(c *fiber.Ctx) error {
+	route := requestRoutePath(c)
+	logAPIStep(c, "activity", route, "request_received", "", nil)
+
 	claims := MustClaims(c)
 	if claims == nil {
+		logAPIStep(c, "activity", route, "request_unauthorized", "", nil)
 		return c.Status(fiber.StatusUnauthorized).JSON(ErrorResponse{Error: "unauthorized"})
 	}
 
 	fromDay, toDay, err := resolveActivityRange(c.Query("from"), c.Query("to"))
 	if err != nil {
+		logAPIStep(c, "activity", route, "range_error", "", map[string]any{"error": err})
 		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{Error: err.Error()})
 	}
 
 	orgID := strings.TrimSpace(c.Query("organizationId"))
 	if orgID != "" {
 		if !isSuperAdmin(claims) && claims.OrgID != orgID {
+			logAPIStep(c, "activity", route, "request_forbidden", "", map[string]any{"organization_id": orgID})
 			return c.Status(fiber.StatusForbidden).JSON(ErrorResponse{Error: "forbidden organization scope"})
 		}
+		logAPIStep(c, "activity", route, "summary_load_start", "", map[string]any{
+			"organization_id": orgID,
+			"from":            fromDay,
+			"to":              toDay,
+		})
 		org, err := a.Store.GetOrganizationByID(requestContext(c), orgID)
 		if err != nil {
+			logAPIStep(c, "activity", route, "load_error", "", map[string]any{"error": err})
 			return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{Error: "failed to load organization"})
 		}
 		if org == nil {
+			logAPIStep(c, "activity", route, "load_missing", "", map[string]any{"organization_id": orgID})
 			return c.Status(fiber.StatusNotFound).JSON(ErrorResponse{Error: "organization not found"})
 		}
 		summary, err := a.Store.GetOrganizationActivitySummary(requestContext(c), orgID, fromDay, toDay)
 		if err != nil {
+			logAPIStep(c, "activity", route, "summary_load_error", "", map[string]any{"error": err})
 			return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{Error: "failed to load activity summary"})
 		}
+		logAPIStep(c, "activity", route, "response_ready", "", map[string]any{"organization_id": orgID})
 		return c.JSON(summary)
 	}
 
 	if isSuperAdmin(claims) {
+		logAPIStep(c, "activity", route, "summary_load_start", "", map[string]any{
+			"scope": "global",
+			"from":  fromDay,
+			"to":    toDay,
+		})
 		summary, err := a.Store.GetGlobalActivitySummary(requestContext(c), fromDay, toDay)
 		if err != nil {
+			logAPIStep(c, "activity", route, "summary_load_error", "", map[string]any{"error": err})
 			return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{Error: "failed to load activity summary"})
 		}
+		logAPIStep(c, "activity", route, "response_ready", "", map[string]any{"scope": "global"})
 		return c.JSON(summary)
 	}
 
+	logAPIStep(c, "activity", route, "summary_load_start", "", map[string]any{
+		"organization_id": claims.OrgID,
+		"from":            fromDay,
+		"to":              toDay,
+	})
 	summary, err := a.Store.GetOrganizationActivitySummary(requestContext(c), claims.OrgID, fromDay, toDay)
 	if err != nil {
+		logAPIStep(c, "activity", route, "summary_load_error", "", map[string]any{"error": err})
 		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{Error: "failed to load activity summary"})
 	}
+	logAPIStep(c, "activity", route, "response_ready", "", map[string]any{"organization_id": claims.OrgID})
 	return c.JSON(summary)
 }
 

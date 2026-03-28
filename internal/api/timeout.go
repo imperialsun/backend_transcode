@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"log"
 	"strings"
 	"time"
 
@@ -58,17 +57,6 @@ func shouldSkipRequestTimeout(path string) bool {
 
 func (a *App) logRequestTimeout(c *fiber.Ctx, startedAt time.Time, timeout time.Duration, timeoutErr error, downstreamErr error) {
 	claims := MustClaims(c)
-	userID := "-"
-	orgID := "-"
-	if claims != nil {
-		if strings.TrimSpace(claims.UserID) != "" {
-			userID = claims.UserID
-		}
-		if strings.TrimSpace(claims.OrgID) != "" {
-			orgID = claims.OrgID
-		}
-	}
-
 	deadlineUTC := "-"
 	if deadline, ok := c.UserContext().Deadline(); ok {
 		deadlineUTC = deadline.UTC().Format(time.RFC3339Nano)
@@ -84,23 +72,18 @@ func (a *App) logRequestTimeout(c *fiber.Ctx, startedAt time.Time, timeout time.
 		downstreamMsg = downstreamErr.Error()
 	}
 
-	log.Printf(
-		"[http-timeout] method=%s route=%q url=%q status=%d budget_ms=%d elapsed_ms=%d deadline_utc=%s cause=%q downstream_error=%q session=%s user=%s org=%s ip=%s ua=%q",
-		c.Method(),
-		c.Path(),
-		c.OriginalURL(),
-		fiber.StatusGatewayTimeout,
-		timeout.Milliseconds(),
-		time.Since(startedAt).Milliseconds(),
-		deadlineUTC,
-		timeoutErr.Error(),
-		downstreamMsg,
-		requestSessionName(c, claims),
-		userID,
-		orgID,
-		c.IP(),
-		userAgent,
-	)
+	logAPIStep(c, "http", requestRoutePath(c), "request_timeout", "timeout", map[string]any{
+		"method":           c.Method(),
+		"status":           fiber.StatusGatewayTimeout,
+		"budget_ms":        timeout.Milliseconds(),
+		"elapsed_ms":       time.Since(startedAt).Milliseconds(),
+		"deadline_utc":     deadlineUTC,
+		"cause":            timeoutErr,
+		"downstream_error": downstreamMsg,
+		"session":          requestSessionName(c, claims),
+		"ip":               c.IP(),
+		"ua":               userAgent,
+	})
 }
 
 func requestSessionName(c *fiber.Ctx, claims *auth.Claims) string {

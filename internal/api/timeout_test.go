@@ -90,7 +90,9 @@ func TestRequestTimeout_LogsAndPropagatesContext(t *testing.T) {
 		return c.SendStatus(fiber.StatusNoContent)
 	})
 
-	resp, err := app.Test(httptest.NewRequest(http.MethodGet, "/api/v1/slow", nil), 1_000)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/slow", nil)
+	req.Header.Set(fiber.HeaderXRequestID, "timeout-trace")
+	resp, err := app.Test(req, 1_000)
 	if err != nil {
 		t.Fatalf("request failed: %v", err)
 	}
@@ -108,10 +110,13 @@ func TestRequestTimeout_LogsAndPropagatesContext(t *testing.T) {
 	}
 
 	logged := buf.String()
-	if !strings.Contains(logged, "[http-timeout]") {
+	if !strings.Contains(logged, "[http] route=/api/v1/slow step=request_timeout") {
+		t.Fatalf("expected trace-shaped timeout log line, got %q", logged)
+	}
+	if !strings.Contains(logged, "title=\"timeout\"") {
 		t.Fatalf("expected timeout log line, got %q", logged)
 	}
-	if !strings.Contains(logged, "route=\"/api/v1/slow\"") {
+	if !strings.Contains(logged, "route=/api/v1/slow") {
 		t.Fatalf("expected route in timeout log, got %q", logged)
 	}
 	if !strings.Contains(logged, "budget_ms=10") {
@@ -119,6 +124,9 @@ func TestRequestTimeout_LogsAndPropagatesContext(t *testing.T) {
 	}
 	if !strings.Contains(logged, "status=504") {
 		t.Fatalf("expected timeout status in log, got %q", logged)
+	}
+	if !strings.Contains(logged, "trace_id=timeout-trace") {
+		t.Fatalf("expected trace id in timeout log, got %q", logged)
 	}
 }
 
@@ -168,7 +176,7 @@ func TestAuthForgotPassword_IsExcludedFromTimeout(t *testing.T) {
 	if got := mailerStub.PasswordResetSent(); got != 1 {
 		t.Fatalf("expected one password reset email send, got %d", got)
 	}
-	if strings.Contains(buf.String(), "[http-timeout]") {
+	if strings.Contains(buf.String(), "step=request_timeout") {
 		t.Fatalf("did not expect timeout log for excluded mail route, got %q", buf.String())
 	}
 }
@@ -235,7 +243,7 @@ func TestAdminPasswordResetEmail_IsExcludedFromTimeout(t *testing.T) {
 	if got := mailerStub.PasswordResetSent(); got != 1 {
 		t.Fatalf("expected one admin password reset email send, got %d", got)
 	}
-	if strings.Contains(buf.String(), "[http-timeout]") {
+	if strings.Contains(buf.String(), "step=request_timeout") {
 		t.Fatalf("did not expect timeout log for excluded admin mail route, got %q", buf.String())
 	}
 }

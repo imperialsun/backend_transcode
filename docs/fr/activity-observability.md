@@ -87,16 +87,20 @@ Si `from > to`, la route retourne `400`.
 
 ### Request logger
 
-Chaque requete HTTP loggue:
+Chaque requete HTTP loggue une ligne tracee avec:
 
+- chemin de route, pas l URL brute,
+- `step=request_completed` ou `step=request_failed`,
+- `trace_id`,
 - methode,
-- URL,
 - status,
 - duree,
 - IP,
 - user ID si connu,
 - org ID si connu,
 - user-agent.
+
+Les refus d auth et les timeouts suivent la meme forme avec `step=access_denied` et `step=request_timeout`.
 
 ### Audit logs
 

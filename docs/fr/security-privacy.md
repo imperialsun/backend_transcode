@@ -48,6 +48,12 @@ Acces SQLite:
 - les contenus audio et prompts envoyes a `Demeter Sante` quittent le backend vers Mistral,
 - la cle provider reste cachee cote serveur.
 
+### Journalisation applicative
+
+- les logs runtime utilisent un `trace_id` partage par requete pour relier le HTTP, les helpers internes, et les appels `mistral` / `mailer`,
+- les logs d etapes restent limites aux routes, statuts, compteurs, identifiants techniques, et resumes compacts d erreur,
+- les corps de mail, transcripts, mots de passe, tokens, et autres payloads sensibles ne sont pas journalises en clair.
+
 ## Image et runtime
 
 - image finale `distroless` non-root,

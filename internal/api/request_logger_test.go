@@ -33,6 +33,7 @@ func TestRequestLogger_LogsSuccessfulRequest(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/ping", nil)
 	req.Header.Set(fiber.HeaderUserAgent, "test-agent")
+	req.Header.Set(fiber.HeaderXRequestID, "trace-success")
 	resp, err := app.Test(req, 5_000)
 	if err != nil {
 		t.Fatalf("request failed: %v", err)
@@ -40,11 +41,17 @@ func TestRequestLogger_LogsSuccessfulRequest(t *testing.T) {
 	_ = resp.Body.Close()
 
 	logged := buf.String()
-	if !strings.Contains(logged, "method=GET") || !strings.Contains(logged, "status=204") {
+	if !strings.Contains(logged, "[http] route=/ping step=request_completed") {
+		t.Fatalf("expected trace-shaped success log line, got %q", logged)
+	}
+	if !strings.Contains(logged, "method=\"GET\"") || !strings.Contains(logged, "status=204") {
 		t.Fatalf("expected success log line, got %q", logged)
 	}
 	if !strings.Contains(logged, "user=user-1") || !strings.Contains(logged, "org=org-1") {
 		t.Fatalf("expected actor information in log, got %q", logged)
+	}
+	if !strings.Contains(logged, "trace_id=trace-success") {
+		t.Fatalf("expected trace id in log, got %q", logged)
 	}
 }
 
@@ -61,7 +68,9 @@ func TestRequestLogger_LogsErrors(t *testing.T) {
 		return errors.New("boom")
 	})
 
-	resp, err := app.Test(httptest.NewRequest(http.MethodGet, "/boom", nil), 5_000)
+	req := httptest.NewRequest(http.MethodGet, "/boom", nil)
+	req.Header.Set(fiber.HeaderXRequestID, "trace-error")
+	resp, err := app.Test(req, 5_000)
 	if err != nil {
 		t.Fatalf("request failed: %v", err)
 	}
@@ -71,10 +80,19 @@ func TestRequestLogger_LogsErrors(t *testing.T) {
 	}
 
 	logged := buf.String()
+	if !strings.Contains(logged, "[http] route=/boom step=request_failed") {
+		t.Fatalf("expected trace-shaped error log line, got %q", logged)
+	}
 	if !strings.Contains(logged, "error=\"boom\"") {
 		t.Fatalf("expected error log line, got %q", logged)
 	}
 	if !strings.Contains(logged, "ua=\"-\"") {
 		t.Fatalf("expected default user-agent placeholder, got %q", logged)
+	}
+	if !strings.Contains(logged, "status=500") {
+		t.Fatalf("expected error log to record final 500 status, got %q", logged)
+	}
+	if !strings.Contains(logged, "trace_id=trace-error") {
+		t.Fatalf("expected trace id in error log, got %q", logged)
 	}
 }
