@@ -100,14 +100,20 @@ func buildApp(cfg config.Config, st *store.Store, mistralClient *mistral.Client,
 
 	appCtx.RegisterHealthRoutes(app)
 
-	apiV1 := app.Group("/api/v1")
-	appCtx.RegisterAuthRoutes(apiV1.Group("/auth"))
-	appCtx.RegisterAdminAuthRoutes(apiV1.Group("/admin/auth"))
-	appCtx.RegisterSettingsRoutes(apiV1)
-	appCtx.RegisterActivityRoutes(apiV1)
-	appCtx.RegisterDemeterRoutes(apiV1)
-	appCtx.RegisterMeetingRoutes(apiV1)
-	appCtx.RegisterAdminRoutes(apiV1)
+	apiV1Short := app.Group("/api/v1", appCtx.RequestTimeout(5*time.Second))
+	apiV1Mail := app.Group("/api/v1")
+	apiV1Long := app.Group("/api/v1")
+
+	appCtx.RegisterAuthCoreRoutes(apiV1Short.Group("/auth"))
+	appCtx.RegisterAuthForgotPasswordRoutes(apiV1Mail.Group("/auth"))
+	appCtx.RegisterAdminAuthCoreRoutes(apiV1Short.Group("/admin/auth"))
+	appCtx.RegisterAdminAuthForgotPasswordRoutes(apiV1Mail.Group("/admin/auth"))
+	appCtx.RegisterSettingsRoutes(apiV1Short)
+	appCtx.RegisterActivityRoutes(apiV1Short)
+	appCtx.RegisterDemeterRoutes(apiV1Long)
+	appCtx.RegisterMeetingRoutes(apiV1Long)
+	appCtx.RegisterAdminCoreRoutes(apiV1Short)
+	appCtx.RegisterAdminMailRoutes(apiV1Mail)
 	return app
 }
 

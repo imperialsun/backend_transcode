@@ -1,7 +1,6 @@
 package api
 
 import (
-	"context"
 	"encoding/json"
 	"strings"
 	"time"
@@ -105,7 +104,7 @@ func (a *App) postActivityEvents(c *fiber.Ctx) error {
 	result := store.ActivityIngestResult{}
 	if len(validInputs) > 0 {
 		var err error
-		result, err = a.Store.IngestActivityEvents(context.Background(), claims.OrgID, claims.UserID, validInputs)
+		result, err = a.Store.IngestActivityEvents(requestContext(c), claims.OrgID, claims.UserID, validInputs)
 		if err != nil {
 			return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{Error: "failed to ingest activity events"})
 		}
@@ -132,7 +131,7 @@ func (a *App) adminOrganizationActivitySummary(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusForbidden).JSON(ErrorResponse{Error: "forbidden organization scope"})
 	}
 
-	org, err := a.Store.GetOrganizationByID(context.Background(), orgID)
+	org, err := a.Store.GetOrganizationByID(requestContext(c), orgID)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{Error: "failed to load organization"})
 	}
@@ -145,7 +144,7 @@ func (a *App) adminOrganizationActivitySummary(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{Error: err.Error()})
 	}
 
-	summary, err := a.Store.GetOrganizationActivitySummary(context.Background(), orgID, fromDay, toDay)
+	summary, err := a.Store.GetOrganizationActivitySummary(requestContext(c), orgID, fromDay, toDay)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{Error: "failed to load organization activity summary"})
 	}
@@ -168,14 +167,14 @@ func (a *App) adminActivitySummary(c *fiber.Ctx) error {
 		if !isSuperAdmin(claims) && claims.OrgID != orgID {
 			return c.Status(fiber.StatusForbidden).JSON(ErrorResponse{Error: "forbidden organization scope"})
 		}
-		org, err := a.Store.GetOrganizationByID(context.Background(), orgID)
+		org, err := a.Store.GetOrganizationByID(requestContext(c), orgID)
 		if err != nil {
 			return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{Error: "failed to load organization"})
 		}
 		if org == nil {
 			return c.Status(fiber.StatusNotFound).JSON(ErrorResponse{Error: "organization not found"})
 		}
-		summary, err := a.Store.GetOrganizationActivitySummary(context.Background(), orgID, fromDay, toDay)
+		summary, err := a.Store.GetOrganizationActivitySummary(requestContext(c), orgID, fromDay, toDay)
 		if err != nil {
 			return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{Error: "failed to load activity summary"})
 		}
@@ -183,14 +182,14 @@ func (a *App) adminActivitySummary(c *fiber.Ctx) error {
 	}
 
 	if isSuperAdmin(claims) {
-		summary, err := a.Store.GetGlobalActivitySummary(context.Background(), fromDay, toDay)
+		summary, err := a.Store.GetGlobalActivitySummary(requestContext(c), fromDay, toDay)
 		if err != nil {
 			return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{Error: "failed to load activity summary"})
 		}
 		return c.JSON(summary)
 	}
 
-	summary, err := a.Store.GetOrganizationActivitySummary(context.Background(), claims.OrgID, fromDay, toDay)
+	summary, err := a.Store.GetOrganizationActivitySummary(requestContext(c), claims.OrgID, fromDay, toDay)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{Error: "failed to load activity summary"})
 	}

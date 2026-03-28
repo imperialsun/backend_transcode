@@ -66,7 +66,7 @@ Ordre des traitements:
 
 ## Persistance
 
-- SQLite unique avec `SetMaxOpenConns(1)`.
+- SQLite unique avec `SetMaxOpenConns(4)`, `SetMaxIdleConns(4)` et `busy_timeout=5000 ms`.
 - `refresh_sessions` stocke seulement des hashes de refresh token.
 - `user_settings` stocke un blob JSON opaque pour le frontend.
 - `activity_usage_events` stocke les evenements idempotents par `event_id`.

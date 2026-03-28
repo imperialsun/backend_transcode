@@ -32,7 +32,7 @@ func (a *App) AuthRequired(sessionType auth.SessionType) fiber.Handler {
 			log.Printf("[auth] access denied reason=invalid_token session=%s path=%q ip=%s", sessionType, c.Path(), c.IP())
 			return c.Status(fiber.StatusUnauthorized).JSON(ErrorResponse{Error: "invalid access token"})
 		}
-		claims, status, err := a.resolveLiveClaims(context.Background(), tokenClaims, sessionType)
+		claims, status, err := a.resolveLiveClaims(requestContext(c), tokenClaims, sessionType)
 		if err != nil {
 			if status == fiber.StatusForbidden {
 				log.Printf(

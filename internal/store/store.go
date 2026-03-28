@@ -150,26 +150,23 @@ type UserActivitySummary struct {
 	Breakdown ActivityBreakdown   `json:"breakdown"`
 }
 
+const (
+	sqliteMaxOpenConns = 4
+	sqliteMaxIdleConns = 4
+	sqliteBusyTimeout  = 5 * time.Second
+)
+
 func Open(ctx context.Context, path string) (*Store, error) {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("mkdir db dir: %w", err)
 	}
-	db, err := sql.Open("sqlite", path)
+	db, err := sql.Open("sqlite", sqliteDSN(path))
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite: %w", err)
 	}
-	db.SetMaxOpenConns(1)
-	db.SetMaxIdleConns(1)
-	if _, err := db.ExecContext(ctx, `PRAGMA foreign_keys = ON;`); err != nil {
-		return nil, err
-	}
-	if _, err := db.ExecContext(ctx, `PRAGMA journal_mode = WAL;`); err != nil {
-		return nil, err
-	}
-	if _, err := db.ExecContext(ctx, `PRAGMA synchronous = NORMAL;`); err != nil {
-		return nil, err
-	}
+	db.SetMaxOpenConns(sqliteMaxOpenConns)
+	db.SetMaxIdleConns(sqliteMaxIdleConns)
 	store := &Store{DB: db}
 	if err := store.Migrate(ctx); err != nil {
 		return nil, err
@@ -189,6 +186,14 @@ func (s *Store) Close() error {
 
 func (s *Store) Ping(ctx context.Context) error {
 	return s.DB.PingContext(ctx)
+}
+
+func sqliteDSN(path string) string {
+	query := "_pragma=foreign_keys%3dON&_pragma=journal_mode%3dWAL&_pragma=synchronous%3dNORMAL&_pragma=busy_timeout%3d" + fmt.Sprintf("%d", sqliteBusyTimeout.Milliseconds())
+	if strings.Contains(path, "?") {
+		return path + "&" + query
+	}
+	return path + "?" + query
 }
 
 func (s *Store) Migrate(ctx context.Context) error {

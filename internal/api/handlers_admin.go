@@ -72,21 +72,23 @@ type updateEntitlementsRequest struct {
 }
 
 func (a *App) RegisterAdminRoutes(router fiber.Router) {
-	group := router.Group("/admin", a.AdminAuthRequired(), RequirePermissions("feature.admin"), RequireAdminScope(), RequireAdminCSRF())
+	a.RegisterAdminCoreRoutes(router)
+	a.RegisterAdminMailRoutes(router)
+}
+
+func (a *App) RegisterAdminCoreRoutes(router fiber.Router) {
+	group := a.adminRouteGroup(router)
 	group.Get("/organizations", a.listOrganizations)
 	group.Post("/organizations", a.createOrganization)
 	group.Patch("/organizations/:id", a.patchOrganization)
 	a.registerAdminActivityRoutes(group)
 	group.Get("/organizations/:id/users", a.listOrganizationUsers)
 	group.Get("/users/:id/access", a.getUserAccess)
-	group.Post("/organizations/:id/users", a.createOrganizationUser)
-	group.Post("/organizations/:id/users/bulk", a.createOrganizationUsersBulk)
 	group.Patch("/users/:id", a.patchUser)
 	group.Delete("/users/:id", a.deleteUser)
 	group.Get("/users/:id/activity/summary", a.userActivitySummary)
 	group.Delete("/users/:id/activity", a.deleteUserActivity)
 	group.Put("/users/:id/password", a.updateUserPassword)
-	group.Post("/users/:id/password-reset-email", a.sendUserPasswordResetEmail)
 	group.Put("/users/:id/global-roles", a.updateUserGlobalRoles)
 	group.Put("/users/:id/org-roles", a.updateUserOrgRoles)
 	group.Put("/users/:id/entitlements", a.updateUserEntitlements)
@@ -94,12 +96,23 @@ func (a *App) RegisterAdminRoutes(router fiber.Router) {
 	group.Get("/catalog/permissions", a.catalogPermissions)
 }
 
+func (a *App) RegisterAdminMailRoutes(router fiber.Router) {
+	group := a.adminRouteGroup(router)
+	group.Post("/organizations/:id/users", a.createOrganizationUser)
+	group.Post("/organizations/:id/users/bulk", a.createOrganizationUsersBulk)
+	group.Post("/users/:id/password-reset-email", a.sendUserPasswordResetEmail)
+}
+
+func (a *App) adminRouteGroup(router fiber.Router) fiber.Router {
+	return router.Group("/admin", a.AdminAuthRequired(), RequirePermissions("feature.admin"), RequireAdminScope(), RequireAdminCSRF())
+}
+
 func (a *App) listOrganizations(c *fiber.Ctx) error {
 	claims := MustClaims(c)
 	if claims == nil {
 		return c.Status(fiber.StatusUnauthorized).JSON(ErrorResponse{Error: "unauthorized"})
 	}
-	ctx := context.Background()
+	ctx := requestContext(c)
 	if isSuperAdmin(claims) {
 		orgs, err := a.Store.ListOrganizations(ctx)
 		if err != nil {
@@ -129,11 +142,12 @@ func (a *App) createOrganization(c *fiber.Ctx) error {
 	if strings.TrimSpace(req.Name) == "" {
 		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{Error: "name is required"})
 	}
-	org, err := a.Store.CreateOrganization(context.Background(), req.Name, req.Code, req.Status)
+	ctx := requestContext(c)
+	org, err := a.Store.CreateOrganization(ctx, req.Name, req.Code, req.Status)
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{Error: "failed to create organization"})
 	}
-	a.writeAdminAudit(claims, "admin.organization.create", "organization", org.ID, fiber.Map{
+	a.writeAdminAudit(ctx, claims, "admin.organization.create", "organization", org.ID, fiber.Map{
 		"name":   org.Name,
 		"code":   org.Code,
 		"status": org.Status,
@@ -151,14 +165,15 @@ func (a *App) patchOrganization(c *fiber.Ctx) error {
 	if err := c.BodyParser(&req); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{Error: "invalid payload"})
 	}
-	updated, err := a.Store.UpdateOrganization(context.Background(), id, req.Name, req.Code, req.Status)
+	ctx := requestContext(c)
+	updated, err := a.Store.UpdateOrganization(ctx, id, req.Name, req.Code, req.Status)
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{Error: "failed to update organization"})
 	}
 	if updated == nil {
 		return c.Status(fiber.StatusNotFound).JSON(ErrorResponse{Error: "organization not found"})
 	}
-	a.writeAdminAudit(claims, "admin.organization.update", "organization", updated.ID, fiber.Map{
+	a.writeAdminAudit(ctx, claims, "admin.organization.update", "organization", updated.ID, fiber.Map{
 		"name":   updated.Name,
 		"code":   updated.Code,
 		"status": updated.Status,
@@ -178,7 +193,7 @@ func (a *App) listOrganizationUsers(c *fiber.Ctx) error {
 	if !isSuperAdmin(claims) && claims.OrgID != orgID {
 		return c.Status(fiber.StatusForbidden).JSON(ErrorResponse{Error: "forbidden organization scope"})
 	}
-	users, err := a.Store.ListUsersByOrganization(context.Background(), orgID)
+	users, err := a.Store.ListUsersByOrganization(requestContext(c), orgID)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{Error: "failed to list organization users"})
 	}
@@ -205,12 +220,13 @@ func (a *App) createOrganizationUser(c *fiber.Ctx) error {
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{Error: err.Error()})
 	}
-	created, err := a.Store.CreateUserWithRoles(context.Background(), orgID, req.Email, hash, req.Status, []string{"user"}, []string{"org_member"})
+	ctx := requestContext(c)
+	created, err := a.Store.CreateUserWithRoles(ctx, orgID, req.Email, hash, req.Status, []string{"user"}, []string{"org_member"})
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{Error: "failed to create user"})
 	}
 	created.PasswordHash = ""
-	a.writeAdminAudit(claims, "admin.user.create", "user", created.ID, fiber.Map{
+	a.writeAdminAudit(ctx, claims, "admin.user.create", "user", created.ID, fiber.Map{
 		"organizationId": created.OrganizationID,
 		"email":          created.Email,
 		"status":         created.Status,
@@ -239,7 +255,7 @@ func (a *App) createOrganizationUsersBulk(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{Error: "at least one email is required"})
 	}
 
-	ctx := context.Background()
+	ctx := requestContext(c)
 	result := bulkCreateUsersResponse{
 		Created: []bulkCreateUsersResponseItem{},
 		Failed:  []bulkCreateUsersFailedItem{},
@@ -319,7 +335,7 @@ func (a *App) createOrganizationUsersBulk(c *fiber.Ctx) error {
 				Error:  "failed to send provisioning email",
 				UserID: created.ID,
 			})
-			a.writeAdminAudit(claims, "admin.user.create", "user", created.ID, fiber.Map{
+			a.writeAdminAudit(ctx, claims, "admin.user.create", "user", created.ID, fiber.Map{
 				"organizationId":        created.OrganizationID,
 				"email":                 created.Email,
 				"status":                created.Status,
@@ -335,7 +351,7 @@ func (a *App) createOrganizationUsersBulk(c *fiber.Ctx) error {
 			Email:  created.Email,
 			Status: created.Status,
 		})
-		a.writeAdminAudit(claims, "admin.user.create", "user", created.ID, fiber.Map{
+		a.writeAdminAudit(ctx, claims, "admin.user.create", "user", created.ID, fiber.Map{
 			"organizationId":        created.OrganizationID,
 			"email":                 created.Email,
 			"status":                created.Status,
@@ -368,8 +384,9 @@ func (a *App) patchUser(c *fiber.Ctx) error {
 	if claims == nil {
 		return c.Status(fiber.StatusUnauthorized).JSON(ErrorResponse{Error: "unauthorized"})
 	}
+	ctx := requestContext(c)
 	userID := strings.TrimSpace(c.Params("id"))
-	target, err := a.Store.GetUserByID(context.Background(), userID)
+	target, err := a.Store.GetUserByID(ctx, userID)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{Error: "failed to load user"})
 	}
@@ -386,7 +403,7 @@ func (a *App) patchUser(c *fiber.Ctx) error {
 	if !isSuperAdmin(claims) {
 		req.OrganizationID = nil
 	}
-	updated, err := a.Store.UpdateUser(context.Background(), userID, store.UpdateUserInput{
+	updated, err := a.Store.UpdateUser(ctx, userID, store.UpdateUserInput{
 		Email:          req.Email,
 		Status:         req.Status,
 		OrganizationID: req.OrganizationID,
@@ -395,10 +412,10 @@ func (a *App) patchUser(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{Error: "failed to update user"})
 	}
 	updated.PasswordHash = ""
-	if revokeErr := a.Store.RevokeRefreshSessionsByUser(context.Background(), updated.ID); revokeErr != nil {
+	if revokeErr := a.Store.RevokeRefreshSessionsByUser(ctx, updated.ID); revokeErr != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{Error: "failed to revoke user sessions"})
 	}
-	a.writeAdminAudit(claims, "admin.user.update", "user", updated.ID, fiber.Map{
+	a.writeAdminAudit(ctx, claims, "admin.user.update", "user", updated.ID, fiber.Map{
 		"organizationId": updated.OrganizationID,
 		"email":          updated.Email,
 		"status":         updated.Status,
@@ -408,8 +425,9 @@ func (a *App) patchUser(c *fiber.Ctx) error {
 
 func (a *App) updateUserPassword(c *fiber.Ctx) error {
 	claims := MustClaims(c)
+	ctx := requestContext(c)
 	userID := strings.TrimSpace(c.Params("id"))
-	target, err := a.Store.GetUserByID(context.Background(), userID)
+	target, err := a.Store.GetUserByID(ctx, userID)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{Error: "failed to load user"})
 	}
@@ -427,13 +445,13 @@ func (a *App) updateUserPassword(c *fiber.Ctx) error {
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{Error: err.Error()})
 	}
-	if err := a.Store.UpdateUserPassword(context.Background(), userID, hash); err != nil {
+	if err := a.Store.UpdateUserPassword(ctx, userID, hash); err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{Error: "failed to update password"})
 	}
-	if err := a.Store.RevokeRefreshSessionsByUser(context.Background(), userID); err != nil {
+	if err := a.Store.RevokeRefreshSessionsByUser(ctx, userID); err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{Error: "failed to revoke user sessions"})
 	}
-	a.writeAdminAudit(claims, "admin.user.password.update", "user", userID, fiber.Map{
+	a.writeAdminAudit(ctx, claims, "admin.user.password.update", "user", userID, fiber.Map{
 		"organizationId": target.OrganizationID,
 	})
 	return c.SendStatus(fiber.StatusNoContent)
@@ -445,7 +463,7 @@ func (a *App) deleteUser(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusUnauthorized).JSON(ErrorResponse{Error: "unauthorized"})
 	}
 
-	ctx := context.Background()
+	ctx := requestContext(c)
 	userID := strings.TrimSpace(c.Params("id"))
 	target, err := a.Store.GetUserByID(ctx, userID)
 	if err != nil {
@@ -498,7 +516,7 @@ func (a *App) deleteUser(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusNotFound).JSON(ErrorResponse{Error: "user not found"})
 	}
 
-	a.writeAdminAudit(claims, "admin.user.delete", "user", target.ID, fiber.Map{
+	a.writeAdminAudit(ctx, claims, "admin.user.delete", "user", target.ID, fiber.Map{
 		"email":            target.Email,
 		"organizationId":   target.OrganizationID,
 		"globalRoles":      globalRoles,
@@ -516,7 +534,7 @@ func (a *App) userActivitySummary(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusUnauthorized).JSON(ErrorResponse{Error: "unauthorized"})
 	}
 
-	ctx := context.Background()
+	ctx := requestContext(c)
 	userID := strings.TrimSpace(c.Params("id"))
 	target, err := a.Store.GetUserByID(ctx, userID)
 	if err != nil {
@@ -547,7 +565,7 @@ func (a *App) deleteUserActivity(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusUnauthorized).JSON(ErrorResponse{Error: "unauthorized"})
 	}
 
-	ctx := context.Background()
+	ctx := requestContext(c)
 	userID := strings.TrimSpace(c.Params("id"))
 	target, err := a.Store.GetUserByID(ctx, userID)
 	if err != nil {
@@ -565,7 +583,7 @@ func (a *App) deleteUserActivity(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{Error: "failed to delete user activity"})
 	}
 
-	a.writeAdminAudit(claims, "admin.user.activity.delete", "user", target.ID, fiber.Map{
+	a.writeAdminAudit(ctx, claims, "admin.user.activity.delete", "user", target.ID, fiber.Map{
 		"email":          target.Email,
 		"organizationId": target.OrganizationID,
 		"deletedCount":   deletedCount,
@@ -575,8 +593,9 @@ func (a *App) deleteUserActivity(c *fiber.Ctx) error {
 
 func (a *App) sendUserPasswordResetEmail(c *fiber.Ctx) error {
 	claims := MustClaims(c)
+	ctx := requestContext(c)
 	userID := strings.TrimSpace(c.Params("id"))
-	target, err := a.Store.GetUserByID(context.Background(), userID)
+	target, err := a.Store.GetUserByID(ctx, userID)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{Error: "failed to load user"})
 	}
@@ -590,7 +609,7 @@ func (a *App) sendUserPasswordResetEmail(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{Error: "user is inactive"})
 	}
 
-	if err := a.sendPasswordResetForUser(context.Background(), target, auth.SessionTypeApp, claims.UserID); err != nil {
+	if err := a.sendPasswordResetForUser(ctx, target, auth.SessionTypeApp, claims.UserID); err != nil {
 		if errors.Is(err, errPasswordResetUnavailable) {
 			return c.Status(fiber.StatusServiceUnavailable).JSON(ErrorResponse{Error: "password reset email unavailable"})
 		}
@@ -600,7 +619,7 @@ func (a *App) sendUserPasswordResetEmail(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{Error: "failed to send password reset email"})
 	}
 
-	a.writeAdminAudit(claims, "admin.user.password_reset_email.send", "user", target.ID, fiber.Map{
+	a.writeAdminAudit(ctx, claims, "admin.user.password_reset_email.send", "user", target.ID, fiber.Map{
 		"email": target.Email,
 	})
 	return c.SendStatus(fiber.StatusNoContent)
@@ -611,18 +630,19 @@ func (a *App) updateUserGlobalRoles(c *fiber.Ctx) error {
 	if !isSuperAdmin(claims) {
 		return c.Status(fiber.StatusForbidden).JSON(ErrorResponse{Error: "only super admin can update global roles"})
 	}
+	ctx := requestContext(c)
 	userID := strings.TrimSpace(c.Params("id"))
 	var req updateRoleCodesRequest
 	if err := c.BodyParser(&req); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{Error: "invalid payload"})
 	}
-	if err := a.Store.SetUserGlobalRoles(context.Background(), userID, req.Codes); err != nil {
+	if err := a.Store.SetUserGlobalRoles(ctx, userID, req.Codes); err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{Error: "failed to update global roles"})
 	}
-	if err := a.Store.RevokeRefreshSessionsByUser(context.Background(), userID); err != nil {
+	if err := a.Store.RevokeRefreshSessionsByUser(ctx, userID); err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{Error: "failed to revoke user sessions"})
 	}
-	a.writeAdminAudit(claims, "admin.user.global_roles.update", "user", userID, fiber.Map{
+	a.writeAdminAudit(ctx, claims, "admin.user.global_roles.update", "user", userID, fiber.Map{
 		"codes": req.Codes,
 	})
 	return c.SendStatus(fiber.StatusNoContent)
@@ -630,8 +650,9 @@ func (a *App) updateUserGlobalRoles(c *fiber.Ctx) error {
 
 func (a *App) updateUserOrgRoles(c *fiber.Ctx) error {
 	claims := MustClaims(c)
+	ctx := requestContext(c)
 	userID := strings.TrimSpace(c.Params("id"))
-	target, err := a.Store.GetUserByID(context.Background(), userID)
+	target, err := a.Store.GetUserByID(ctx, userID)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{Error: "failed to load user"})
 	}
@@ -645,13 +666,13 @@ func (a *App) updateUserOrgRoles(c *fiber.Ctx) error {
 	if err := c.BodyParser(&req); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{Error: "invalid payload"})
 	}
-	if err := a.Store.SetUserOrganizationRoles(context.Background(), userID, req.Codes); err != nil {
+	if err := a.Store.SetUserOrganizationRoles(ctx, userID, req.Codes); err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{Error: "failed to update organization roles"})
 	}
-	if err := a.Store.RevokeRefreshSessionsByUser(context.Background(), userID); err != nil {
+	if err := a.Store.RevokeRefreshSessionsByUser(ctx, userID); err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{Error: "failed to revoke user sessions"})
 	}
-	a.writeAdminAudit(claims, "admin.user.org_roles.update", "user", userID, fiber.Map{
+	a.writeAdminAudit(ctx, claims, "admin.user.org_roles.update", "user", userID, fiber.Map{
 		"codes": req.Codes,
 	})
 	return c.SendStatus(fiber.StatusNoContent)
@@ -659,8 +680,9 @@ func (a *App) updateUserOrgRoles(c *fiber.Ctx) error {
 
 func (a *App) updateUserEntitlements(c *fiber.Ctx) error {
 	claims := MustClaims(c)
+	ctx := requestContext(c)
 	userID := strings.TrimSpace(c.Params("id"))
-	target, err := a.Store.GetUserByID(context.Background(), userID)
+	target, err := a.Store.GetUserByID(ctx, userID)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{Error: "failed to load user"})
 	}
@@ -674,13 +696,13 @@ func (a *App) updateUserEntitlements(c *fiber.Ctx) error {
 	if err := c.BodyParser(&req); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{Error: "invalid payload"})
 	}
-	if err := a.Store.SetUserPermissionOverrides(context.Background(), userID, req.Overrides); err != nil {
+	if err := a.Store.SetUserPermissionOverrides(ctx, userID, req.Overrides); err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{Error: "failed to update entitlements"})
 	}
-	if err := a.Store.RevokeRefreshSessionsByUser(context.Background(), userID); err != nil {
+	if err := a.Store.RevokeRefreshSessionsByUser(ctx, userID); err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{Error: "failed to revoke user sessions"})
 	}
-	a.writeAdminAudit(claims, "admin.user.entitlements.update", "user", userID, fiber.Map{
+	a.writeAdminAudit(ctx, claims, "admin.user.entitlements.update", "user", userID, fiber.Map{
 		"overrides": req.Overrides,
 	})
 	return c.SendStatus(fiber.StatusNoContent)
@@ -691,8 +713,9 @@ func (a *App) getUserAccess(c *fiber.Ctx) error {
 	if claims == nil {
 		return c.Status(fiber.StatusUnauthorized).JSON(ErrorResponse{Error: "unauthorized"})
 	}
+	ctx := requestContext(c)
 	userID := strings.TrimSpace(c.Params("id"))
-	target, err := a.Store.GetUserByID(context.Background(), userID)
+	target, err := a.Store.GetUserByID(ctx, userID)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{Error: "failed to load user"})
 	}
@@ -702,19 +725,19 @@ func (a *App) getUserAccess(c *fiber.Ctx) error {
 	if !isSuperAdmin(claims) && claims.OrgID != target.OrganizationID {
 		return c.Status(fiber.StatusForbidden).JSON(ErrorResponse{Error: "forbidden organization scope"})
 	}
-	globalRoles, err := a.Store.GetGlobalRoleCodesByUser(context.Background(), userID)
+	globalRoles, err := a.Store.GetGlobalRoleCodesByUser(ctx, userID)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{Error: "failed to load global roles"})
 	}
-	orgRoles, err := a.Store.GetOrganizationRoleCodesByUser(context.Background(), userID)
+	orgRoles, err := a.Store.GetOrganizationRoleCodesByUser(ctx, userID)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{Error: "failed to load organization roles"})
 	}
-	overrides, err := a.Store.GetUserPermissionOverrides(context.Background(), userID)
+	overrides, err := a.Store.GetUserPermissionOverrides(ctx, userID)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{Error: "failed to load permission overrides"})
 	}
-	effectivePermissions, err := a.Store.ResolveEffectivePermissions(context.Background(), userID)
+	effectivePermissions, err := a.Store.ResolveEffectivePermissions(ctx, userID)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{Error: "failed to resolve effective permissions"})
 	}
@@ -729,11 +752,12 @@ func (a *App) getUserAccess(c *fiber.Ctx) error {
 }
 
 func (a *App) catalogRoles(c *fiber.Ctx) error {
-	globalRoles, err := a.Store.ListGlobalRolesCatalog(context.Background())
+	ctx := requestContext(c)
+	globalRoles, err := a.Store.ListGlobalRolesCatalog(ctx)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{Error: "failed to list global roles"})
 	}
-	organizationRoles, err := a.Store.ListOrganizationRolesCatalog(context.Background())
+	organizationRoles, err := a.Store.ListOrganizationRolesCatalog(ctx)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{Error: "failed to list organization roles"})
 	}
@@ -744,7 +768,7 @@ func (a *App) catalogRoles(c *fiber.Ctx) error {
 }
 
 func (a *App) catalogPermissions(c *fiber.Ctx) error {
-	permissions, err := a.Store.ListPermissionsCatalog(context.Background())
+	permissions, err := a.Store.ListPermissionsCatalog(requestContext(c))
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{Error: "failed to list permissions"})
 	}
@@ -758,7 +782,7 @@ func isSuperAdmin(claims *auth.Claims) bool {
 	return rbac.HasRole(claims.GlobalRoles, "super_admin")
 }
 
-func (a *App) writeAdminAudit(claims *auth.Claims, action, targetType, targetID string, payload any) {
+func (a *App) writeAdminAudit(ctx context.Context, claims *auth.Claims, action, targetType, targetID string, payload any) {
 	if claims == nil {
 		return
 	}
@@ -769,7 +793,10 @@ func (a *App) writeAdminAudit(claims *auth.Claims, action, targetType, targetID 
 			safePayload = raw
 		}
 	}
-	_ = a.Store.InsertAuditLog(context.Background(), store.AuditLogInput{
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	_ = a.Store.InsertAuditLog(ctx, store.AuditLogInput{
 		ActorUserID:    claims.UserID,
 		OrganizationID: claims.OrgID,
 		Action:         action,

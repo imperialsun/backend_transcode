@@ -698,7 +698,7 @@ func TestBuildAuthResponseIssueSessionAndAuditLogLogin(t *testing.T) {
 		t.Fatalf("unexpected admin session payload: %+v", payload)
 	}
 
-	appCtx.auditLogLogin(payload.Response)
+	appCtx.auditLogLogin(ctx, payload.Response)
 	var count int
 	if err := st.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM audit_logs WHERE action = ?`, "admin.login").Scan(&count); err != nil {
 		t.Fatalf("failed to query audit log count: %v", err)

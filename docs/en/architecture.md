@@ -66,7 +66,7 @@ Processing order:
 
 ## Persistence
 
-- Single SQLite database with `SetMaxOpenConns(1)`.
+- Single SQLite database with `SetMaxOpenConns(4)`, `SetMaxIdleConns(4)`, and `busy_timeout=5000 ms`.
 - `refresh_sessions` only stores refresh token hashes.
 - `user_settings` stores an opaque JSON blob owned by the frontend.
 - `activity_usage_events` stores idempotent usage events keyed by `event_id`.

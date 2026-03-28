@@ -126,11 +126,12 @@ func TestMeetingDraftsAndFinalizeSendsMailAndActivity(t *testing.T) {
 		map[string]any{
 			"meetingTitle":            "Revue qualité",
 			"participants":            []string{"Alice", "Bob"},
-			"transcriptionSourceMode": "local",
-			"transcriptionProvider":   "mic",
+			"transcriptionSourceMode": "cloud_backend",
+			"transcriptionProvider":   "demeter_sante",
 			"rawTranscriptText":       "Bonjour tout le monde.",
 			"editedTranscriptText":    "Bonjour tout le monde.",
 			"selectedFormats":         []string{"CRI", "CRO"},
+			"recipientEmails":         []string{" assistant@example.com ", "ops@example.com"},
 			"reports":                 draftPayload.Reports,
 		},
 		nil,
@@ -150,11 +151,28 @@ func TestMeetingDraftsAndFinalizeSendsMailAndActivity(t *testing.T) {
 	if finalPayload.TranscriptDocxFilename == "" || finalPayload.Attachments == nil || len(finalPayload.Attachments) != 3 {
 		t.Fatalf("unexpected final payload: %+v", finalPayload)
 	}
-	if len(mailerStub.sent) != 1 {
-		t.Fatalf("expected one meeting email, got %d", len(mailerStub.sent))
+	if finalPayload.TranscriptionSourceMode != meetingReportSourceMode || finalPayload.TranscriptionProvider != meetingReportProvider {
+		t.Fatalf("unexpected transcription source metadata: %+v", finalPayload)
 	}
-	if len(mailerStub.sent[0].Attachments) != 3 {
-		t.Fatalf("expected 3 attachments in mail, got %d", len(mailerStub.sent[0].Attachments))
+	if len(finalPayload.SentToEmails) != 3 {
+		t.Fatalf("expected 3 recipient emails, got %v", finalPayload.SentToEmails)
+	}
+	if len(mailerStub.sent) != 3 {
+		t.Fatalf("expected one mail per recipient, got %d", len(mailerStub.sent))
+	}
+	if got, want := mailerStub.sent[0].ToEmail, "u@example.com"; got != want {
+		t.Fatalf("expected primary recipient %q, got %q", want, got)
+	}
+	if got, want := mailerStub.sent[1].ToEmail, "assistant@example.com"; got != want {
+		t.Fatalf("expected second recipient %q, got %q", want, got)
+	}
+	if got, want := mailerStub.sent[2].ToEmail, "ops@example.com"; got != want {
+		t.Fatalf("expected third recipient %q, got %q", want, got)
+	}
+	for index, sent := range mailerStub.sent {
+		if len(sent.Attachments) != 3 {
+			t.Fatalf("expected 3 attachments in mail %d, got %d", index, len(sent.Attachments))
+		}
 	}
 	if !containsMeetingFilename(mailerStub.sent[0].Attachments[0].Filename, "transcription-") {
 		t.Fatalf("expected raw transcript attachment first, got %+v", mailerStub.sent[0].Attachments)

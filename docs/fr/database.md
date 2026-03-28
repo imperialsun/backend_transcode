@@ -7,7 +7,8 @@ Le backend utilise SQLite via `modernc.org/sqlite` avec:
 - `PRAGMA foreign_keys = ON`
 - `PRAGMA journal_mode = WAL`
 - `PRAGMA synchronous = NORMAL`
-- `SetMaxOpenConns(1)` et `SetMaxIdleConns(1)`
+- `SetMaxOpenConns(4)` et `SetMaxIdleConns(4)`
+- `PRAGMA busy_timeout = 5000`
 
 La source du schema est `internal/store/store.go`.
 

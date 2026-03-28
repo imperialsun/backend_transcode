@@ -1,7 +1,6 @@
 package api
 
 import (
-	"context"
 	"encoding/json"
 	"strings"
 
@@ -29,7 +28,7 @@ func (a *App) getSettings(c *fiber.Ctx) error {
 	if claims == nil {
 		return c.Status(fiber.StatusUnauthorized).JSON(ErrorResponse{Error: "unauthorized"})
 	}
-	record, err := a.Store.GetUserSettings(context.Background(), claims.UserID)
+	record, err := a.Store.GetUserSettings(requestContext(c), claims.UserID)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{Error: "failed to load settings"})
 	}
@@ -56,7 +55,7 @@ func (a *App) putSettings(c *fiber.Ctx) error {
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{Error: "settings must be valid JSON"})
 	}
-	record, err := a.Store.SaveUserSettings(context.Background(), claims.UserID, claims.OrgID, sanitizedPayload, req.SchemaVersion)
+	record, err := a.Store.SaveUserSettings(requestContext(c), claims.UserID, claims.OrgID, sanitizedPayload, req.SchemaVersion)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{Error: "failed to save settings"})
 	}
@@ -68,7 +67,7 @@ func (a *App) resetSettings(c *fiber.Ctx) error {
 	if claims == nil {
 		return c.Status(fiber.StatusUnauthorized).JSON(ErrorResponse{Error: "unauthorized"})
 	}
-	record, err := a.Store.ResetUserSettings(context.Background(), claims.UserID, claims.OrgID)
+	record, err := a.Store.ResetUserSettings(requestContext(c), claims.UserID, claims.OrgID)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{Error: "failed to reset settings"})
 	}

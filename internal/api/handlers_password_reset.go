@@ -36,7 +36,7 @@ func (a *App) forgotPasswordForSession(c *fiber.Ctx, sessionType auth.SessionTyp
 		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{Error: "email is required"})
 	}
 
-	if err := a.requestPasswordResetByEmail(context.Background(), email, sessionType, ""); err != nil {
+	if err := a.requestPasswordResetByEmail(requestContext(c), email, sessionType, ""); err != nil {
 		log.Printf("[password-reset] request email failed session=%s email=%q err=%v", sessionType, email, err)
 	}
 	return c.SendStatus(fiber.StatusNoContent)
@@ -59,7 +59,7 @@ func (a *App) resetPasswordForSession(c *fiber.Ctx, sessionType auth.SessionType
 	}
 
 	record, err := a.Store.ApplyPasswordReset(
-		context.Background(),
+		requestContext(c),
 		auth.HashPasswordResetToken(token),
 		passwordHash,
 		sessionType.String(),

@@ -25,8 +25,17 @@ type changePasswordRequest struct {
 }
 
 func (a *App) RegisterAuthRoutes(router fiber.Router) {
+	a.RegisterAuthCoreRoutes(router)
+	a.RegisterAuthForgotPasswordRoutes(router)
+}
+
+func (a *App) RegisterAdminAuthRoutes(router fiber.Router) {
+	a.RegisterAdminAuthCoreRoutes(router)
+	a.RegisterAdminAuthForgotPasswordRoutes(router)
+}
+
+func (a *App) RegisterAuthCoreRoutes(router fiber.Router) {
 	router.Post("/login", newLoginRateLimiter(), a.login)
-	router.Post("/forgot-password", newPasswordResetRequestRateLimiter(), a.forgotPassword)
 	router.Post("/reset-password", newPasswordResetApplyRateLimiter(), a.resetPassword)
 	router.Put("/me/password", a.AppAuthRequired(), a.changePassword)
 	router.Post("/refresh", a.refresh)
@@ -34,13 +43,20 @@ func (a *App) RegisterAuthRoutes(router fiber.Router) {
 	router.Get("/me", a.AppAuthRequired(), a.me)
 }
 
-func (a *App) RegisterAdminAuthRoutes(router fiber.Router) {
+func (a *App) RegisterAuthForgotPasswordRoutes(router fiber.Router) {
+	router.Post("/forgot-password", newPasswordResetRequestRateLimiter(), a.forgotPassword)
+}
+
+func (a *App) RegisterAdminAuthCoreRoutes(router fiber.Router) {
 	router.Post("/login", newLoginRateLimiter(), a.adminLogin)
-	router.Post("/forgot-password", newPasswordResetRequestRateLimiter(), a.adminForgotPassword)
 	router.Post("/reset-password", newPasswordResetApplyRateLimiter(), a.adminResetPassword)
 	router.Post("/refresh", a.adminRefresh)
 	router.Post("/logout", a.adminLogout)
 	router.Get("/me", a.AdminAuthRequired(), a.adminMe)
+}
+
+func (a *App) RegisterAdminAuthForgotPasswordRoutes(router fiber.Router) {
+	router.Post("/forgot-password", newPasswordResetRequestRateLimiter(), a.adminForgotPassword)
 }
 
 func newLoginRateLimiter() fiber.Handler {
@@ -130,7 +146,7 @@ func (a *App) changePassword(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{Error: "current password and new password are required"})
 	}
 
-	ctx := context.Background()
+	ctx := requestContext(c)
 	user, err := a.Store.GetUserByID(ctx, claims.UserID)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{Error: "failed to load user"})
@@ -162,7 +178,7 @@ func (a *App) loginForSession(c *fiber.Ctx, sessionType auth.SessionType) error 
 	if email == "" || strings.TrimSpace(req.Password) == "" {
 		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{Error: "email and password are required"})
 	}
-	ctx := context.Background()
+	ctx := requestContext(c)
 	user, err := a.Store.FindUserByEmail(ctx, email)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{Error: "failed to load user"})
@@ -182,7 +198,7 @@ func (a *App) loginForSession(c *fiber.Ctx, sessionType auth.SessionType) error 
 	}
 	setSessionCookies(c, payload, a.Config.CookieSecure)
 	if sessionType == auth.SessionTypeAdmin {
-		a.auditLogLogin(payload.Response)
+		a.auditLogLogin(ctx, payload.Response)
 	}
 	return c.JSON(payload.Response)
 }
@@ -204,7 +220,7 @@ func (a *App) refreshSession(c *fiber.Ctx, sessionType auth.SessionType) error {
 	if err != nil {
 		return c.Status(fiber.StatusUnauthorized).JSON(ErrorResponse{Error: "invalid refresh token"})
 	}
-	ctx := context.Background()
+	ctx := requestContext(c)
 	session, err := a.Store.GetRefreshSessionByID(ctx, sessionID)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{Error: "failed to load refresh session"})
@@ -294,9 +310,10 @@ func (a *App) logoutSession(c *fiber.Ctx, sessionType auth.SessionType) error {
 	if raw != "" {
 		sessionID, _, err := auth.ParseRefreshToken(raw)
 		if err == nil {
-			session, loadErr := a.Store.GetRefreshSessionByID(context.Background(), sessionID)
+			ctx := requestContext(c)
+			session, loadErr := a.Store.GetRefreshSessionByID(ctx, sessionID)
 			if loadErr == nil && session != nil && session.SessionType == sessionType.String() {
-				_ = a.Store.RevokeRefreshSession(context.Background(), sessionID)
+				_ = a.Store.RevokeRefreshSession(ctx, sessionID)
 			}
 		}
 	}
@@ -317,7 +334,7 @@ func (a *App) meForSession(c *fiber.Ctx, sessionType auth.SessionType) error {
 	if claims == nil {
 		return c.Status(fiber.StatusUnauthorized).JSON(ErrorResponse{Error: "unauthorized"})
 	}
-	ctx := context.Background()
+	ctx := requestContext(c)
 	user, err := a.Store.GetUserByID(ctx, claims.UserID)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{Error: "failed to load user"})
@@ -507,8 +524,8 @@ func canUseAdminPanel(response AuthResponse) bool {
 	return rbac.HasRole(response.GlobalRoles, "super_admin") || rbac.HasRole(response.OrgRoles, "org_admin")
 }
 
-func (a *App) auditLogLogin(response AuthResponse) {
-	_ = a.Store.InsertAuditLog(context.Background(), store.AuditLogInput{
+func (a *App) auditLogLogin(ctx context.Context, response AuthResponse) {
+	_ = a.Store.InsertAuditLog(ctx, store.AuditLogInput{
 		ActorUserID:    response.User.ID,
 		OrganizationID: response.Organization.ID,
 		Action:         "admin.login",

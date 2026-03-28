@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"html"
 	"log"
+	"net/mail"
 	"strings"
 	"time"
 
@@ -27,6 +28,7 @@ type meetingRequest struct {
 	Participants            []string                           `json:"participants"`
 	TranscriptionSourceMode string                             `json:"transcriptionSourceMode,omitempty"`
 	TranscriptionProvider   string                             `json:"transcriptionProvider,omitempty"`
+	RecipientEmails         []string                           `json:"recipientEmails,omitempty"`
 	RawTranscriptText       string                             `json:"rawTranscriptText,omitempty"`
 	EditedTranscriptText    string                             `json:"editedTranscriptText,omitempty"`
 	SpeakerAssignments      []meetingreports.SpeakerAssignment `json:"speakerAssignments,omitempty"`
@@ -75,6 +77,7 @@ type meetingFinalizeResponse struct {
 	ReportProvider          string                      `json:"reportProvider"`
 	SelectedFormats         []string                    `json:"selectedFormats"`
 	SentTo                  string                      `json:"sentTo"`
+	SentToEmails            []string                    `json:"sentToEmails,omitempty"`
 	GeneratedAt             string                      `json:"generatedAt"`
 	TranscriptDocxFilename  string                      `json:"transcriptDocxFilename"`
 	ReportDocxFilenames     []string                    `json:"reportDocxFilenames"`
@@ -213,6 +216,19 @@ func (a *App) finalizeMeeting(c *fiber.Ctx) error {
 		toEmail = strings.TrimSpace(user.Email)
 	}
 
+	recipients, err := normalizeRecipientEmails(append([]string{toEmail}, req.RecipientEmails...))
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{Error: err.Error()})
+	}
+	if len(recipients) == 0 {
+		_ = a.recordMeetingActivityEvent(claims, "report", meetingReportSourceMode, meetingReportProvider, "error", map[string]any{
+			"title":           title,
+			"selectedFormats": selectedFormatsToStrings(selectedFormats),
+			"message":         "recipient email unavailable",
+		})
+		return c.Status(fiber.StatusServiceUnavailable).JSON(ErrorResponse{Error: "recipient email unavailable"})
+	}
+
 	if a.Mailer == nil {
 		_ = a.recordMeetingActivityEvent(claims, "report", meetingReportSourceMode, meetingReportProvider, "error", map[string]any{
 			"title":           title,
@@ -232,25 +248,29 @@ func (a *App) finalizeMeeting(c *fiber.Ctx) error {
 
 	subject := buildMeetingSubject(title)
 	textBody, htmlBody := buildMeetingEmailBodies(title, participants, transcriptionSourceMode, reportEnvelopes)
-	if err := a.Mailer.SendMeetingSummaryEmail(context.Background(), mailer.MeetingSummaryEmail{
-		ToEmail:     toEmail,
-		Subject:     subject,
-		TextBody:    textBody,
-		HTMLBody:    htmlBody,
-		Attachments: attachments,
-	}); err != nil {
-		_ = a.recordMeetingActivityEvent(claims, "report", meetingReportSourceMode, meetingReportProvider, "error", map[string]any{
-			"title":           title,
-			"selectedFormats": selectedFormatsToStrings(selectedFormats),
-			"message":         err.Error(),
-		})
-		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{Error: "failed to send meeting email"})
+	for _, recipient := range recipients {
+		if err := a.Mailer.SendMeetingSummaryEmail(context.Background(), mailer.MeetingSummaryEmail{
+			ToEmail:     recipient,
+			Subject:     subject,
+			TextBody:    textBody,
+			HTMLBody:    htmlBody,
+			Attachments: attachments,
+		}); err != nil {
+			_ = a.recordMeetingActivityEvent(claims, "report", meetingReportSourceMode, meetingReportProvider, "error", map[string]any{
+				"title":           title,
+				"selectedFormats": selectedFormatsToStrings(selectedFormats),
+				"recipientCount":  len(recipients),
+				"message":         err.Error(),
+			})
+			return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{Error: "failed to send meeting email"})
+		}
 	}
 
 	_ = a.recordMeetingActivityEvent(claims, "report", meetingReportSourceMode, meetingReportProvider, "success", map[string]any{
 		"title":           title,
 		"selectedFormats": selectedFormatsToStrings(selectedFormats),
 		"attachmentCount": len(attachments),
+		"recipientCount":  len(recipients),
 	})
 
 	return c.JSON(meetingFinalizeResponse{
@@ -261,7 +281,8 @@ func (a *App) finalizeMeeting(c *fiber.Ctx) error {
 		ReportSourceMode:        meetingReportSourceMode,
 		ReportProvider:          meetingReportProvider,
 		SelectedFormats:         selectedFormatsToStrings(selectedFormats),
-		SentTo:                  toEmail,
+		SentTo:                  strings.Join(recipients, ", "),
+		SentToEmails:            recipients,
 		GeneratedAt:             time.Now().UTC().Format(time.RFC3339),
 		TranscriptDocxFilename:  extractTranscriptFilename(attachments),
 		ReportDocxFilenames:     extractReportFilenames(attachments),
@@ -506,6 +527,31 @@ func selectedFormatsToStrings(formats []meetingreports.ReportFormat) []string {
 		out = append(out, string(format))
 	}
 	return out
+}
+
+func normalizeRecipientEmails(values []string) ([]string, error) {
+	seen := map[string]struct{}{}
+	out := make([]string, 0, len(values))
+	for _, raw := range values {
+		candidate := strings.TrimSpace(raw)
+		if candidate == "" {
+			continue
+		}
+		addr, err := mail.ParseAddress(candidate)
+		if err != nil {
+			return nil, fmt.Errorf("invalid recipient email: %s", candidate)
+		}
+		email := strings.ToLower(strings.TrimSpace(addr.Address))
+		if email == "" {
+			continue
+		}
+		if _, exists := seen[email]; exists {
+			continue
+		}
+		seen[email] = struct{}{}
+		out = append(out, email)
+	}
+	return out, nil
 }
 
 func extractMeetingReportFormats(reports []meetingReportEnvelope) []meetingreports.ReportFormat {
