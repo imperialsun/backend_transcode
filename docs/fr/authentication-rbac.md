@@ -35,6 +35,11 @@ Toutes les cookies de session sont:
 - Le logout revoque la session refresh active si elle existe.
 - Les cookies access et refresh sont aussitot expirees cote client.
 
+### Changement de mot de passe
+
+- `PUT /api/v1/auth/me/password` accepte `{ currentPassword, password }` sur une session app.
+- Le backend verifie le mot de passe actuel, hache le nouveau mot de passe avec Argon2id, met a jour le user, revoque toutes ses refresh sessions, et invalide tous ses tokens de reset encore actifs.
+
 ### Reset mot de passe par email
 
 - `POST /api/v1/auth/forgot-password` et `POST /api/v1/admin/auth/forgot-password` acceptent `{ email }` et repondent `204` pour toute requete syntaxiquement valide.

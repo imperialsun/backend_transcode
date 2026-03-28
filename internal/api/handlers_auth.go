@@ -19,10 +19,16 @@ type loginRequest struct {
 	Password string `json:"password"`
 }
 
+type changePasswordRequest struct {
+	CurrentPassword string `json:"currentPassword"`
+	Password        string `json:"password"`
+}
+
 func (a *App) RegisterAuthRoutes(router fiber.Router) {
 	router.Post("/login", newLoginRateLimiter(), a.login)
 	router.Post("/forgot-password", newPasswordResetRequestRateLimiter(), a.forgotPassword)
 	router.Post("/reset-password", newPasswordResetApplyRateLimiter(), a.resetPassword)
+	router.Put("/me/password", a.AppAuthRequired(), a.changePassword)
 	router.Post("/refresh", a.refresh)
 	router.Post("/logout", a.logout)
 	router.Get("/me", a.AppAuthRequired(), a.me)
@@ -105,6 +111,46 @@ func (a *App) resetPassword(c *fiber.Ctx) error {
 
 func (a *App) adminResetPassword(c *fiber.Ctx) error {
 	return a.resetPasswordForSession(c, auth.SessionTypeAdmin)
+}
+
+func (a *App) changePassword(c *fiber.Ctx) error {
+	claims := MustClaims(c)
+	if claims == nil {
+		return c.Status(fiber.StatusUnauthorized).JSON(ErrorResponse{Error: "unauthorized"})
+	}
+
+	var req changePasswordRequest
+	if err := c.BodyParser(&req); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{Error: "invalid payload"})
+	}
+
+	currentPassword := strings.TrimSpace(req.CurrentPassword)
+	newPassword := strings.TrimSpace(req.Password)
+	if currentPassword == "" || newPassword == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{Error: "current password and new password are required"})
+	}
+
+	ctx := context.Background()
+	user, err := a.Store.GetUserByID(ctx, claims.UserID)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{Error: "failed to load user"})
+	}
+	if user == nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{Error: "failed to load user"})
+	}
+	if !auth.VerifyPassword(user.PasswordHash, req.CurrentPassword) {
+		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{Error: "invalid current password"})
+	}
+
+	passwordHash, err := auth.HashPassword(req.Password)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{Error: err.Error()})
+	}
+
+	if err := a.Store.ChangeUserPassword(ctx, user.ID, passwordHash); err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{Error: "failed to change password"})
+	}
+	return c.SendStatus(fiber.StatusNoContent)
 }
 
 func (a *App) loginForSession(c *fiber.Ctx, sessionType auth.SessionType) error {

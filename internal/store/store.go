@@ -711,6 +711,32 @@ func (s *Store) UpdateUserPassword(ctx context.Context, userID, passwordHash str
 	return err
 }
 
+func (s *Store) ChangeUserPassword(ctx context.Context, userID, passwordHash string) error {
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer rollbackTx(tx)
+
+	now := time.Now().UTC()
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?
+	`, passwordHash, now, userID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE refresh_sessions SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL
+	`, now, userID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE password_reset_tokens SET used_at = ? WHERE user_id = ? AND used_at IS NULL
+	`, now, userID); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 func (s *Store) IsUserInOrganization(ctx context.Context, userID, organizationID string) (bool, error) {
 	var count int
 	err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM users WHERE id = ? AND organization_id = ?`, userID, organizationID).Scan(&count)

@@ -182,6 +182,143 @@ func TestAppAuthSessionLifecycle(t *testing.T) {
 	assertSetCookieContains(t, logoutResp, auth.AppRefreshCookieName, "expires=")
 }
 
+func TestAppChangePassword_UpdatesPasswordAndRevokesSessions(t *testing.T) {
+	app, _, st, user := setupLoginRoutesTest(t)
+	ctx := context.Background()
+	if err := st.SetUserGlobalRoles(ctx, user.ID, []string{"user"}); err != nil {
+		t.Fatalf("failed to set global roles: %v", err)
+	}
+
+	loginResp := performLoginRequest(t, app, "/api/v1/auth/login", map[string]string{
+		"email":    user.Email,
+		"password": "ChangeMe123!",
+	})
+	if loginResp.StatusCode != fiber.StatusOK {
+		t.Fatalf("expected 200 for login, got %d", loginResp.StatusCode)
+	}
+
+	accessCookie := findCookie(t, loginResp, auth.AppAccessCookieName)
+	refreshCookie := findCookie(t, loginResp, auth.AppRefreshCookieName)
+
+	now := time.Now().UTC()
+	appResetHash := auth.HashPasswordResetToken("app-reset-token")
+	adminResetHash := auth.HashPasswordResetToken("admin-reset-token")
+	for _, token := range []struct {
+		hash        string
+		sessionType string
+	}{
+		{hash: appResetHash, sessionType: auth.SessionTypeApp.String()},
+		{hash: adminResetHash, sessionType: auth.SessionTypeAdmin.String()},
+	} {
+		if err := st.SavePasswordResetToken(ctx, store.PasswordResetToken{
+			UserID:      user.ID,
+			SessionType: token.sessionType,
+			TokenHash:   token.hash,
+			ExpiresAt:   now.Add(time.Hour),
+			CreatedAt:   now,
+		}); err != nil {
+			t.Fatalf("SavePasswordResetToken failed: %v", err)
+		}
+	}
+
+	changeResp := performJSONRequestWithHeaders(
+		t,
+		app,
+		http.MethodPut,
+		"/api/v1/auth/me/password",
+		map[string]string{
+			"currentPassword": "ChangeMe123!",
+			"password":        "NewChangeMe123!",
+		},
+		[]*http.Cookie{accessCookie},
+		nil,
+	)
+	if changeResp.StatusCode != fiber.StatusNoContent {
+		t.Fatalf("expected 204 for password change, got %d", changeResp.StatusCode)
+	}
+
+	refreshResp := performJSONRequestWithHeaders(
+		t,
+		app,
+		http.MethodPost,
+		"/api/v1/auth/refresh",
+		nil,
+		[]*http.Cookie{refreshCookie},
+		nil,
+	)
+	if refreshResp.StatusCode != fiber.StatusUnauthorized {
+		t.Fatalf("expected 401 for revoked refresh session, got %d", refreshResp.StatusCode)
+	}
+
+	for _, hash := range []string{appResetHash, adminResetHash} {
+		record, err := st.GetPasswordResetTokenByHash(ctx, hash)
+		if err != nil {
+			t.Fatalf("GetPasswordResetTokenByHash failed: %v", err)
+		}
+		if record == nil || !record.UsedAt.Valid {
+			t.Fatalf("expected password reset token %s to be revoked, got %+v", hash, record)
+		}
+	}
+
+	invalidLogin := performLoginRequest(t, app, "/api/v1/auth/login", map[string]string{
+		"email":    user.Email,
+		"password": "ChangeMe123!",
+	})
+	if invalidLogin.StatusCode != fiber.StatusUnauthorized {
+		t.Fatalf("expected 401 for old password, got %d", invalidLogin.StatusCode)
+	}
+
+	newLogin := performLoginRequest(t, app, "/api/v1/auth/login", map[string]string{
+		"email":    user.Email,
+		"password": "NewChangeMe123!",
+	})
+	if newLogin.StatusCode != fiber.StatusOK {
+		t.Fatalf("expected 200 for new password, got %d", newLogin.StatusCode)
+	}
+}
+
+func TestAppChangePassword_RejectsWrongCurrentPassword(t *testing.T) {
+	app, _, st, user := setupLoginRoutesTest(t)
+	ctx := context.Background()
+	if err := st.SetUserGlobalRoles(ctx, user.ID, []string{"user"}); err != nil {
+		t.Fatalf("failed to set global roles: %v", err)
+	}
+
+	loginResp := performLoginRequest(t, app, "/api/v1/auth/login", map[string]string{
+		"email":    user.Email,
+		"password": "ChangeMe123!",
+	})
+	if loginResp.StatusCode != fiber.StatusOK {
+		t.Fatalf("expected 200 for login, got %d", loginResp.StatusCode)
+	}
+
+	accessCookie := findCookie(t, loginResp, auth.AppAccessCookieName)
+
+	changeResp := performJSONRequestWithHeaders(
+		t,
+		app,
+		http.MethodPut,
+		"/api/v1/auth/me/password",
+		map[string]string{
+			"currentPassword": "wrong-password",
+			"password":        "NewChangeMe123!",
+		},
+		[]*http.Cookie{accessCookie},
+		nil,
+	)
+	if changeResp.StatusCode != fiber.StatusBadRequest {
+		t.Fatalf("expected 400 for wrong current password, got %d", changeResp.StatusCode)
+	}
+
+	unchangedLogin := performLoginRequest(t, app, "/api/v1/auth/login", map[string]string{
+		"email":    user.Email,
+		"password": "ChangeMe123!",
+	})
+	if unchangedLogin.StatusCode != fiber.StatusOK {
+		t.Fatalf("expected 200 for original password after failed change, got %d", unchangedLogin.StatusCode)
+	}
+}
+
 func TestAdminAuthSessionLifecycle(t *testing.T) {
 	app, _, st, user := setupLoginRoutesTest(t)
 	ctx := context.Background()

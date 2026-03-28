@@ -61,6 +61,7 @@ Response:
 | `POST` | `/api/v1/auth/login` | none | none | app login, rate limited to 10/min/IP |
 | `POST` | `/api/v1/auth/refresh` | app refresh cookie | none | rotates the refresh token |
 | `POST` | `/api/v1/auth/logout` | optional app refresh cookie | none | revokes the refresh session if found |
+| `PUT` | `/api/v1/auth/me/password` | app session | none | changes the current password, revokes refresh sessions and outstanding reset tokens |
 | `GET` | `/api/v1/auth/me` | app session | none | returns the current user context |
 
 ## Admin auth

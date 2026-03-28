@@ -61,6 +61,7 @@ Reponse:
 | `POST` | `/api/v1/auth/login` | aucune | aucune | login app, rate limit 10/min/IP |
 | `POST` | `/api/v1/auth/refresh` | cookie refresh app | aucune | rotate refresh token |
 | `POST` | `/api/v1/auth/logout` | cookie refresh app optionnelle | aucune | revoque la session refresh si trouvee |
+| `PUT` | `/api/v1/auth/me/password` | session app | aucune | change le mot de passe courant, revoque les refresh sessions et les tokens de reset encore actifs |
 | `GET` | `/api/v1/auth/me` | session app | aucune | renvoie le contexte utilisateur courant |
 
 ## Auth admin
