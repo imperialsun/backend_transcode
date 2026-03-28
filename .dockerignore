@@ -7,3 +7,7 @@ coverage.out
 bin
 tmp
 *.log
+server
+docs
+*.md
+*_test.go
