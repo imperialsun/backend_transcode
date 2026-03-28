@@ -72,6 +72,34 @@ func TestBuildMeetingSummaryMessageIncludesAttachments(t *testing.T) {
 	}
 }
 
+func TestBuildUserProvisioningMessageIncludesLoginAndPassword(t *testing.T) {
+	mailer := NewSMTPMailer(Config{
+		Host:      "smtp.demeter.test",
+		Port:      587,
+		FromEmail: "noreply@demeter.test",
+		FromName:  "Demeter",
+	})
+
+	message, err := mailer.buildUserProvisioningMessage(UserProvisioningEmail{
+		ToEmail:           "user@example.com",
+		Login:             "user@example.com",
+		TemporaryPassword: "TmpPass-123456",
+	})
+	if err != nil {
+		t.Fatalf("buildUserProvisioningMessage returned error: %v", err)
+	}
+	raw := string(message)
+	if !strings.Contains(raw, "user@example.com") {
+		t.Fatalf("expected login in message, got %q", raw)
+	}
+	if !strings.Contains(raw, "TmpPass-123456") {
+		t.Fatalf("expected temporary password in message, got %q", raw)
+	}
+	if !strings.Contains(raw, "Vos identifiants Demeter Speech") {
+		t.Fatalf("expected provisioning subject, got %q", raw)
+	}
+}
+
 func TestSendMeetingSummaryEmailRequiresReadyMailer(t *testing.T) {
 	mailer := NewSMTPMailer(Config{})
 	if err := mailer.SendMeetingSummaryEmail(context.Background(), MeetingSummaryEmail{ToEmail: "user@example.com"}); err == nil {

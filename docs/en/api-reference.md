@@ -144,6 +144,7 @@ All routes below require:
 | `PATCH` | `/api/v1/admin/organizations/:id` | updates an org, reserved to `super_admin` |
 | `GET` | `/api/v1/admin/organizations/:id/users` | lists users in an org |
 | `POST` | `/api/v1/admin/organizations/:id/users` | creates a user and grants `user` + `org_member` |
+| `POST` | `/api/v1/admin/organizations/:id/users/bulk` | creates multiple users from an email list, grants `user` + `org_member`, and emails each account a temporary password; partial success is returned per email |
 | `PATCH` | `/api/v1/admin/users/:id` | updates email, status, org (org only for `super_admin`) |
 | `DELETE` | `/api/v1/admin/users/:id` | permanently deletes the user; rejects self-deletion and deleting the last required admin |
 | `DELETE` | `/api/v1/admin/users/:id/activity` | purges all activity events for the user while keeping the account |

@@ -38,6 +38,10 @@ func (m *fakeMeetingMailer) SendMeetingSummaryEmail(_ context.Context, input mai
 	return nil
 }
 
+func (m *fakeMeetingMailer) SendUserProvisioningEmail(_ context.Context, _ mailer.UserProvisioningEmail) error {
+	return nil
+}
+
 func TestMeetingDraftsAndFinalizeSendsMailAndActivity(t *testing.T) {
 	app, token, appCtx := setupDemeterRoutesApp(t, []store.UserPermissionOverrideInput{
 		{PermissionCode: "feature.llmapi", Effect: "allow"},

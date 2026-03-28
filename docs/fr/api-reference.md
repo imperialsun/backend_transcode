@@ -144,6 +144,7 @@ Toutes les routes ci-dessous exigent:
 | `PATCH` | `/api/v1/admin/organizations/:id` | update org, reserve a `super_admin` |
 | `GET` | `/api/v1/admin/organizations/:id/users` | liste les users d une org |
 | `POST` | `/api/v1/admin/organizations/:id/users` | cree un user, lui attribue `user` + `org_member` |
+| `POST` | `/api/v1/admin/organizations/:id/users/bulk` | cree plusieurs users depuis une liste d emails, leur attribue `user` + `org_member`, et envoie a chacun un mot de passe temporaire par email; les resultats partiels sont retournes par adresse |
 | `PATCH` | `/api/v1/admin/users/:id` | met a jour email, statut, org (org seulement pour `super_admin`) |
 | `DELETE` | `/api/v1/admin/users/:id` | supprime definitivement l utilisateur; refuse l auto-suppression et la suppression du dernier admin requis |
 | `DELETE` | `/api/v1/admin/users/:id/activity` | purge tous les evenements d activite du user tout en conservant le compte |

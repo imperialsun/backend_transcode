@@ -97,6 +97,34 @@ func TestSMTPMailerSendMeetingSummaryEmail_Success(t *testing.T) {
 	}
 }
 
+func TestSMTPMailerSendUserProvisioningEmail_Success(t *testing.T) {
+	server := startSMTPTestServer(t, false)
+
+	m := NewSMTPMailer(Config{
+		Host:      server.host,
+		Port:      server.port,
+		FromEmail: "noreply@demeter.test",
+		FromName:  "Demeter",
+	})
+
+	err := m.SendUserProvisioningEmail(context.Background(), UserProvisioningEmail{
+		ToEmail:           "user@example.com",
+		Login:             "user@example.com",
+		TemporaryPassword: "TmpPass-123456",
+	})
+	if err != nil {
+		t.Fatalf("SendUserProvisioningEmail returned error: %v", err)
+	}
+
+	message := server.waitForMessage(t)
+	if !strings.Contains(message, "Subject: Vos identifiants Demeter Speech") {
+		t.Fatalf("expected provisioning subject in SMTP message, got %q", message)
+	}
+	if !strings.Contains(message, "TmpPass-123456") {
+		t.Fatalf("expected temporary password in SMTP message, got %q", message)
+	}
+}
+
 type smtpTestServer struct {
 	host       string
 	port       int

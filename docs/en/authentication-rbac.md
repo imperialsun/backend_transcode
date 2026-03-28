@@ -50,6 +50,7 @@ All session cookies are:
   - revokes every refresh session for that user,
   - invalidates every other outstanding reset token for that user.
 - Admins also get `POST /api/v1/admin/users/:id/password-reset-email` to send an app reset link to a user inside their scope.
+- Admins also get `POST /api/v1/admin/organizations/:id/users/bulk` to create multiple users in one request, assign the default roles, generate a temporary password server-side, and email each login plus password to the new account.
 - Admins also get `DELETE /api/v1/admin/users/:id` to permanently delete a user inside their scope, with protections against self-deletion and deleting the last required admin.
 
 ## Email and public URL configuration

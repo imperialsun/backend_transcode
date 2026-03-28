@@ -644,6 +644,42 @@ func (s *Store) CreateUser(ctx context.Context, organizationID, email, passwordH
 	return u, nil
 }
 
+func (s *Store) CreateUserWithRoles(ctx context.Context, organizationID, email, passwordHash, status string, globalRoleCodes, organizationRoleCodes []string) (*User, error) {
+	now := time.Now().UTC()
+	u := &User{
+		ID:             uuid.NewString(),
+		OrganizationID: strings.TrimSpace(organizationID),
+		Email:          strings.ToLower(strings.TrimSpace(email)),
+		PasswordHash:   passwordHash,
+		Status:         normalizeStatus(status),
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	}
+
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer rollbackTx(tx)
+
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO users(id, organization_id, email, password_hash, status, created_at, updated_at)
+		VALUES(?, ?, ?, ?, ?, ?, ?)
+	`, u.ID, u.OrganizationID, u.Email, u.PasswordHash, u.Status, u.CreatedAt, u.UpdatedAt); err != nil {
+		return nil, err
+	}
+	if err := s.setUserGlobalRolesTx(ctx, tx, u.ID, globalRoleCodes); err != nil {
+		return nil, err
+	}
+	if err := s.setUserOrganizationRolesTx(ctx, tx, u.ID, organizationRoleCodes); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return u, nil
+}
+
 func (s *Store) UpdateUser(ctx context.Context, userID string, input UpdateUserInput) (*User, error) {
 	current, err := s.GetUserByID(ctx, userID)
 	if err != nil || current == nil {
@@ -783,6 +819,13 @@ func (s *Store) SetUserGlobalRoles(ctx context.Context, userID string, roleCodes
 		return err
 	}
 	defer rollbackTx(tx)
+	if err := s.setUserGlobalRolesTx(ctx, tx, userID, roleCodes); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (s *Store) setUserGlobalRolesTx(ctx context.Context, tx *sql.Tx, userID string, roleCodes []string) error {
 	if _, err := tx.ExecContext(ctx, `DELETE FROM user_global_roles WHERE user_id = ?`, userID); err != nil {
 		return err
 	}
@@ -798,7 +841,7 @@ func (s *Store) SetUserGlobalRoles(ctx context.Context, userID string, roleCodes
 			return err
 		}
 	}
-	return tx.Commit()
+	return nil
 }
 
 func (s *Store) SetUserOrganizationRoles(ctx context.Context, userID string, roleCodes []string) error {
@@ -807,6 +850,13 @@ func (s *Store) SetUserOrganizationRoles(ctx context.Context, userID string, rol
 		return err
 	}
 	defer rollbackTx(tx)
+	if err := s.setUserOrganizationRolesTx(ctx, tx, userID, roleCodes); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (s *Store) setUserOrganizationRolesTx(ctx context.Context, tx *sql.Tx, userID string, roleCodes []string) error {
 	if _, err := tx.ExecContext(ctx, `DELETE FROM user_organization_roles WHERE user_id = ?`, userID); err != nil {
 		return err
 	}
@@ -822,7 +872,7 @@ func (s *Store) SetUserOrganizationRoles(ctx context.Context, userID string, rol
 			return err
 		}
 	}
-	return tx.Commit()
+	return nil
 }
 
 func (s *Store) SetUserPermissionOverrides(ctx context.Context, userID string, overrides []UserPermissionOverrideInput) error {

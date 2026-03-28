@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/mail"
 	"strings"
 
 	"demeter-backend/internal/auth"
+	"demeter-backend/internal/mailer"
 	"demeter-backend/internal/rbac"
 	"demeter-backend/internal/store"
 	"github.com/gofiber/fiber/v2"
@@ -28,6 +30,27 @@ type createUserRequest struct {
 	Email    string `json:"email"`
 	Password string `json:"password"`
 	Status   string `json:"status"`
+}
+
+type bulkCreateUsersRequest struct {
+	Emails []string `json:"emails"`
+}
+
+type bulkCreateUsersResponse struct {
+	Created []bulkCreateUsersResponseItem `json:"created"`
+	Failed  []bulkCreateUsersFailedItem   `json:"failed"`
+}
+
+type bulkCreateUsersResponseItem struct {
+	ID     string `json:"id"`
+	Email  string `json:"email"`
+	Status string `json:"status"`
+}
+
+type bulkCreateUsersFailedItem struct {
+	Email  string `json:"email"`
+	Error  string `json:"error"`
+	UserID string `json:"userId,omitempty"`
 }
 
 type patchUserRequest struct {
@@ -57,6 +80,7 @@ func (a *App) RegisterAdminRoutes(router fiber.Router) {
 	group.Get("/organizations/:id/users", a.listOrganizationUsers)
 	group.Get("/users/:id/access", a.getUserAccess)
 	group.Post("/organizations/:id/users", a.createOrganizationUser)
+	group.Post("/organizations/:id/users/bulk", a.createOrganizationUsersBulk)
 	group.Patch("/users/:id", a.patchUser)
 	group.Delete("/users/:id", a.deleteUser)
 	group.Get("/users/:id/activity/summary", a.userActivitySummary)
@@ -181,12 +205,10 @@ func (a *App) createOrganizationUser(c *fiber.Ctx) error {
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{Error: err.Error()})
 	}
-	created, err := a.Store.CreateUser(context.Background(), orgID, req.Email, hash, req.Status)
+	created, err := a.Store.CreateUserWithRoles(context.Background(), orgID, req.Email, hash, req.Status, []string{"user"}, []string{"org_member"})
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{Error: "failed to create user"})
 	}
-	_ = a.Store.SetUserGlobalRoles(context.Background(), created.ID, []string{"user"})
-	_ = a.Store.SetUserOrganizationRoles(context.Background(), created.ID, []string{"org_member"})
 	created.PasswordHash = ""
 	a.writeAdminAudit(claims, "admin.user.create", "user", created.ID, fiber.Map{
 		"organizationId": created.OrganizationID,
@@ -194,6 +216,151 @@ func (a *App) createOrganizationUser(c *fiber.Ctx) error {
 		"status":         created.Status,
 	})
 	return c.Status(fiber.StatusCreated).JSON(created)
+}
+
+func (a *App) createOrganizationUsersBulk(c *fiber.Ctx) error {
+	claims := MustClaims(c)
+	orgID := strings.TrimSpace(c.Params("id"))
+	if orgID == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{Error: "organization id is required"})
+	}
+	if !isSuperAdmin(claims) && claims.OrgID != orgID {
+		return c.Status(fiber.StatusForbidden).JSON(ErrorResponse{Error: "forbidden organization scope"})
+	}
+	if a.Mailer == nil || a.Mailer.Ready() != nil {
+		return c.Status(fiber.StatusServiceUnavailable).JSON(ErrorResponse{Error: "provisioning email unavailable"})
+	}
+
+	var req bulkCreateUsersRequest
+	if err := c.BodyParser(&req); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{Error: "invalid payload"})
+	}
+	if len(req.Emails) == 0 {
+		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{Error: "at least one email is required"})
+	}
+
+	ctx := context.Background()
+	result := bulkCreateUsersResponse{
+		Created: []bulkCreateUsersResponseItem{},
+		Failed:  []bulkCreateUsersFailedItem{},
+	}
+	seenEmails := map[string]struct{}{}
+
+	for _, rawEmail := range req.Emails {
+		normalizedEmail, err := normalizeBulkEmail(rawEmail)
+		if err != nil {
+			if strings.TrimSpace(rawEmail) == "" {
+				continue
+			}
+			result.Failed = append(result.Failed, bulkCreateUsersFailedItem{
+				Email: strings.TrimSpace(rawEmail),
+				Error: err.Error(),
+			})
+			continue
+		}
+		if _, exists := seenEmails[normalizedEmail]; exists {
+			result.Failed = append(result.Failed, bulkCreateUsersFailedItem{
+				Email: normalizedEmail,
+				Error: "duplicate email in request",
+			})
+			continue
+		}
+		seenEmails[normalizedEmail] = struct{}{}
+
+		existing, err := a.Store.FindUserByEmail(ctx, normalizedEmail)
+		if err != nil {
+			result.Failed = append(result.Failed, bulkCreateUsersFailedItem{
+				Email: normalizedEmail,
+				Error: "failed to check existing user",
+			})
+			continue
+		}
+		if existing != nil {
+			result.Failed = append(result.Failed, bulkCreateUsersFailedItem{
+				Email: normalizedEmail,
+				Error: "email already exists",
+			})
+			continue
+		}
+
+		temporaryPassword, err := auth.GenerateTemporaryPassword(24)
+		if err != nil {
+			result.Failed = append(result.Failed, bulkCreateUsersFailedItem{
+				Email: normalizedEmail,
+				Error: "failed to generate temporary password",
+			})
+			continue
+		}
+		hash, err := auth.HashPassword(temporaryPassword)
+		if err != nil {
+			result.Failed = append(result.Failed, bulkCreateUsersFailedItem{
+				Email: normalizedEmail,
+				Error: err.Error(),
+			})
+			continue
+		}
+
+		created, err := a.Store.CreateUserWithRoles(ctx, orgID, normalizedEmail, hash, "active", []string{"user"}, []string{"org_member"})
+		if err != nil {
+			result.Failed = append(result.Failed, bulkCreateUsersFailedItem{
+				Email: normalizedEmail,
+				Error: "failed to create user",
+			})
+			continue
+		}
+
+		if err := a.Mailer.SendUserProvisioningEmail(ctx, mailer.UserProvisioningEmail{
+			ToEmail:           created.Email,
+			Login:             created.Email,
+			TemporaryPassword: temporaryPassword,
+		}); err != nil {
+			result.Failed = append(result.Failed, bulkCreateUsersFailedItem{
+				Email:  created.Email,
+				Error:  "failed to send provisioning email",
+				UserID: created.ID,
+			})
+			a.writeAdminAudit(claims, "admin.user.create", "user", created.ID, fiber.Map{
+				"organizationId":        created.OrganizationID,
+				"email":                 created.Email,
+				"status":                created.Status,
+				"provisioningMode":      "bulk",
+				"provisioningEmailSent": false,
+			})
+			continue
+		}
+
+		created.PasswordHash = ""
+		result.Created = append(result.Created, bulkCreateUsersResponseItem{
+			ID:     created.ID,
+			Email:  created.Email,
+			Status: created.Status,
+		})
+		a.writeAdminAudit(claims, "admin.user.create", "user", created.ID, fiber.Map{
+			"organizationId":        created.OrganizationID,
+			"email":                 created.Email,
+			"status":                created.Status,
+			"provisioningMode":      "bulk",
+			"provisioningEmailSent": true,
+		})
+	}
+
+	return c.JSON(result)
+}
+
+func normalizeBulkEmail(raw string) (string, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return "", errors.New("email is required")
+	}
+	addr, err := mail.ParseAddress(trimmed)
+	if err != nil {
+		return "", errors.New("invalid email")
+	}
+	email := strings.ToLower(strings.TrimSpace(addr.Address))
+	if email == "" {
+		return "", errors.New("invalid email")
+	}
+	return email, nil
 }
 
 func (a *App) patchUser(c *fiber.Ctx) error {

@@ -19,9 +19,10 @@ import (
 )
 
 type fakePasswordResetMailer struct {
-	readyErr error
-	sendErr  error
-	sent     []mailer.PasswordResetEmail
+	readyErr        error
+	sendErr         error
+	sent            []mailer.PasswordResetEmail
+	provisionedSent []mailer.UserProvisioningEmail
 }
 
 func (m *fakePasswordResetMailer) Ready() error {
@@ -44,11 +45,21 @@ func (m *fakePasswordResetMailer) SendMeetingSummaryEmail(_ context.Context, inp
 	return nil
 }
 
+func (m *fakePasswordResetMailer) SendUserProvisioningEmail(_ context.Context, input mailer.UserProvisioningEmail) error {
+	if m.sendErr != nil {
+		return m.sendErr
+	}
+	m.provisionedSent = append(m.provisionedSent, input)
+	return nil
+}
+
 type passwordResetFixture struct {
 	app          *fiber.App
 	appCtx       *App
 	store        *store.Store
 	mailer       *fakePasswordResetMailer
+	org          *store.Organization
+	otherOrg     *store.Organization
 	adminUser    *store.User
 	activeUser   *store.User
 	inactiveUser *store.User
@@ -587,6 +598,8 @@ func setupPasswordResetRoutesTest(t *testing.T) *passwordResetFixture {
 		appCtx:       appCtx,
 		store:        st,
 		mailer:       mailerStub,
+		org:          org,
+		otherOrg:     otherOrg,
 		adminUser:    adminUser,
 		activeUser:   activeUser,
 		inactiveUser: inactiveUser,

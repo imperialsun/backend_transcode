@@ -121,3 +121,16 @@ func TestNewCSRFToken(t *testing.T) {
 		t.Fatal("expected non-empty csrf token")
 	}
 }
+
+func TestGenerateTemporaryPassword(t *testing.T) {
+	password, err := GenerateTemporaryPassword(24)
+	if err != nil {
+		t.Fatalf("GenerateTemporaryPassword error: %v", err)
+	}
+	if strings.TrimSpace(password) == "" {
+		t.Fatal("expected a non-empty temporary password")
+	}
+	if len(password) < 20 {
+		t.Fatalf("expected a reasonably long password, got %q", password)
+	}
+}
