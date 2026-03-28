@@ -47,7 +47,7 @@ jobs:
           fi
 
       - name: Build backend image
-        run: docker build -f Dockerfile.smoke -t demeter-backend:smoke .
+        run: docker build -t demeter-backend:smoke .
 
       - name: Start backend container
         run: |
