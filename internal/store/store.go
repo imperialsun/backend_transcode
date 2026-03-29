@@ -335,6 +335,21 @@ func (s *Store) Migrate(ctx context.Context) error {
 			FOREIGN KEY(organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
 			FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
 		);`,
+		`CREATE TABLE IF NOT EXISTS meeting_finalize_operations (
+			operation_id TEXT PRIMARY KEY,
+			organization_id TEXT NOT NULL,
+			user_id TEXT NOT NULL,
+			status TEXT NOT NULL,
+			status_code INTEGER NOT NULL,
+			response_json TEXT,
+			error_message TEXT,
+			created_at DATETIME NOT NULL,
+			updated_at DATETIME NOT NULL,
+			completed_at DATETIME,
+			terminal_expires_at DATETIME,
+			FOREIGN KEY(organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
+			FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+		);`,
 		`CREATE INDEX IF NOT EXISTS idx_users_org ON users(organization_id);`,
 		`CREATE INDEX IF NOT EXISTS idx_refresh_user ON refresh_sessions(user_id);`,
 		`CREATE INDEX IF NOT EXISTS idx_password_reset_user ON password_reset_tokens(user_id);`,
@@ -343,6 +358,9 @@ func (s *Store) Migrate(ctx context.Context) error {
 		`CREATE INDEX IF NOT EXISTS idx_activity_user_day ON activity_usage_events(user_id, day);`,
 		`CREATE INDEX IF NOT EXISTS idx_activity_kind_org_day ON activity_usage_events(event_kind, organization_id, day);`,
 		`CREATE INDEX IF NOT EXISTS idx_activity_provider_org_day ON activity_usage_events(provider, organization_id, day);`,
+		`CREATE INDEX IF NOT EXISTS idx_meeting_finalize_operations_owner ON meeting_finalize_operations(organization_id, user_id);`,
+		`CREATE INDEX IF NOT EXISTS idx_meeting_finalize_operations_pending_created ON meeting_finalize_operations(status, created_at);`,
+		`CREATE INDEX IF NOT EXISTS idx_meeting_finalize_operations_status ON meeting_finalize_operations(status, terminal_expires_at);`,
 	}
 	logStoreStep(ctx, "migrate_start", "schema", map[string]any{"statement_count": len(stmts)})
 	tx, err := s.DB.BeginTx(ctx, nil)

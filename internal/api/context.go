@@ -12,11 +12,10 @@ import (
 )
 
 type App struct {
-	Config              config.Config
-	Store               *store.Store
-	MistralClient       *mistral.Client
-	Mailer              mailer.Sender
-	FinalizeMeetingGate inFlightRequestGate
+	Config        config.Config
+	Store         *store.Store
+	MistralClient *mistral.Client
+	Mailer        mailer.Sender
 }
 
 type ErrorResponse struct {

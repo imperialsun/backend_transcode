@@ -8,6 +8,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 )
 
 func TestRunServerLifecycle_LogsTraceSteps(t *testing.T) {
@@ -58,6 +59,45 @@ func TestRunServerLifecycle_LogsTraceSteps(t *testing.T) {
 		"step=listen_stopped",
 		"step=shutdown_success",
 		"trace_id=server-trace",
+	} {
+		if !strings.Contains(logged, needle) {
+			t.Fatalf("expected %q in logs, got %q", needle, logged)
+		}
+	}
+}
+
+type fakeMeetingFinalizeOperationPurger struct {
+	purged int64
+	err    error
+}
+
+func (p fakeMeetingFinalizeOperationPurger) PurgeExpiredMeetingFinalizeOperations(context.Context, time.Time) (int64, error) {
+	return p.purged, p.err
+}
+
+func TestRunMeetingFinalizeOperationCleanupOnce_LogsTraceSteps(t *testing.T) {
+	var buf bytes.Buffer
+	previousWriter := log.Writer()
+	previousFlags := log.Flags()
+	previousPrefix := log.Prefix()
+	log.SetOutput(&buf)
+	log.SetFlags(0)
+	log.SetPrefix("")
+	t.Cleanup(func() {
+		log.SetOutput(previousWriter)
+		log.SetFlags(previousFlags)
+		log.SetPrefix(previousPrefix)
+	})
+
+	runMeetingFinalizeOperationCleanupOnce(context.Background(), "server-trace", fakeMeetingFinalizeOperationPurger{purged: 3})
+
+	logged := buf.String()
+	for _, needle := range []string{
+		"[server]",
+		"route=lifecycle",
+		"step=meeting_finalize_cleanup_success",
+		"trace_id=server-trace",
+		"purged=3",
 	} {
 		if !strings.Contains(logged, needle) {
 			t.Fatalf("expected %q in logs, got %q", needle, logged)

@@ -17,11 +17,16 @@ import (
 )
 
 const serverShutdownTimeout = 10 * time.Second
+const meetingFinalizeCleanupInterval = 15 * time.Minute
 
 type serverRuntime struct {
 	listen   func() error
 	shutdown func(context.Context) error
 	signalCh <-chan os.Signal
+}
+
+type meetingFinalizeOperationPurger interface {
+	PurgeExpiredMeetingFinalizeOperations(context.Context, time.Time) (int64, error)
 }
 
 func serverLogStep(traceID, step, title string, fields map[string]any) {
@@ -56,6 +61,8 @@ func run(ctx context.Context, cfg config.Config) error {
 		return err
 	}
 
+	runMeetingFinalizeOperationCleanup(ctx, processTraceID, st)
+
 	app := buildApp(cfg, st, mistral.NewClient(
 		cfg.MistralAPIBaseURL,
 		cfg.MistralAPIKey,
@@ -85,7 +92,40 @@ func run(ctx context.Context, cfg config.Config) error {
 		},
 		signalCh: sigCh,
 	}
+	cleanupCtx, cleanupCancel := context.WithCancel(ctx)
+	defer cleanupCancel()
+	go runMeetingFinalizeOperationCleanupLoop(cleanupCtx, processTraceID, st, meetingFinalizeCleanupInterval)
+
 	return runServerLifecycle(ctx, processTraceID, cfg.Port, runtime)
+}
+
+func runMeetingFinalizeOperationCleanup(ctx context.Context, traceID string, purger meetingFinalizeOperationPurger) {
+	runMeetingFinalizeOperationCleanupOnce(ctx, traceID, purger)
+}
+
+func runMeetingFinalizeOperationCleanupLoop(ctx context.Context, traceID string, purger meetingFinalizeOperationPurger, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			runMeetingFinalizeOperationCleanupOnce(ctx, traceID, purger)
+		}
+	}
+}
+
+func runMeetingFinalizeOperationCleanupOnce(ctx context.Context, traceID string, purger meetingFinalizeOperationPurger) {
+	if purger == nil {
+		return
+	}
+	purged, err := purger.PurgeExpiredMeetingFinalizeOperations(ctx, time.Now().UTC())
+	if err != nil {
+		serverLogStep(traceID, "meeting_finalize_cleanup_error", "server", map[string]any{"error": err})
+		return
+	}
+	serverLogStep(traceID, "meeting_finalize_cleanup_success", "server", map[string]any{"purged": purged})
 }
 
 func runServerLifecycle(ctx context.Context, processTraceID, port string, runtime serverRuntime) error {

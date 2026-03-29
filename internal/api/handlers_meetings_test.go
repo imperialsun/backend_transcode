@@ -114,6 +114,7 @@ func TestMeetingDraftsAndFinalizeSendsMailAndActivity(t *testing.T) {
 	mailerStub := &fakeMeetingMailer{}
 	appCtx.Mailer = mailerStub
 	appCtx.RegisterMeetingRoutes(app.Group("/api/v1"))
+	operationID := "finalize-success-op"
 
 	var draftResp *http.Response
 	draftLogs := captureMeetingLogs(t, func() {
@@ -158,6 +159,7 @@ func TestMeetingDraftsAndFinalizeSendsMailAndActivity(t *testing.T) {
 			http.MethodPost,
 			"/api/v1/meetings/finalize",
 			map[string]any{
+				"operationId":             operationID,
 				"meetingTitle":            "Revue qualité",
 				"participants":            []string{"Alice", "Bob"},
 				"transcriptionSourceMode": "cloud_backend",
@@ -169,7 +171,10 @@ func TestMeetingDraftsAndFinalizeSendsMailAndActivity(t *testing.T) {
 				"reports":                 draftPayload.Reports,
 			},
 			nil,
-			map[string]string{fiber.HeaderAuthorization: "Bearer " + token},
+			map[string]string{
+				fiber.HeaderAuthorization:      "Bearer " + token,
+				meetingFinalizeOperationHeader: operationID,
+			},
 		)
 	})
 	if finalResp.StatusCode != http.StatusOK {
@@ -179,6 +184,9 @@ func TestMeetingDraftsAndFinalizeSendsMailAndActivity(t *testing.T) {
 	var finalPayload meetingFinalizeResponse
 	if err := json.NewDecoder(finalResp.Body).Decode(&finalPayload); err != nil {
 		t.Fatalf("failed to decode finalize response: %v", err)
+	}
+	if finalPayload.OperationID != operationID {
+		t.Fatalf("expected operation id %q, got %q", operationID, finalPayload.OperationID)
 	}
 	if len(finalPayload.ReportDocxFilenames) != 2 {
 		t.Fatalf("expected 2 report docx filenames, got %d", len(finalPayload.ReportDocxFilenames))
@@ -213,6 +221,40 @@ func TestMeetingDraftsAndFinalizeSendsMailAndActivity(t *testing.T) {
 	if !containsMeetingFilename(mailerStub.sent[0].Attachments[0].Filename, "transcription-") {
 		t.Fatalf("expected raw transcript attachment first, got %+v", mailerStub.sent[0].Attachments)
 	}
+
+	var replayResp *http.Response
+	replayLogs := captureMeetingLogs(t, func() {
+		replayResp = performJSONRequestWithHeaders(
+			t,
+			app,
+			http.MethodPost,
+			"/api/v1/meetings/finalize",
+			map[string]any{
+				"operationId":             operationID,
+				"meetingTitle":            "Revue qualité",
+				"participants":            []string{"Alice", "Bob"},
+				"transcriptionSourceMode": "cloud_backend",
+				"transcriptionProvider":   "demeter_sante",
+				"rawTranscriptText":       "Bonjour tout le monde.",
+				"editedTranscriptText":    "Bonjour tout le monde.",
+				"selectedFormats":         []string{"CRI", "CRO"},
+				"recipientEmails":         []string{" assistant@example.com ", "ops@example.com"},
+				"reports":                 draftPayload.Reports,
+			},
+			nil,
+			map[string]string{
+				fiber.HeaderAuthorization:      "Bearer " + token,
+				meetingFinalizeOperationHeader: operationID,
+			},
+		)
+	})
+	if replayResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected replayed finalize request to return 200, got %d", replayResp.StatusCode)
+	}
+	if got := mailerStub.sentCount(); got != 3 {
+		t.Fatalf("expected replayed finalize request not to send mail again, got %d", got)
+	}
+
 	assertMeetingLogs(t, draftLogs, meetingDraftsRoute, []string{
 		"request_received",
 		"request_parsed",
@@ -247,6 +289,9 @@ func TestMeetingDraftsAndFinalizeSendsMailAndActivity(t *testing.T) {
 		"Bonjour tout le monde.",
 		"assistant@example.com",
 		"ops@example.com",
+	})
+	assertMeetingLogs(t, replayLogs, meetingFinalizeRoute, []string{
+		"operation_replayed",
 	})
 
 	claims, err := auth.ParseAccessToken("test-secret", token)
@@ -317,6 +362,7 @@ func TestFinalizeLogsSendError(t *testing.T) {
 	}, nil)
 	appCtx.Mailer = &fakeMeetingMailer{sendErr: errors.New("smtp down")}
 	appCtx.RegisterMeetingRoutes(app.Group("/api/v1"))
+	operationID := "finalize-send-error-op"
 
 	var resp *http.Response
 	logs := captureMeetingLogs(t, func() {
@@ -326,6 +372,7 @@ func TestFinalizeLogsSendError(t *testing.T) {
 			http.MethodPost,
 			"/api/v1/meetings/finalize",
 			map[string]any{
+				"operationId":             operationID,
 				"meetingTitle":            "Réunion qualité",
 				"participants":            []string{"Alice", "Bob"},
 				"transcriptionSourceMode": "cloud_backend",
@@ -338,7 +385,10 @@ func TestFinalizeLogsSendError(t *testing.T) {
 				},
 			},
 			nil,
-			map[string]string{fiber.HeaderAuthorization: "Bearer " + token},
+			map[string]string{
+				fiber.HeaderAuthorization:      "Bearer " + token,
+				meetingFinalizeOperationHeader: operationID,
+			},
 		)
 	})
 	if resp.StatusCode != http.StatusInternalServerError {
@@ -363,6 +413,115 @@ func TestFinalizeLogsSendError(t *testing.T) {
 	})
 }
 
+func TestFinalizeMeetingStatusEndpointReturnsCompletedResponse(t *testing.T) {
+	app, token, appCtx := setupDemeterRoutesApp(t, []store.UserPermissionOverrideInput{
+		{PermissionCode: "feature.llmapi", Effect: "allow"},
+		{PermissionCode: "provider.llm.demeter_sante", Effect: "allow"},
+	}, nil)
+	mailerStub := &fakeMeetingMailer{}
+	appCtx.Mailer = mailerStub
+	appCtx.RegisterMeetingRoutes(app.Group("/api/v1"))
+	operationID := "finalize-status-op"
+
+	resp := performJSONRequestWithHeaders(
+		t,
+		app,
+		http.MethodPost,
+		"/api/v1/meetings/finalize",
+		map[string]any{
+			"operationId":             operationID,
+			"meetingTitle":            "Réunion qualité",
+			"participants":            []string{"Alice"},
+			"transcriptionSourceMode": "cloud_backend",
+			"transcriptionProvider":   "demeter_sante",
+			"rawTranscriptText":       "Bonjour tout le monde.",
+			"editedTranscriptText":    "Bonjour tout le monde.",
+			"selectedFormats":         []string{"CRI"},
+			"reports":                 []meetingReportEnvelope{minimalMeetingReportEnvelope("CRI")},
+		},
+		nil,
+		map[string]string{
+			fiber.HeaderAuthorization:      "Bearer " + token,
+			meetingFinalizeOperationHeader: operationID,
+		},
+	)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 from finalize endpoint, got %d", resp.StatusCode)
+	}
+
+	var statusResp *http.Response
+	statusLogs := captureMeetingLogs(t, func() {
+		statusResp = performJSONRequestWithHeaders(
+			t,
+			app,
+			http.MethodGet,
+			"/api/v1/meetings/finalize/operations/"+operationID,
+			nil,
+			nil,
+			map[string]string{fiber.HeaderAuthorization: "Bearer " + token},
+		)
+	})
+	if statusResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 from status endpoint, got %d", statusResp.StatusCode)
+	}
+
+	var status meetingFinalizeOperationStatusResponse
+	if err := json.NewDecoder(statusResp.Body).Decode(&status); err != nil {
+		t.Fatalf("failed to decode status response: %v", err)
+	}
+	if status.OperationID != operationID {
+		t.Fatalf("expected operation id %q, got %q", operationID, status.OperationID)
+	}
+	if status.Status != "completed" || status.StatusCode != http.StatusOK {
+		t.Fatalf("unexpected status response: %+v", status)
+	}
+	if len(status.Response) == 0 {
+		t.Fatalf("expected stored response payload, got %+v", status)
+	}
+	if got := mailerStub.sentCount(); got != 1 {
+		t.Fatalf("expected one mail to be sent, got %d", got)
+	}
+	assertMeetingLogs(t, statusLogs, meetingFinalizeOperationStatusRoute, []string{
+		"request_received",
+		"operation_status_ready",
+	})
+
+	var payload meetingFinalizeResponse
+	if err := json.Unmarshal(status.Response, &payload); err != nil {
+		t.Fatalf("failed to decode stored response payload: %v", err)
+	}
+	if payload.OperationID != operationID {
+		t.Fatalf("expected replay payload to carry operation id %q, got %q", operationID, payload.OperationID)
+	}
+}
+
+func TestFinalizeMeetingLogsMissingOperationID(t *testing.T) {
+	app, token, appCtx := setupDemeterRoutesApp(t, []store.UserPermissionOverrideInput{
+		{PermissionCode: "feature.llmapi", Effect: "allow"},
+		{PermissionCode: "provider.llm.demeter_sante", Effect: "allow"},
+	}, nil)
+	appCtx.Mailer = &fakeMeetingMailer{}
+	appCtx.RegisterMeetingRoutes(app.Group("/api/v1"))
+
+	var resp testResponse
+	logs := captureMeetingLogs(t, func() {
+		var err error
+		resp, err = performMeetingRequest(app, http.MethodPost, "/api/v1/meetings/finalize", `{"meetingTitle":`, map[string]string{
+			fiber.HeaderAuthorization: "Bearer " + token,
+			fiber.HeaderContentType:   fiber.MIMEApplicationJSON,
+		})
+		if err != nil {
+			t.Fatalf("missing-operation finalize request failed: %v", err)
+		}
+	})
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 for missing operation id, got %d", resp.StatusCode)
+	}
+	assertMeetingLogs(t, logs, meetingFinalizeRoute, []string{
+		"operation_id_missing",
+	})
+}
+
 func TestFinalizeMeetingRejectsConcurrentDuplicateBeforeBodyParsing(t *testing.T) {
 	app, token, appCtx := setupDemeterRoutesApp(t, []store.UserPermissionOverrideInput{
 		{PermissionCode: "feature.llmapi", Effect: "allow"},
@@ -377,8 +536,10 @@ func TestFinalizeMeetingRejectsConcurrentDuplicateBeforeBodyParsing(t *testing.T
 	}
 	appCtx.Mailer = mailerStub
 	appCtx.RegisterMeetingRoutes(app.Group("/api/v1"))
+	operationID := "finalize-concurrent-op"
 
 	requestBody := map[string]any{
+		"operationId":             operationID,
 		"meetingTitle":            "Réunion qualité",
 		"participants":            []string{"Alice", "Bob"},
 		"transcriptionSourceMode": "cloud_backend",
@@ -397,7 +558,8 @@ func TestFinalizeMeetingRejectsConcurrentDuplicateBeforeBodyParsing(t *testing.T
 	errCh := make(chan error, 1)
 	go func() {
 		resp, err := performMeetingRequest(app, http.MethodPost, "/api/v1/meetings/finalize", string(rawBody), map[string]string{
-			fiber.HeaderAuthorization: "Bearer " + token,
+			fiber.HeaderAuthorization:      "Bearer " + token,
+			meetingFinalizeOperationHeader: operationID,
 		})
 		if err != nil {
 			errCh <- err
@@ -414,19 +576,27 @@ func TestFinalizeMeetingRejectsConcurrentDuplicateBeforeBodyParsing(t *testing.T
 		t.Fatal("timed out waiting for the first finalize request to reach the mailer")
 	}
 
-	secondResp, err := performMeetingRequest(app, http.MethodPost, "/api/v1/meetings/finalize", `{"meetingTitle":`, map[string]string{
-		fiber.HeaderAuthorization: "Bearer " + token,
-		fiber.HeaderContentType:   fiber.MIMEApplicationJSON,
+	var secondResp testResponse
+	secondLogs := captureMeetingLogs(t, func() {
+		var err error
+		secondResp, err = performMeetingRequest(app, http.MethodPost, "/api/v1/meetings/finalize", `{"meetingTitle":`, map[string]string{
+			fiber.HeaderAuthorization:      "Bearer " + token,
+			meetingFinalizeOperationHeader: operationID,
+			fiber.HeaderContentType:        fiber.MIMEApplicationJSON,
+		})
+		if err != nil {
+			t.Fatalf("second finalize request failed: %v", err)
+		}
 	})
-	if err != nil {
-		t.Fatalf("second finalize request failed: %v", err)
-	}
 	if secondResp.StatusCode != fiber.StatusConflict {
 		t.Fatalf("expected 409 for duplicate finalize request, got %d with body %q", secondResp.StatusCode, string(secondResp.Body))
 	}
 	if got := mailerStub.sentCount(); got != 1 {
 		t.Fatalf("expected only one mailer send before releasing the first request, got %d", got)
 	}
+	assertMeetingLogs(t, secondLogs, meetingFinalizeRoute, []string{
+		"operation_pending",
+	})
 
 	close(release)
 
@@ -447,6 +617,98 @@ func TestFinalizeMeetingRejectsConcurrentDuplicateBeforeBodyParsing(t *testing.T
 	case <-time.After(5 * time.Second):
 		t.Fatal("timed out waiting for the first finalize request to complete")
 	}
+}
+
+func TestFinalizeMeetingLogsOperationNotFoundForAnotherOwner(t *testing.T) {
+	app, token, appCtx := setupDemeterRoutesApp(t, []store.UserPermissionOverrideInput{
+		{PermissionCode: "feature.llmapi", Effect: "allow"},
+		{PermissionCode: "provider.llm.demeter_sante", Effect: "allow"},
+	}, nil)
+	appCtx.Mailer = &fakeMeetingMailer{}
+	appCtx.RegisterMeetingRoutes(app.Group("/api/v1"))
+	operationID := "finalize-not-found-op"
+
+	firstResp := performJSONRequestWithHeaders(
+		t,
+		app,
+		http.MethodPost,
+		"/api/v1/meetings/finalize",
+		map[string]any{
+			"operationId":             operationID,
+			"meetingTitle":            "Réunion qualité",
+			"participants":            []string{"Alice"},
+			"transcriptionSourceMode": "cloud_backend",
+			"transcriptionProvider":   "demeter_sante",
+			"rawTranscriptText":       "Bonjour tout le monde.",
+			"editedTranscriptText":    "Bonjour tout le monde.",
+			"selectedFormats":         []string{"CRI"},
+			"reports":                 []meetingReportEnvelope{minimalMeetingReportEnvelope("CRI")},
+		},
+		nil,
+		map[string]string{
+			fiber.HeaderAuthorization:      "Bearer " + token,
+			meetingFinalizeOperationHeader: operationID,
+		},
+	)
+	if firstResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 from initial finalize request, got %d", firstResp.StatusCode)
+	}
+
+	claims, err := auth.ParseAccessToken(appCtx.Config.JWTSecret, token)
+	if err != nil {
+		t.Fatalf("failed to parse access token: %v", err)
+	}
+	otherUser, err := appCtx.Store.CreateUser(context.Background(), claims.OrgID, "other-owner@example.com", "hash", "active")
+	if err != nil {
+		t.Fatalf("failed to create second user: %v", err)
+	}
+	if err := appCtx.Store.SetUserPermissionOverrides(context.Background(), otherUser.ID, []store.UserPermissionOverrideInput{
+		{PermissionCode: "feature.llmapi", Effect: "allow"},
+		{PermissionCode: "provider.llm.demeter_sante", Effect: "allow"},
+	}); err != nil {
+		t.Fatalf("failed to set second user permissions: %v", err)
+	}
+	otherToken := issueAccessToken(t, appCtx.Config.JWTSecret, auth.Claims{
+		UserID: otherUser.ID,
+		OrgID:  otherUser.OrganizationID,
+		Email:  otherUser.Email,
+		Permissions: []string{
+			"feature.llmapi",
+			"provider.llm.demeter_sante",
+		},
+	})
+
+	var resp *http.Response
+	logs := captureMeetingLogs(t, func() {
+		resp = performJSONRequestWithHeaders(
+			t,
+			app,
+			http.MethodPost,
+			"/api/v1/meetings/finalize",
+			map[string]any{
+				"operationId":             operationID,
+				"meetingTitle":            "Réunion qualité",
+				"participants":            []string{"Alice"},
+				"transcriptionSourceMode": "cloud_backend",
+				"transcriptionProvider":   "demeter_sante",
+				"rawTranscriptText":       "Bonjour tout le monde.",
+				"editedTranscriptText":    "Bonjour tout le monde.",
+				"selectedFormats":         []string{"CRI"},
+				"reports":                 []meetingReportEnvelope{minimalMeetingReportEnvelope("CRI")},
+			},
+			nil,
+			map[string]string{
+				fiber.HeaderAuthorization:      "Bearer " + otherToken,
+				meetingFinalizeOperationHeader: operationID,
+			},
+		)
+	})
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected 404 for operation owned by another user, got %d", resp.StatusCode)
+	}
+	assertMeetingLogs(t, logs, meetingFinalizeRoute, []string{
+		"operation_not_found",
+	})
 }
 
 func TestFinalizeMeetingAllowsDifferentUsersToFinalizeConcurrently(t *testing.T) {
@@ -488,8 +750,11 @@ func TestFinalizeMeetingAllowsDifferentUsersToFinalizeConcurrently(t *testing.T)
 	}
 	appCtx.Mailer = mailerStub
 	appCtx.RegisterMeetingRoutes(app.Group("/api/v1"))
+	firstOperationID := "finalize-user-1-op"
+	secondOperationID := "finalize-user-2-op"
 
 	requestBody := map[string]any{
+		"operationId":             firstOperationID,
 		"meetingTitle":            "Réunion qualité",
 		"participants":            []string{"Alice", "Bob"},
 		"transcriptionSourceMode": "cloud_backend",
@@ -504,6 +769,22 @@ func TestFinalizeMeetingAllowsDifferentUsersToFinalizeConcurrently(t *testing.T)
 		t.Fatalf("failed to marshal request body: %v", err)
 	}
 
+	secondRequestBody := map[string]any{
+		"operationId":             secondOperationID,
+		"meetingTitle":            "Réunion qualité",
+		"participants":            []string{"Alice", "Bob"},
+		"transcriptionSourceMode": "cloud_backend",
+		"transcriptionProvider":   "demeter_sante",
+		"rawTranscriptText":       "Bonjour tout le monde.",
+		"editedTranscriptText":    "Bonjour tout le monde.",
+		"selectedFormats":         []string{"CRI"},
+		"reports":                 []meetingReportEnvelope{minimalMeetingReportEnvelope("CRI")},
+	}
+	secondRawBody, err := json.Marshal(secondRequestBody)
+	if err != nil {
+		t.Fatalf("failed to marshal second request body: %v", err)
+	}
+
 	type requestResult struct {
 		resp testResponse
 		err  error
@@ -511,13 +792,20 @@ func TestFinalizeMeetingAllowsDifferentUsersToFinalizeConcurrently(t *testing.T)
 	resultCh := make(chan requestResult, 2)
 	runRequest := func(token string) {
 		resp, err := performMeetingRequest(app, http.MethodPost, "/api/v1/meetings/finalize", string(rawBody), map[string]string{
-			fiber.HeaderAuthorization: "Bearer " + token,
+			fiber.HeaderAuthorization:      "Bearer " + token,
+			meetingFinalizeOperationHeader: firstOperationID,
 		})
 		resultCh <- requestResult{resp: resp, err: err}
 	}
 
 	go runRequest(token)
-	go runRequest(secondToken)
+	go func() {
+		resp, err := performMeetingRequest(app, http.MethodPost, "/api/v1/meetings/finalize", string(secondRawBody), map[string]string{
+			fiber.HeaderAuthorization:      "Bearer " + secondToken,
+			meetingFinalizeOperationHeader: secondOperationID,
+		})
+		resultCh <- requestResult{resp: resp, err: err}
+	}()
 
 	for i := 0; i < 2; i++ {
 		select {
