@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -139,5 +140,83 @@ func TestGeneratorLogsErrorForUpstreamFailure(t *testing.T) {
 	}
 	if strings.Contains(logged, "transcript payload") {
 		t.Fatalf("did not expect raw transcript content in error logs, got %q", logged)
+	}
+}
+
+func TestGeneratorLogsRetriesAndSuccess(t *testing.T) {
+	var attempts int32
+	var buf bytes.Buffer
+	previousWriter := log.Writer()
+	previousFlags := log.Flags()
+	previousPrefix := log.Prefix()
+	log.SetOutput(&buf)
+	log.SetFlags(0)
+	log.SetPrefix("")
+	t.Cleanup(func() {
+		log.SetOutput(previousWriter)
+		log.SetFlags(previousFlags)
+		log.SetPrefix(previousPrefix)
+	})
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempt := atomic.AddInt32(&attempts, 1)
+		if attempt < 3 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte(`{"error":"upstream down"}`))
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		reportJSON := `{"format":"CRI","title":"CRI","sections":[{"heading":"A","paragraphs":["B"]}]}`
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"choices": []any{
+				map[string]any{
+					"message": map[string]any{
+						"content": reportJSON,
+					},
+				},
+			},
+		})
+	}))
+	defer server.Close()
+
+	client := mistral.NewClient(server.URL, "key", time.Second, time.Second)
+	gen := &Generator{Client: client, ModelID: "mistral-medium-latest", MaxTokens: 1024, Temperature: 0}
+	ctx := observability.WithTraceID(context.Background(), "reports-retry-trace")
+
+	reports, err := gen.GenerateReports(ctx, "Réunion", []string{"Alice"}, "transcript payload", []ReportFormat{ReportFormatCRI})
+	if err != nil {
+		t.Fatalf("GenerateReports failed: %v", err)
+	}
+	if len(reports) != 1 {
+		t.Fatalf("unexpected report count: %d", len(reports))
+	}
+	if got := atomic.LoadInt32(&attempts); got != 3 {
+		t.Fatalf("expected 3 attempts, got %d", got)
+	}
+
+	logged := buf.String()
+	for _, needle := range []string{
+		"step=generate_format_start",
+		"step=generate_format_error",
+		"step=generate_format_retry",
+		"step=generate_format_success",
+		"attempt=1",
+		"attempt=2",
+		"attempt=3",
+		"max_attempts=3",
+		"status_code=503",
+		"status_code=200",
+		"trace_id=reports-retry-trace",
+	} {
+		if !strings.Contains(logged, needle) {
+			t.Fatalf("expected %q in logs, got %q", needle, logged)
+		}
+	}
+	if strings.Contains(logged, "transcript payload") {
+		t.Fatalf("did not expect raw transcript content in retry logs, got %q", logged)
+	}
+	if strings.Contains(logged, "Alice") {
+		t.Fatalf("did not expect participant names in retry logs, got %q", logged)
 	}
 }

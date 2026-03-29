@@ -8,6 +8,8 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"sync"
+	"time"
 
 	"demeter-backend/internal/mistral"
 	"demeter-backend/internal/observability"
@@ -17,6 +19,8 @@ const (
 	DefaultReportModelID   = "mistral-medium-latest"
 	DefaultReportMaxTokens = 32768
 	DefaultReportTemp      = 0
+
+	reportGenerationMaxAttempts = 3
 )
 
 type Generator struct {
@@ -72,48 +76,144 @@ func (g *Generator) GenerateReports(ctx context.Context, meetingTitle string, pa
 		"model_id":              modelID,
 		"max_tokens":            maxTokens,
 		"temperature":           temperature,
+		"max_attempts":          reportGenerationMaxAttempts,
 	})
 
-	results := make(GeneratedReports, len(selectedFormats))
-	for index, format := range selectedFormats {
-		formatName := ReportFormatDisplayName(format)
-		logReportStep(ctx, "generate_format_start", formatName, map[string]any{
-			"index":  index + 1,
-			"format": formatName,
-		})
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 
-		report, raw, err := g.generateOne(ctx, modelID, meetingTitle, participants, sourceText, format, maxTokens, temperature)
-		if err != nil {
-			logReportStep(ctx, "generate_format_error", formatName, map[string]any{
-				"index":  index + 1,
-				"format": formatName,
-				"error":  err,
-			})
-			logReportStep(ctx, "generate_error", "reports", map[string]any{
-				"format_count": len(selectedFormats),
-				"completed":    len(results),
-				"error":        err,
-			})
-			return nil, err
+	type formatResult struct {
+		format ReportFormat
+		report GeneratedReport
+		err    error
+	}
+
+	resultsCh := make(chan formatResult, len(selectedFormats))
+	var wg sync.WaitGroup
+	for _, format := range selectedFormats {
+		format := format
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+
+			report, err := g.generateReportForFormat(ctx, modelID, meetingTitle, participants, sourceText, format, maxTokens, temperature, reportGenerationMaxAttempts)
+			if err != nil {
+				cancel()
+				resultsCh <- formatResult{format: format, err: err}
+				return
+			}
+			resultsCh <- formatResult{format: format, report: report}
+		}()
+	}
+
+	go func() {
+		wg.Wait()
+		close(resultsCh)
+	}()
+
+	results := make(GeneratedReports, len(selectedFormats))
+	var firstErr error
+	for result := range resultsCh {
+		if result.err != nil {
+			if firstErr == nil {
+				firstErr = result.err
+			}
+			continue
 		}
-		results[format] = GeneratedReport{
-			Format: format,
-			Report: report,
-			Raw:    raw,
-		}
-		logReportStep(ctx, "generate_format_success", formatName, map[string]any{
-			"index":        index + 1,
-			"format":       formatName,
-			"sections":     len(report.Sections),
-			"key_points":   len(report.KeyPoints),
-			"action_items": len(report.ActionItems),
-			"caveats":      len(report.Caveats),
+		results[result.format] = result.report
+	}
+
+	if firstErr != nil {
+		logReportStep(ctx, "generate_error", "reports", map[string]any{
+			"format_count": len(selectedFormats),
+			"completed":    len(results),
+			"error":        firstErr,
 		})
+		return nil, firstErr
 	}
 	logReportStep(ctx, "generate_success", "reports", map[string]any{
 		"format_count": len(results),
 	})
 	return results, nil
+}
+
+func (g *Generator) generateReportForFormat(
+	ctx context.Context,
+	modelID string,
+	meetingTitle string,
+	participants []string,
+	sourceText string,
+	format ReportFormat,
+	maxTokens int,
+	temperature float64,
+	maxAttempts int,
+) (GeneratedReport, error) {
+	formatName := ReportFormatDisplayName(format)
+	var lastErr error
+	var lastStatusCode int
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return GeneratedReport{}, err
+		}
+
+		logReportStep(ctx, "generate_format_start", formatName, map[string]any{
+			"format":       formatName,
+			"attempt":      attempt,
+			"max_attempts": maxAttempts,
+		})
+
+		report, raw, statusCode, err := g.generateOne(ctx, modelID, meetingTitle, participants, sourceText, format, maxTokens, temperature)
+		if err == nil {
+			logReportStep(ctx, "generate_format_success", formatName, map[string]any{
+				"format":       formatName,
+				"attempt":      attempt,
+				"max_attempts": maxAttempts,
+				"status_code":  statusCode,
+				"sections":     len(report.Sections),
+				"key_points":   len(report.KeyPoints),
+				"action_items": len(report.ActionItems),
+				"caveats":      len(report.Caveats),
+			})
+			return GeneratedReport{
+				Format: format,
+				Report: report,
+				Raw:    raw,
+			}, nil
+		}
+
+		lastErr = err
+		lastStatusCode = statusCode
+		logFields := map[string]any{
+			"format":       formatName,
+			"attempt":      attempt,
+			"max_attempts": maxAttempts,
+			"status_code":  statusCode,
+			"error":        err,
+		}
+		logReportStep(ctx, "generate_format_error", formatName, logFields)
+
+		if attempt < maxAttempts {
+			nextAttempt := attempt + 1
+			delay := reportGenerationRetryDelay(attempt)
+			logReportStep(ctx, "generate_format_retry", formatName, map[string]any{
+				"format":       formatName,
+				"attempt":      attempt,
+				"next_attempt": nextAttempt,
+				"max_attempts": maxAttempts,
+				"delay_ms":     delay.Milliseconds(),
+				"status_code":  statusCode,
+				"error":        err,
+			})
+			if err := sleepContext(ctx, delay); err != nil {
+				return GeneratedReport{}, err
+			}
+		}
+	}
+
+	if lastStatusCode > 0 {
+		return GeneratedReport{}, fmt.Errorf("failed to generate report for %s after %d attempts (status %d): %w", formatName, maxAttempts, lastStatusCode, lastErr)
+	}
+	return GeneratedReport{}, fmt.Errorf("failed to generate report for %s after %d attempts: %w", formatName, maxAttempts, lastErr)
 }
 
 func (g *Generator) generateOne(
@@ -125,7 +225,7 @@ func (g *Generator) generateOne(
 	format ReportFormat,
 	maxTokens int,
 	temperature float64,
-) (ReportJson, string, error) {
+) (ReportJson, string, int, error) {
 	body := map[string]any{
 		"model": modelID,
 		"messages": []map[string]string{
@@ -140,27 +240,52 @@ func (g *Generator) generateOne(
 	}
 	rawBody, err := json.Marshal(body)
 	if err != nil {
-		return ReportJson{}, "", err
+		return ReportJson{}, "", 0, err
 	}
 
 	status, responseBody, err := g.Client.DoJSON(ctx, http.MethodPost, "/v1/chat/completions", rawBody)
 	if err != nil {
-		return ReportJson{}, "", err
+		return ReportJson{}, "", status, err
 	}
 	if status < 200 || status >= 300 {
-		return ReportJson{}, "", fmt.Errorf("mistral api (%d): %s", status, summarizeUpstreamBody(responseBody))
+		return ReportJson{}, "", status, fmt.Errorf("mistral api (%d): %s", status, summarizeUpstreamBody(responseBody))
 	}
 
 	content := extractChatContent(responseBody)
 	if content == "" {
-		return ReportJson{}, "", errors.New("the model returned an empty response")
+		return ReportJson{}, "", status, errors.New("the model returned an empty response")
 	}
 
 	report, err := ParseReportJSON(content, format)
 	if err != nil {
-		return ReportJson{}, "", err
+		return ReportJson{}, "", status, err
 	}
-	return report, content, nil
+	return report, content, status, nil
+}
+
+func reportGenerationRetryDelay(attempt int) time.Duration {
+	switch attempt {
+	case 1:
+		return 250 * time.Millisecond
+	case 2:
+		return 500 * time.Millisecond
+	default:
+		return 0
+	}
+}
+
+func sleepContext(ctx context.Context, delay time.Duration) error {
+	if delay <= 0 {
+		return nil
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 func extractChatContent(response []byte) string {

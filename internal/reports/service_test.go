@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -75,5 +77,235 @@ func TestGeneratorGenerateReports(t *testing.T) {
 	}
 	if len(reports) != 2 {
 		t.Fatalf("unexpected report count: %d", len(reports))
+	}
+}
+
+func TestGeneratorGenerateReportsRunsFormatsInParallel(t *testing.T) {
+	var active int32
+	var maxActive int32
+	started := make(chan ReportFormat, 3)
+	release := make(chan struct{})
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		format := reportFormatFromRequest(t, r)
+		current := atomic.AddInt32(&active, 1)
+		updateMaxInt32(&maxActive, current)
+		defer atomic.AddInt32(&active, -1)
+
+		started <- format
+		<-release
+
+		writeMockReportResponse(t, w, format)
+	}))
+	defer server.Close()
+
+	client := mistral.NewClient(server.URL, "key", time.Second, time.Second)
+	gen := &Generator{Client: client, ModelID: "mistral-medium-latest", MaxTokens: 1024, Temperature: 0}
+
+	type result struct {
+		reports GeneratedReports
+		err     error
+	}
+	resultCh := make(chan result, 1)
+	go func() {
+		reports, err := gen.GenerateReports(context.Background(), "Réunion", []string{"Alice", "Bob"}, "source text", []ReportFormat{ReportFormatCRI, ReportFormatCRO, ReportFormatCRS})
+		resultCh <- result{reports: reports, err: err}
+	}()
+
+	seen := map[ReportFormat]struct{}{}
+	for len(seen) < 3 {
+		select {
+		case format := <-started:
+			seen[format] = struct{}{}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("timed out waiting for concurrent report requests, seen=%v", seen)
+		}
+	}
+
+	close(release)
+
+	var res result
+	select {
+	case res = <-resultCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for GenerateReports to return")
+	}
+	if res.err != nil {
+		t.Fatalf("GenerateReports failed: %v", res.err)
+	}
+	if len(res.reports) != 3 {
+		t.Fatalf("unexpected report count: %d", len(res.reports))
+	}
+	if got := atomic.LoadInt32(&maxActive); got < 3 {
+		t.Fatalf("expected at least 3 concurrent upstream requests, got %d", got)
+	}
+	if _, ok := res.reports[ReportFormatCRI]; !ok {
+		t.Fatal("expected CRI report to be present")
+	}
+	if _, ok := res.reports[ReportFormatCRO]; !ok {
+		t.Fatal("expected CRO report to be present")
+	}
+	if _, ok := res.reports[ReportFormatCRS]; !ok {
+		t.Fatal("expected CRS report to be present")
+	}
+}
+
+func TestGeneratorGenerateReportsCancelsRemainingFormatsAfterTerminalFailure(t *testing.T) {
+	var mu sync.Mutex
+	attempts := map[ReportFormat]int{}
+	started := make(chan ReportFormat, 3)
+	allowFailure := make(chan struct{})
+	canceled := make(chan ReportFormat, 2)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		format := reportFormatFromRequest(t, r)
+
+		mu.Lock()
+		attempts[format]++
+		attempt := attempts[format]
+		mu.Unlock()
+
+		if attempt == 1 {
+			started <- format
+		}
+
+		if format == ReportFormatCRI {
+			if attempt == 1 {
+				select {
+				case <-allowFailure:
+				case <-time.After(5 * time.Second):
+					t.Fatal("timed out waiting to release failing report format")
+				}
+			}
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(`{"error":"upstream down"}`))
+			return
+		}
+
+		select {
+		case <-r.Context().Done():
+			canceled <- format
+		case <-time.After(5 * time.Second):
+			t.Fatalf("timed out waiting for cancellation of %s", format)
+		}
+	}))
+	defer server.Close()
+
+	client := mistral.NewClient(server.URL, "key", time.Second, time.Second)
+	gen := &Generator{Client: client, ModelID: "mistral-medium-latest", MaxTokens: 1024, Temperature: 0}
+
+	type result struct {
+		reports GeneratedReports
+		err     error
+	}
+	resultCh := make(chan result, 1)
+	go func() {
+		reports, err := gen.GenerateReports(context.Background(), "Réunion", []string{"Alice", "Bob"}, "source text", []ReportFormat{ReportFormatCRI, ReportFormatCRO, ReportFormatCRS})
+		resultCh <- result{reports: reports, err: err}
+	}()
+
+	seen := map[ReportFormat]struct{}{}
+	for len(seen) < 3 {
+		select {
+		case format := <-started:
+			seen[format] = struct{}{}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("timed out waiting for all report formats to start, seen=%v", seen)
+		}
+	}
+
+	close(allowFailure)
+
+	var res result
+	select {
+	case res = <-resultCh:
+	case <-time.After(15 * time.Second):
+		t.Fatal("timed out waiting for GenerateReports to fail")
+	}
+	if res.err == nil {
+		t.Fatal("expected GenerateReports to fail")
+	}
+	if res.reports != nil {
+		t.Fatalf("expected no partial reports on failure, got %+v", res.reports)
+	}
+
+	canceledSeen := map[ReportFormat]struct{}{}
+	for len(canceledSeen) < 2 {
+		select {
+		case format := <-canceled:
+			canceledSeen[format] = struct{}{}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("timed out waiting for cancellation of remaining formats, got %v", canceledSeen)
+		}
+	}
+
+	if _, ok := canceledSeen[ReportFormatCRO]; !ok {
+		t.Fatal("expected CRO generation to be canceled")
+	}
+	if _, ok := canceledSeen[ReportFormatCRS]; !ok {
+		t.Fatal("expected CRS generation to be canceled")
+	}
+}
+
+func reportFormatFromRequest(t *testing.T, r *http.Request) ReportFormat {
+	t.Helper()
+
+	var payload map[string]any
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode payload: %v", err)
+	}
+
+	messages, _ := payload["messages"].([]any)
+	content := ""
+	if len(messages) > 1 {
+		if user, ok := messages[1].(map[string]any); ok {
+			content, _ = user["content"].(string)
+		}
+	}
+
+	switch {
+	case strings.Contains(content, "Format cible: CRO."):
+		return ReportFormatCRO
+	case strings.Contains(content, "Format cible: CRS."):
+		return ReportFormatCRS
+	case strings.Contains(content, "Format cible: CRI."):
+		return ReportFormatCRI
+	case strings.Contains(content, "CRO"):
+		return ReportFormatCRO
+	case strings.Contains(content, "CRS"):
+		return ReportFormatCRS
+	case strings.Contains(content, "CRI"):
+		return ReportFormatCRI
+	default:
+		t.Fatalf("unable to identify report format from content: %q", content)
+		return ""
+	}
+}
+
+func writeMockReportResponse(t *testing.T, w http.ResponseWriter, format ReportFormat) {
+	t.Helper()
+
+	w.Header().Set("Content-Type", "application/json")
+	reportJSON := fmt.Sprintf(`{"format":"%s","title":"%s","sections":[{"heading":"A","paragraphs":["B"]}]}`, format, format)
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"choices": []any{
+			map[string]any{
+				"message": map[string]any{
+					"content": reportJSON,
+				},
+			},
+		},
+	})
+}
+
+func updateMaxInt32(max *int32, value int32) {
+	for {
+		current := atomic.LoadInt32(max)
+		if value <= current {
+			return
+		}
+		if atomic.CompareAndSwapInt32(max, current, value) {
+			return
+		}
 	}
 }
