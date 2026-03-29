@@ -88,9 +88,9 @@ type meetingFinalizeResponse struct {
 }
 
 func (a *App) RegisterMeetingRoutes(router fiber.Router) {
-	group := router.Group("/meetings", a.AppAuthRequired(), RequirePermissions("feature.llmapi", "provider.llm.demeter_sante"))
-	group.Post("/reports/drafts", a.postMeetingReportDrafts)
-	group.Post("/finalize", a.finalizeMeeting)
+	group := router.Group("/meetings")
+	group.Post("/reports/drafts", a.AppAuthRequired(), RequirePermissions("feature.llmapi", "provider.llm.demeter_sante"), a.postMeetingReportDrafts)
+	group.Post("/finalize", a.finalizeMeetingGate(), a.AppAuthRequired(), RequirePermissions("feature.llmapi", "provider.llm.demeter_sante"), a.finalizeMeeting)
 }
 
 func (a *App) postMeetingReportDrafts(c *fiber.Ctx) error {

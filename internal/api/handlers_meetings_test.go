@@ -6,10 +6,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
+	"net/http/httptest"
 	"regexp"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -23,6 +26,9 @@ import (
 type fakeMeetingMailer struct {
 	readyErr error
 	sendErr  error
+	started  chan struct{}
+	release  chan struct{}
+	mu       sync.Mutex
 	sent     []mailer.MeetingSummaryEmail
 }
 
@@ -38,8 +44,27 @@ func (m *fakeMeetingMailer) SendMeetingSummaryEmail(_ context.Context, input mai
 	if m.sendErr != nil {
 		return m.sendErr
 	}
+	m.mu.Lock()
 	m.sent = append(m.sent, input)
+	started := m.started
+	release := m.release
+	m.mu.Unlock()
+	if started != nil {
+		select {
+		case started <- struct{}{}:
+		default:
+		}
+	}
+	if release != nil {
+		<-release
+	}
 	return nil
+}
+
+func (m *fakeMeetingMailer) sentCount() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.sent)
 }
 
 func (m *fakeMeetingMailer) SendUserProvisioningEmail(_ context.Context, _ mailer.UserProvisioningEmail) error {
@@ -337,6 +362,196 @@ func TestFinalizeLogsSendError(t *testing.T) {
 	})
 }
 
+func TestFinalizeMeetingRejectsConcurrentDuplicateBeforeBodyParsing(t *testing.T) {
+	app, token, appCtx := setupDemeterRoutesApp(t, []store.UserPermissionOverrideInput{
+		{PermissionCode: "feature.llmapi", Effect: "allow"},
+		{PermissionCode: "provider.llm.demeter_sante", Effect: "allow"},
+	}, nil)
+
+	started := make(chan struct{}, 1)
+	release := make(chan struct{})
+	mailerStub := &fakeMeetingMailer{
+		started: started,
+		release: release,
+	}
+	appCtx.Mailer = mailerStub
+	appCtx.RegisterMeetingRoutes(app.Group("/api/v1"))
+
+	requestBody := map[string]any{
+		"meetingTitle":            "Réunion qualité",
+		"participants":            []string{"Alice", "Bob"},
+		"transcriptionSourceMode": "cloud_backend",
+		"transcriptionProvider":   "demeter_sante",
+		"rawTranscriptText":       "Bonjour tout le monde.",
+		"editedTranscriptText":    "Bonjour tout le monde.",
+		"selectedFormats":         []string{"CRI"},
+		"reports":                 []meetingReportEnvelope{minimalMeetingReportEnvelope("CRI")},
+	}
+	rawBody, err := json.Marshal(requestBody)
+	if err != nil {
+		t.Fatalf("failed to marshal request body: %v", err)
+	}
+
+	resultCh := make(chan testResponse, 1)
+	errCh := make(chan error, 1)
+	go func() {
+		resp, err := performMeetingRequest(app, http.MethodPost, "/api/v1/meetings/finalize", string(rawBody), map[string]string{
+			fiber.HeaderAuthorization: "Bearer " + token,
+		})
+		if err != nil {
+			errCh <- err
+			return
+		}
+		resultCh <- resp
+	}()
+
+	select {
+	case <-started:
+	case err := <-errCh:
+		t.Fatalf("first finalize request failed before blocking: %v", err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for the first finalize request to reach the mailer")
+	}
+
+	secondResp, err := performMeetingRequest(app, http.MethodPost, "/api/v1/meetings/finalize", `{"meetingTitle":`, map[string]string{
+		fiber.HeaderAuthorization: "Bearer " + token,
+		fiber.HeaderContentType:   fiber.MIMEApplicationJSON,
+	})
+	if err != nil {
+		t.Fatalf("second finalize request failed: %v", err)
+	}
+	if secondResp.StatusCode != fiber.StatusConflict {
+		t.Fatalf("expected 409 for duplicate finalize request, got %d with body %q", secondResp.StatusCode, string(secondResp.Body))
+	}
+	if got := mailerStub.sentCount(); got != 1 {
+		t.Fatalf("expected only one mailer send before releasing the first request, got %d", got)
+	}
+
+	close(release)
+
+	select {
+	case firstResp := <-resultCh:
+		if firstResp.StatusCode != http.StatusOK {
+			t.Fatalf("expected first finalize request to succeed, got %d with body %q", firstResp.StatusCode, string(firstResp.Body))
+		}
+		var payload meetingFinalizeResponse
+		if err := json.Unmarshal(firstResp.Body, &payload); err != nil {
+			t.Fatalf("failed to decode first finalize response: %v", err)
+		}
+		if len(payload.SentToEmails) != 1 {
+			t.Fatalf("expected one recipient in the successful response, got %v", payload.SentToEmails)
+		}
+	case err := <-errCh:
+		t.Fatalf("first finalize request failed: %v", err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for the first finalize request to complete")
+	}
+}
+
+func TestFinalizeMeetingAllowsDifferentUsersToFinalizeConcurrently(t *testing.T) {
+	app, token, appCtx := setupDemeterRoutesApp(t, []store.UserPermissionOverrideInput{
+		{PermissionCode: "feature.llmapi", Effect: "allow"},
+		{PermissionCode: "provider.llm.demeter_sante", Effect: "allow"},
+	}, nil)
+
+	claims, err := auth.ParseAccessToken(appCtx.Config.JWTSecret, token)
+	if err != nil {
+		t.Fatalf("failed to parse access token: %v", err)
+	}
+
+	secondUser, err := appCtx.Store.CreateUser(context.Background(), claims.OrgID, "other@example.com", "hash", "active")
+	if err != nil {
+		t.Fatalf("failed to create second user: %v", err)
+	}
+	if err := appCtx.Store.SetUserPermissionOverrides(context.Background(), secondUser.ID, []store.UserPermissionOverrideInput{
+		{PermissionCode: "feature.llmapi", Effect: "allow"},
+		{PermissionCode: "provider.llm.demeter_sante", Effect: "allow"},
+	}); err != nil {
+		t.Fatalf("failed to set second user permissions: %v", err)
+	}
+	secondToken := issueAccessToken(t, appCtx.Config.JWTSecret, auth.Claims{
+		UserID: secondUser.ID,
+		OrgID:  secondUser.OrganizationID,
+		Email:  secondUser.Email,
+		Permissions: []string{
+			"feature.llmapi",
+			"provider.llm.demeter_sante",
+		},
+	})
+
+	started := make(chan struct{}, 2)
+	release := make(chan struct{})
+	mailerStub := &fakeMeetingMailer{
+		started: started,
+		release: release,
+	}
+	appCtx.Mailer = mailerStub
+	appCtx.RegisterMeetingRoutes(app.Group("/api/v1"))
+
+	requestBody := map[string]any{
+		"meetingTitle":            "Réunion qualité",
+		"participants":            []string{"Alice", "Bob"},
+		"transcriptionSourceMode": "cloud_backend",
+		"transcriptionProvider":   "demeter_sante",
+		"rawTranscriptText":       "Bonjour tout le monde.",
+		"editedTranscriptText":    "Bonjour tout le monde.",
+		"selectedFormats":         []string{"CRI"},
+		"reports":                 []meetingReportEnvelope{minimalMeetingReportEnvelope("CRI")},
+	}
+	rawBody, err := json.Marshal(requestBody)
+	if err != nil {
+		t.Fatalf("failed to marshal request body: %v", err)
+	}
+
+	type requestResult struct {
+		resp testResponse
+		err  error
+	}
+	resultCh := make(chan requestResult, 2)
+	runRequest := func(token string) {
+		resp, err := performMeetingRequest(app, http.MethodPost, "/api/v1/meetings/finalize", string(rawBody), map[string]string{
+			fiber.HeaderAuthorization: "Bearer " + token,
+		})
+		resultCh <- requestResult{resp: resp, err: err}
+	}
+
+	go runRequest(token)
+	go runRequest(secondToken)
+
+	for i := 0; i < 2; i++ {
+		select {
+		case <-started:
+		case res := <-resultCh:
+			if res.err != nil {
+				t.Fatalf("unexpected request failure before both sends started: %v", res.err)
+			}
+			t.Fatalf("expected both finalize requests to reach the mailer, got an early response with status %d", res.resp.StatusCode)
+		case <-time.After(5 * time.Second):
+			t.Fatal("timed out waiting for both finalize requests to reach the mailer")
+		}
+	}
+
+	close(release)
+
+	for i := 0; i < 2; i++ {
+		select {
+		case res := <-resultCh:
+			if res.err != nil {
+				t.Fatalf("finalize request failed: %v", res.err)
+			}
+			if res.resp.StatusCode != http.StatusOK {
+				t.Fatalf("expected 200 for concurrent finalize request, got %d with body %q", res.resp.StatusCode, string(res.resp.Body))
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("timed out waiting for concurrent finalize requests to complete")
+		}
+	}
+
+	if got := mailerStub.sentCount(); got != 2 {
+		t.Fatalf("expected one mailer send per user, got %d", got)
+	}
+}
+
 var (
 	meetingLogTracePattern = regexp.MustCompile(`trace_id=([^\s]+)`)
 	meetingLogStepPattern  = regexp.MustCompile(`step=([^\s]+)`)
@@ -456,4 +671,28 @@ func minimalMeetingReportEnvelope(format string) meetingReportEnvelope {
 
 func containsMeetingFilename(filename, prefix string) bool {
 	return len(filename) >= len(prefix) && filename[:len(prefix)] == prefix
+}
+
+func performMeetingRequest(app *fiber.App, method, path, body string, headers map[string]string) (testResponse, error) {
+	req := httptest.NewRequest(method, path, strings.NewReader(body))
+	if strings.TrimSpace(body) != "" {
+		req.Header.Set(fiber.HeaderContentType, fiber.MIMEApplicationJSON)
+	}
+	for key, value := range headers {
+		req.Header.Set(key, value)
+	}
+
+	resp, err := app.Test(req, 5_000)
+	if err != nil {
+		return testResponse{}, err
+	}
+	defer func() {
+		_ = resp.Body.Close()
+	}()
+
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return testResponse{}, err
+	}
+	return testResponse{StatusCode: resp.StatusCode, Body: raw}, nil
 }
