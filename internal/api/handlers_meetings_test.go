@@ -204,6 +204,7 @@ func TestMeetingDraftsAndFinalizeSendsMailAndActivity(t *testing.T) {
 	if got, want := mailerStub.sent[2].ToEmail, "ops@example.com"; got != want {
 		t.Fatalf("expected third recipient %q, got %q", want, got)
 	}
+	assertMeetingMailBodiesExclude(t, mailerStub.sent, []string{"Alice", "Bob", "Participants:", "Participants :"})
 	for index, sent := range mailerStub.sent {
 		if len(sent.Attachments) != 3 {
 			t.Fatalf("expected 3 attachments in mail %d, got %d", index, len(sent.Attachments))
@@ -624,6 +625,24 @@ func assertMeetingLogExcludes(t *testing.T, logs string, forbidden []string) {
 		}
 		if strings.Contains(logs, needle) {
 			t.Fatalf("did not expect %q in meeting logs: %q", needle, logs)
+		}
+	}
+}
+
+func assertMeetingMailBodiesExclude(t *testing.T, sent []mailer.MeetingSummaryEmail, forbidden []string) {
+	t.Helper()
+
+	for index, email := range sent {
+		for _, needle := range forbidden {
+			if needle == "" {
+				continue
+			}
+			if strings.Contains(email.TextBody, needle) {
+				t.Fatalf("did not expect %q in text body for email %d: %q", needle, index, email.TextBody)
+			}
+			if strings.Contains(email.HTMLBody, needle) {
+				t.Fatalf("did not expect %q in HTML body for email %d: %q", needle, index, email.HTMLBody)
+			}
 		}
 	}
 }

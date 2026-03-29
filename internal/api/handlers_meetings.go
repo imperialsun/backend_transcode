@@ -361,7 +361,7 @@ func (a *App) finalizeMeeting(c *fiber.Ctx) error {
 	})
 
 	subject := buildMeetingSubject(title)
-	textBody, htmlBody := buildMeetingEmailBodies(title, participants, transcriptionSourceMode, reportEnvelopes)
+	textBody, htmlBody := buildMeetingEmailBodies(title, transcriptionSourceMode, reportEnvelopes)
 	for index, recipient := range recipients {
 		logMeetingStage(c, meetingFinalizeRoute, traceID, "send_start", title, map[string]any{
 			"recipient_index": index + 1,
@@ -714,20 +714,15 @@ func buildMeetingSubject(title string) string {
 	return "Compte rendu de réunion - " + title
 }
 
-func buildMeetingEmailBodies(title string, participants []string, transcriptionSourceMode string, reports map[meetingreports.ReportFormat]meetingReportEnvelope) (string, string) {
+func buildMeetingEmailBodies(title string, transcriptionSourceMode string, reports map[meetingreports.ReportFormat]meetingReportEnvelope) (string, string) {
 	summaryBullets := collectMeetingHighlights(reports)
 	reportFormats := extractMeetingReportFormatsFromMap(reports)
-	participantsLine := "Aucun participant fourni."
-	if len(participants) > 0 {
-		participantsLine = strings.Join(participants, ", ")
-	}
 	sourceLabel := transcriptionSourceModeLabel(transcriptionSourceMode)
 
 	textLines := []string{
 		"Bonjour,",
 		"",
 		fmt.Sprintf("La reunion \"%s\" est terminee.", title),
-		fmt.Sprintf("Participants: %s", participantsLine),
 		fmt.Sprintf("Source de transcription: %s.", sourceLabel),
 		fmt.Sprintf("Rapports joints: %s.", strings.Join(reportFormats, ", ")),
 		"",
@@ -757,7 +752,6 @@ func buildMeetingEmailBodies(title string, participants []string, transcriptionS
 	htmlBody := "<html><body style=\"font-family:Arial,sans-serif;color:#1f2937;line-height:1.5\">" +
 		"<p>Bonjour,</p>" +
 		"<p>La reunion <strong>" + html.EscapeString(title) + "</strong> est terminee.</p>" +
-		"<p><strong>Participants :</strong> " + html.EscapeString(participantsLine) + "</p>" +
 		"<p><strong>Source de transcription :</strong> " + html.EscapeString(sourceLabel) + "</p>" +
 		"<p><strong>Rapports joints :</strong> " + html.EscapeString(strings.Join(reportFormats, ", ")) + "</p>" +
 		"<p><strong>Resume :</strong></p><ul>" + strings.Join(htmlBullets, "") + "</ul>" +
