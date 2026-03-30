@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"demeter-backend/internal/backenderrors"
 	"demeter-backend/internal/observability"
 )
 
@@ -166,6 +167,7 @@ func (c *Client) DoGet(ctx context.Context, path string) (int, []byte, error) {
 
 func logUpstreamStep(ctx context.Context, route, step string, fields map[string]any) {
 	log.Print(observability.FormatStepLine("mistral", route, step, observability.TraceIDFromContext(ctx), observability.DefaultTraceID, observability.DefaultTraceID, "", fields))
+	backenderrors.RecordLog(ctx, "mistral", route, step, "", fields)
 }
 
 func logUpstreamTransportError(ctx context.Context, method, route string, duration time.Duration, err error) {

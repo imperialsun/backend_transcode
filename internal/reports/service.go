@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"demeter-backend/internal/backenderrors"
 	"demeter-backend/internal/mistral"
 	"demeter-backend/internal/observability"
 )
@@ -40,6 +41,7 @@ type GeneratedReports map[ReportFormat]GeneratedReport
 
 func logReportStep(ctx context.Context, step, title string, fields map[string]any) {
 	log.Print(observability.FormatStepLine("reports", "generator", step, observability.TraceIDFromContext(ctx), observability.DefaultTraceID, observability.DefaultTraceID, title, fields))
+	backenderrors.RecordLog(ctx, "reports", "generator", step, title, fields)
 }
 
 func (g *Generator) GenerateReports(ctx context.Context, meetingTitle string, participants []string, sourceText string, formats []ReportFormat) (GeneratedReports, error) {

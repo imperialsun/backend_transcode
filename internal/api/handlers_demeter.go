@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"mime"
@@ -19,6 +20,8 @@ const (
 	demeterChatCompletionsUpstreamPath      = "/v1/chat/completions"
 	demeterAudioTranscriptionsUpstreamPath  = "/v1/audio/transcriptions"
 	defaultDemeterAudioTranscriptionModelID = "voxtral-mini-latest"
+	demeterAudioTranscriptionMaxAttempts    = 2
+	demeterAudioTranscriptionRetryDelay     = 250 * time.Millisecond
 )
 
 var demeterAudioSequenceCounter uint64
@@ -57,22 +60,35 @@ func (a *App) demeterModels(c *fiber.Ctx) error {
 
 func (a *App) demeterChatCompletions(c *fiber.Ctx) error {
 	route := requestRoutePath(c)
-	logAPIStep(c, "demeter", route, "request_received", "chat_completions", nil)
+	requestBody := c.Body()
+	requestBytes := len(requestBody)
+	logAPIStep(c, "demeter", route, "request_received", "chat_completions", map[string]any{
+		"request_bytes": requestBytes,
+	})
 
 	if !a.MistralClient.IsConfigured() {
 		logDemeterRelayIssue(c, route, fiber.StatusServiceUnavailable, "mistral client is not configured")
 		return c.Status(fiber.StatusServiceUnavailable).JSON(ErrorResponse{Error: "mistral is not configured"})
 	}
-	logAPIStep(c, "demeter", route, "upstream_start", "chat_completions", map[string]any{"upstream": demeterChatCompletionsUpstreamPath})
-	statusCode, body, err := a.MistralClient.DoJSON(requestContext(c), fiber.MethodPost, demeterChatCompletionsUpstreamPath, c.Body())
+	logAPIStep(c, "demeter", route, "upstream_start", "chat_completions", map[string]any{
+		"upstream":      demeterChatCompletionsUpstreamPath,
+		"request_bytes": requestBytes,
+	})
+	statusCode, body, err := a.MistralClient.DoJSON(requestContext(c), fiber.MethodPost, demeterChatCompletionsUpstreamPath, requestBody)
 	if err != nil {
 		logDemeterRelayIssue(c, route, fiber.StatusBadGateway, err.Error())
+		logAPIStep(c, "demeter", route, "upstream_transport_error", "chat_completions", map[string]any{
+			"upstream":      demeterChatCompletionsUpstreamPath,
+			"request_bytes": requestBytes,
+			"message":       err.Error(),
+		})
 		return c.Status(fiber.StatusBadGateway).JSON(ErrorResponse{Error: "failed to reach mistral"})
 	}
 	logDemeterUpstreamStatus(c, route, statusCode)
 	logAPIStep(c, "demeter", route, "response_ready", "chat_completions", map[string]any{
 		"upstream":        demeterChatCompletionsUpstreamPath,
 		"upstream_status": statusCode,
+		"request_bytes":   requestBytes,
 		"response_bytes":  len(body),
 	})
 	c.Status(statusCode)
@@ -134,15 +150,13 @@ func (a *App) demeterAudioTranscriptions(c *fiber.Ctx) error {
 		"request_bytes": requestBytes,
 	})
 
-	upstreamStartedAt := time.Now()
-	statusCode, responseBody, err := a.MistralClient.DoMultipart(requestContext(c), demeterAudioTranscriptionsUpstreamPath, requestBody, contentType)
-	upstreamDurationMs := time.Since(upstreamStartedAt).Milliseconds()
+	relayResult, err := a.demeterAudioTranscriptionWithRetry(c, route, seq, requestBody, contentType, requestBytes)
 	if err != nil {
 		logDemeterRelayIssue(c, route, fiber.StatusBadGateway, err.Error())
 		logDemeterAudioStage(c, route, seq, "sequence_end", map[string]any{
 			"result":               "upstream_transport_error",
 			"upstream":             demeterAudioTranscriptionsUpstreamPath,
-			"upstream_duration_ms": upstreamDurationMs,
+			"upstream_duration_ms": 0,
 			"total_duration_ms":    time.Since(startedAt).Milliseconds(),
 			"request_bytes":        requestBytes,
 			"message":              err.Error(),
@@ -150,18 +164,26 @@ func (a *App) demeterAudioTranscriptions(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusBadGateway).JSON(ErrorResponse{Error: "failed to reach mistral"})
 	}
 
+	statusCode := relayResult.statusCode
+	responseBody := relayResult.responseBody
+	upstreamDurationMs := relayResult.upstreamDurationMs
+
 	logDemeterAudioStage(c, route, seq, "upstream_response_received", map[string]any{
 		"upstream":             demeterAudioTranscriptionsUpstreamPath,
 		"upstream_status":      statusCode,
 		"upstream_duration_ms": upstreamDurationMs,
+		"request_bytes":        requestBytes,
 		"response_bytes":       len(responseBody),
+		"attempts":             relayResult.attempts,
 	})
 
 	logDemeterAudioStage(c, route, seq, "return_to_front", map[string]any{
 		"upstream":             demeterAudioTranscriptionsUpstreamPath,
 		"upstream_status":      statusCode,
 		"upstream_duration_ms": upstreamDurationMs,
+		"request_bytes":        requestBytes,
 		"response_bytes":       len(responseBody),
+		"attempts":             relayResult.attempts,
 	})
 
 	logDemeterUpstreamStatus(c, route, statusCode)
@@ -171,6 +193,8 @@ func (a *App) demeterAudioTranscriptions(c *fiber.Ctx) error {
 	result := "ok"
 	if sendErr != nil {
 		result = "front_send_error"
+	} else if statusCode >= fiber.StatusBadRequest {
+		result = "upstream_status_error"
 	}
 	logDemeterAudioStage(c, route, seq, "sequence_end", map[string]any{
 		"result":               result,
@@ -180,8 +204,54 @@ func (a *App) demeterAudioTranscriptions(c *fiber.Ctx) error {
 		"total_duration_ms":    time.Since(startedAt).Milliseconds(),
 		"request_bytes":        requestBytes,
 		"response_bytes":       len(responseBody),
+		"attempts":             relayResult.attempts,
 	})
 	return sendErr
+}
+
+type demeterAudioTranscriptionRelayResult struct {
+	statusCode         int
+	responseBody       []byte
+	upstreamDurationMs int64
+	attempts           int
+}
+
+func (a *App) demeterAudioTranscriptionWithRetry(c *fiber.Ctx, route string, seq uint64, requestBody []byte, contentType string, requestBytes int) (demeterAudioTranscriptionRelayResult, error) {
+	ctx := requestContext(c)
+	for attempt := 1; attempt <= demeterAudioTranscriptionMaxAttempts; attempt++ {
+		upstreamStartedAt := time.Now()
+		statusCode, responseBody, err := a.MistralClient.DoMultipart(ctx, demeterAudioTranscriptionsUpstreamPath, requestBody, contentType)
+		upstreamDurationMs := time.Since(upstreamStartedAt).Milliseconds()
+		if err != nil {
+			return demeterAudioTranscriptionRelayResult{}, err
+		}
+		if shouldRetryDemeterAudioTranscriptionStatus(statusCode) && attempt < demeterAudioTranscriptionMaxAttempts {
+			delayMs := demeterAudioTranscriptionRetryDelay.Milliseconds()
+			logDemeterAudioStage(c, route, seq, "upstream_retry", map[string]any{
+				"upstream":             demeterAudioTranscriptionsUpstreamPath,
+				"attempt":              attempt,
+				"next_attempt":         attempt + 1,
+				"max_attempts":         demeterAudioTranscriptionMaxAttempts,
+				"request_bytes":        requestBytes,
+				"upstream_status":      statusCode,
+				"upstream_duration_ms": upstreamDurationMs,
+				"response_bytes":       len(responseBody),
+				"retry_delay_ms":       delayMs,
+				"reason":               "upstream_5xx",
+			})
+			if err := sleepContext(ctx, demeterAudioTranscriptionRetryDelay); err != nil {
+				return demeterAudioTranscriptionRelayResult{}, err
+			}
+			continue
+		}
+		return demeterAudioTranscriptionRelayResult{
+			statusCode:         statusCode,
+			responseBody:       responseBody,
+			upstreamDurationMs: upstreamDurationMs,
+			attempts:           attempt,
+		}, nil
+	}
+	return demeterAudioTranscriptionRelayResult{}, fmt.Errorf("retry loop exhausted unexpectedly")
 }
 
 type demeterMultipartPart struct {
@@ -282,6 +352,26 @@ func logDemeterUpstreamStatus(c *fiber.Ctx, route string, status int) {
 	logAPIStep(c, "demeter", route, "upstream_error", "upstream", map[string]any{
 		"status": status,
 	})
+}
+
+func shouldRetryDemeterAudioTranscriptionStatus(status int) bool {
+	return status >= fiber.StatusInternalServerError && status < 600
+}
+
+func sleepContext(ctx context.Context, delay time.Duration) error {
+	if delay <= 0 {
+		return nil
+	}
+
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 func demeterActorIDs(c *fiber.Ctx) (string, string) {

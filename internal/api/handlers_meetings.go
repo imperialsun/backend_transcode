@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"demeter-backend/internal/auth"
+	"demeter-backend/internal/backenderrors"
 	"demeter-backend/internal/mailer"
 	"demeter-backend/internal/observability"
 	meetingreports "demeter-backend/internal/reports"
@@ -1017,7 +1018,9 @@ func summarizeAttachments(attachments []mailer.MailAttachment) []meetingAttachme
 
 func logMeetingStage(c *fiber.Ctx, route, traceID, step, title string, fields map[string]any) {
 	userID, orgID := demeterActorIDs(c)
+	ctx := requestContext(c)
 	log.Print(observability.FormatStepLine("meetings", route, step, traceID, userID, orgID, title, fields))
+	backenderrors.RecordLog(ctx, "meetings", route, step, title, fields)
 }
 
 func (a *App) recordMeetingActivityEvent(

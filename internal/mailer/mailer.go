@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"demeter-backend/internal/auth"
+	"demeter-backend/internal/backenderrors"
 	"demeter-backend/internal/observability"
 )
 
@@ -523,4 +524,5 @@ func wrapBase64(encoded string) string {
 
 func logMailStep(ctx context.Context, step string, fields map[string]any) {
 	log.Print(observability.FormatStepLine("mailer", "smtp", step, observability.TraceIDFromContext(ctx), observability.DefaultTraceID, observability.DefaultTraceID, "", fields))
+	backenderrors.RecordLog(ctx, "mailer", "smtp", step, "", fields)
 }

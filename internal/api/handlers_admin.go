@@ -82,6 +82,7 @@ func (a *App) RegisterAdminCoreRoutes(router fiber.Router) {
 	group.Post("/organizations", a.createOrganization)
 	group.Patch("/organizations/:id", a.patchOrganization)
 	a.registerAdminActivityRoutes(group)
+	a.registerBackendErrorRoutes(group)
 	group.Get("/organizations/:id/users", a.listOrganizationUsers)
 	group.Get("/users/:id/access", a.getUserAccess)
 	group.Patch("/users/:id", a.patchUser)

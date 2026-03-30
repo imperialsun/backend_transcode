@@ -9,6 +9,7 @@ import (
 	"demeter-backend/internal/auth"
 	"demeter-backend/internal/observability"
 	"demeter-backend/internal/rbac"
+	"demeter-backend/internal/requestmeta"
 	"github.com/gofiber/fiber/v2"
 )
 
@@ -60,6 +61,7 @@ func (a *App) AuthRequired(sessionType auth.SessionType) fiber.Handler {
 			return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{Error: "failed to resolve authorization context"})
 		}
 		c.Locals(claimsContextKey, claims)
+		c.SetUserContext(requestmeta.WithActor(requestContext(c), claims.UserID, claims.OrgID))
 		return c.Next()
 	}
 }
@@ -167,6 +169,23 @@ func RequireAdminScope() fiber.Handler {
 			return c.Next()
 		}
 		return c.Status(fiber.StatusForbidden).JSON(ErrorResponse{Error: "admin scope required"})
+	}
+}
+
+func RequireSuperAdminScope() fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		claims := MustClaims(c)
+		if claims == nil {
+			return c.Status(fiber.StatusUnauthorized).JSON(ErrorResponse{Error: "unauthorized"})
+		}
+		if rbac.HasRole(claims.GlobalRoles, "super_admin") {
+			return c.Next()
+		}
+		logAuthAccessDenied(c, requestTraceID(c), auth.SessionTypeAdmin, "super_admin_required", claims, nil, map[string]any{
+			"path": c.Path(),
+			"ip":   c.IP(),
+		})
+		return c.Status(fiber.StatusForbidden).JSON(ErrorResponse{Error: "super admin scope required"})
 	}
 }
 

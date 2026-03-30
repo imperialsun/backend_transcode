@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -174,6 +175,16 @@ func TestDemeterModels_RequiresPermissionAndMistral(t *testing.T) {
 }
 
 func TestDemeterChatCompletions_ProxiesJSONBody(t *testing.T) {
+	var buffer bytes.Buffer
+	originalWriter := log.Writer()
+	originalFlags := log.Flags()
+	log.SetOutput(&buffer)
+	log.SetFlags(0)
+	t.Cleanup(func() {
+		log.SetOutput(originalWriter)
+		log.SetFlags(originalFlags)
+	})
+
 	app, token, _ := setupDemeterRoutesApp(t, []store.UserPermissionOverrideInput{
 		{PermissionCode: "feature.llmapi", Effect: "allow"},
 		{PermissionCode: "provider.llm.demeter_sante", Effect: "allow"},
@@ -215,6 +226,25 @@ func TestDemeterChatCompletions_ProxiesJSONBody(t *testing.T) {
 	}
 	if payload["id"] != "chat-1" {
 		t.Fatalf("unexpected chat response: %+v", payload)
+	}
+
+	logged := buffer.String()
+	for _, needle := range []string{
+		"[demeter]",
+		"route=/api/v1/providers/demeter-sante/chat/completions",
+		"step=request_received",
+		"step=upstream_start",
+		"step=response_ready",
+		"trace_id=",
+		"user=",
+		"org=",
+		"title=\"chat_completions\"",
+		"request_bytes=",
+		"response_bytes=",
+	} {
+		if !strings.Contains(logged, needle) {
+			t.Fatalf("expected %q in chat completion logs, got %q", needle, logged)
+		}
 	}
 }
 
@@ -301,6 +331,119 @@ func TestDemeterAudioTranscriptions_ReturnsBadGatewayOnUpstreamError(t *testing.
 	defer closeHTTPResponse(t, resp)
 	if resp.StatusCode != fiber.StatusBadGateway {
 		t.Fatalf("expected 502 for transcription upstream transport error, got %d", resp.StatusCode)
+	}
+}
+
+func TestDemeterAudioTranscriptions_RetriesOnceOnUpstream500(t *testing.T) {
+	var upstreamAttempts int32
+	var buffer bytes.Buffer
+	originalWriter := log.Writer()
+	originalFlags := log.Flags()
+	log.SetOutput(&buffer)
+	log.SetFlags(0)
+	t.Cleanup(func() {
+		log.SetOutput(originalWriter)
+		log.SetFlags(originalFlags)
+	})
+
+	app, token, _ := setupDemeterRoutesApp(t, []store.UserPermissionOverrideInput{
+		{PermissionCode: "feature.cloudupload", Effect: "allow"},
+		{PermissionCode: "provider.cloud.demeter_sante", Effect: "allow"},
+	}, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/audio/transcriptions" {
+			t.Fatalf("unexpected upstream path: %s", r.URL.Path)
+		}
+		if r.Method != http.MethodPost {
+			t.Fatalf("unexpected upstream method: %s", r.Method)
+		}
+		if _, err := io.ReadAll(r.Body); err != nil {
+			t.Fatalf("failed to read upstream body: %v", err)
+		}
+
+		attempt := atomic.AddInt32(&upstreamAttempts, 1)
+		w.Header().Set(fiber.HeaderContentType, fiber.MIMEApplicationJSON)
+		if attempt == 1 {
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(`{"detail":"Internal server error"}`))
+			return
+		}
+		if attempt == 2 {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"text":"transcribed"}`))
+			return
+		}
+		t.Fatalf("unexpected upstream attempt %d", attempt)
+	}))
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	filePart, err := writer.CreateFormFile("file", "sample.wav")
+	if err != nil {
+		t.Fatalf("failed to create multipart file part: %v", err)
+	}
+	if _, err := filePart.Write([]byte("wave-data")); err != nil {
+		t.Fatalf("failed to write multipart file part: %v", err)
+	}
+	if err := writer.WriteField("model", defaultDemeterAudioTranscriptionModelID); err != nil {
+		t.Fatalf("failed to write multipart model field: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("failed to close multipart writer: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/providers/demeter-sante/audio/transcriptions", bytes.NewReader(body.Bytes()))
+	req.Header.Set(fiber.HeaderAuthorization, "Bearer "+token)
+	req.Header.Set(fiber.HeaderContentType, writer.FormDataContentType())
+
+	resp, err := app.Test(req, 5_000)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer closeHTTPResponse(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 after retry, got %d", resp.StatusCode)
+	}
+
+	if got := atomic.LoadInt32(&upstreamAttempts); got != 2 {
+		t.Fatalf("expected 2 upstream attempts, got %d", got)
+	}
+
+	var payload map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		t.Fatalf("failed to decode transcription response: %v", err)
+	}
+	if payload["text"] != "transcribed" {
+		t.Fatalf("unexpected transcription response: %+v", payload)
+	}
+
+	logged := buffer.String()
+	retryLine := ""
+	for _, line := range strings.Split(logged, "\n") {
+		if strings.Contains(line, "step=upstream_retry") {
+			retryLine = line
+			break
+		}
+	}
+	if retryLine == "" {
+		t.Fatalf("expected upstream retry log, got %q", logged)
+	}
+	for _, needle := range []string{
+		"[demeter]",
+		"route=/api/v1/providers/demeter-sante/audio/transcriptions",
+		"trace_id=",
+		"user=",
+		"org=",
+		"title=\"audio_transcription\"",
+		"attempt=1",
+		"next_attempt=2",
+		"max_attempts=2",
+		"upstream_status=500",
+		"request_bytes=",
+		"response_bytes=",
+	} {
+		if !strings.Contains(retryLine, needle) {
+			t.Fatalf("expected %q in retry log line, got %q", needle, retryLine)
+		}
 	}
 }
 

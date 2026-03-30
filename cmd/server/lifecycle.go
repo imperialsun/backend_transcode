@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"demeter-backend/internal/auth"
+	"demeter-backend/internal/backenderrors"
 	"demeter-backend/internal/config"
 	"demeter-backend/internal/mailer"
 	"demeter-backend/internal/mistral"
@@ -31,6 +32,7 @@ type meetingFinalizeOperationPurger interface {
 
 func serverLogStep(traceID, step, title string, fields map[string]any) {
 	log.Print(observability.FormatStepLine("server", "lifecycle", step, traceID, observability.DefaultTraceID, observability.DefaultTraceID, title, fields))
+	backenderrors.RecordLog(observability.WithTraceID(context.Background(), traceID), "server", "lifecycle", step, title, fields)
 }
 
 func run(ctx context.Context, cfg config.Config) error {
@@ -47,6 +49,7 @@ func run(ctx context.Context, cfg config.Config) error {
 			serverLogStep(processTraceID, "shutdown_error", "server", map[string]any{"phase": "close_store", "error": closeErr})
 		}
 	}()
+	backenderrors.RegisterSink(st)
 
 	bootstrapHash := ""
 	if cfg.BootstrapAdminPassword != "" {

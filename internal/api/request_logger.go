@@ -1,10 +1,13 @@
 package api
 
 import (
+	"encoding/json"
 	"log"
+	"net/http"
 	"strings"
 	"time"
 
+	"demeter-backend/internal/backenderrors"
 	"demeter-backend/internal/observability"
 
 	"github.com/gofiber/fiber/v2"
@@ -43,6 +46,7 @@ func (a *App) RequestLogger() fiber.Handler {
 			userAgent = "-"
 		}
 
+		failure := err != nil || status >= fiber.StatusInternalServerError
 		fields := map[string]any{
 			"method":      c.Method(),
 			"status":      status,
@@ -50,13 +54,60 @@ func (a *App) RequestLogger() fiber.Handler {
 			"ip":          c.IP(),
 			"ua":          userAgent,
 		}
-		if err != nil {
-			fields["error"] = err
+		if failure {
+			if err != nil {
+				fields["error"] = err
+			} else if message, preview := extractRequestFailureDetails(c.Response().Body()); message != "" {
+				fields["error"] = message
+				if preview != "" {
+					fields["response_preview"] = preview
+				}
+			} else if preview := compactRequestFailurePreview(c.Response().Body()); preview != "" {
+				fields["error"] = preview
+				fields["response_preview"] = preview
+			} else {
+				fields["error"] = http.StatusText(status)
+			}
 			log.Print(observability.FormatStepLine("http", route, "request_failed", traceID, userID, orgID, "request", fields))
+			backenderrors.RecordLog(requestContext(c), "http", route, "request_failed", "request", fields)
 			return err
 		}
 
 		log.Print(observability.FormatStepLine("http", route, "request_completed", traceID, userID, orgID, "request", fields))
 		return nil
 	}
+}
+
+func extractRequestFailureDetails(body []byte) (string, string) {
+	preview := compactRequestFailurePreview(body)
+	if len(body) == 0 {
+		return "", preview
+	}
+
+	var envelope struct {
+		Error   string `json:"error"`
+		Message string `json:"message"`
+		Detail  string `json:"detail"`
+	}
+	if err := json.Unmarshal(body, &envelope); err == nil {
+		for _, candidate := range []string{envelope.Error, envelope.Message, envelope.Detail} {
+			if value := strings.TrimSpace(candidate); value != "" {
+				return value, preview
+			}
+		}
+	}
+	return "", preview
+}
+
+func compactRequestFailurePreview(body []byte) string {
+	if len(body) == 0 {
+		return ""
+	}
+	preview := strings.TrimSpace(string(body))
+	preview = strings.ReplaceAll(preview, "\r", " ")
+	preview = strings.ReplaceAll(preview, "\n", " ")
+	if len(preview) > 256 {
+		preview = preview[:256]
+	}
+	return preview
 }

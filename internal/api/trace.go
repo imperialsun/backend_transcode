@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"demeter-backend/internal/auth"
+	"demeter-backend/internal/backenderrors"
 	"demeter-backend/internal/observability"
 
 	"github.com/gofiber/fiber/v2"
@@ -109,9 +110,12 @@ func claimsActorIDs(claims *auth.Claims) (string, string) {
 
 func logAPIStep(c *fiber.Ctx, component, route, step, title string, fields map[string]any) {
 	userID, orgID := requestActorIDs(c)
+	ctx := requestContext(c)
 	log.Print(observability.FormatStepLine(component, route, step, requestTraceID(c), userID, orgID, title, fields))
+	backenderrors.RecordLog(ctx, component, route, step, title, fields)
 }
 
 func logContextStep(ctx context.Context, component, route, step, title string, fields map[string]any) {
 	log.Print(observability.FormatStepLine(component, route, step, observability.TraceIDFromContext(ctx), observability.DefaultTraceID, observability.DefaultTraceID, title, fields))
+	backenderrors.RecordLog(ctx, component, route, step, title, fields)
 }
