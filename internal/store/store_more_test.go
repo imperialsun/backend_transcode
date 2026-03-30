@@ -151,6 +151,48 @@ func TestResolveEffectivePermissionsAndSettingsReset(t *testing.T) {
 	}
 }
 
+func TestCreateUserWithRolesAndOverridesAppliesOverridesAtomically(t *testing.T) {
+	ctx := context.Background()
+	st, err := Open(ctx, t.TempDir()+"/create-overrides.sqlite")
+	if err != nil {
+		t.Fatalf("failed to open store: %v", err)
+	}
+	defer closeTestStore(t, st)
+
+	org, err := st.CreateOrganization(ctx, "Batch Org", "batch-org", "active")
+	if err != nil {
+		t.Fatalf("CreateOrganization failed: %v", err)
+	}
+	user, err := st.CreateUserWithRolesAndOverrides(ctx, org.ID, "batch@example.com", "hash", "active", []string{"user"}, []string{"org_member"}, []UserPermissionOverrideInput{
+		{PermissionCode: "feature.settings", Effect: "deny"},
+		{PermissionCode: "provider.cloud.whisper", Effect: "deny"},
+	})
+	if err != nil {
+		t.Fatalf("CreateUserWithRolesAndOverrides failed: %v", err)
+	}
+	if user == nil {
+		t.Fatal("expected created user")
+	}
+	overrides, err := st.GetUserPermissionOverrides(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("GetUserPermissionOverrides failed: %v", err)
+	}
+	if len(overrides) != 2 {
+		t.Fatalf("expected 2 overrides, got %+v", overrides)
+	}
+	perms, err := st.ResolveEffectivePermissions(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("ResolveEffectivePermissions failed: %v", err)
+	}
+	for _, forbidden := range []string{"feature.settings", "provider.cloud.whisper"} {
+		for _, perm := range perms {
+			if perm == forbidden {
+				t.Fatalf("expected %s to be denied, got %v", forbidden, perms)
+			}
+		}
+	}
+}
+
 func TestGetGlobalActivitySummary_ReturnsBreakdownsByDayAndUser(t *testing.T) {
 	ctx := context.Background()
 	st, err := Open(ctx, t.TempDir()+"/global-activity.sqlite")

@@ -176,12 +176,12 @@ func sanitizeValue(value any, depth int) any {
 		return truncateText(string(typed))
 	case error:
 		return truncateText(typed.Error())
+	case time.Time:
+		return typed.UTC().Format(time.RFC3339Nano)
 	case fmt.Stringer:
 		return truncateText(typed.String())
 	case json.RawMessage:
 		return truncateText(string(typed))
-	case time.Time:
-		return typed.UTC().Format(time.RFC3339Nano)
 	case map[string]any:
 		out := make(map[string]any, len(typed))
 		keys := make([]string, 0, len(typed))

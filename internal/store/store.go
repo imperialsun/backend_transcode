@@ -804,6 +804,59 @@ func (s *Store) CreateUserWithRoles(ctx context.Context, organizationID, email, 
 	return u, nil
 }
 
+func (s *Store) CreateUserWithRolesAndOverrides(ctx context.Context, organizationID, email, passwordHash, status string, globalRoleCodes, organizationRoleCodes []string, overrides []UserPermissionOverrideInput) (*User, error) {
+	logStoreStep(ctx, "create_start", "user_roles_overrides", map[string]any{
+		"organization_id":         strings.TrimSpace(organizationID),
+		"global_role_count":       len(globalRoleCodes),
+		"organization_role_count": len(organizationRoleCodes),
+		"override_count":          len(overrides),
+		"status":                  normalizeStatus(status),
+	})
+	now := time.Now().UTC()
+	u := &User{
+		ID:             uuid.NewString(),
+		OrganizationID: strings.TrimSpace(organizationID),
+		Email:          strings.ToLower(strings.TrimSpace(email)),
+		PasswordHash:   passwordHash,
+		Status:         normalizeStatus(status),
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	}
+
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		logStoreStep(ctx, "create_error", "user_roles_overrides", map[string]any{"error": err, "organization_id": u.OrganizationID})
+		return nil, err
+	}
+	defer rollbackTx(tx)
+
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO users(id, organization_id, email, password_hash, status, created_at, updated_at)
+		VALUES(?, ?, ?, ?, ?, ?, ?)
+	`, u.ID, u.OrganizationID, u.Email, u.PasswordHash, u.Status, u.CreatedAt, u.UpdatedAt); err != nil {
+		logStoreStep(ctx, "create_error", "user_roles_overrides", map[string]any{"error": err, "organization_id": u.OrganizationID})
+		return nil, err
+	}
+	if err := s.setUserGlobalRolesTx(ctx, tx, u.ID, globalRoleCodes); err != nil {
+		logStoreStep(ctx, "create_error", "user_roles_overrides", map[string]any{"error": err, "organization_id": u.OrganizationID})
+		return nil, err
+	}
+	if err := s.setUserOrganizationRolesTx(ctx, tx, u.ID, organizationRoleCodes); err != nil {
+		logStoreStep(ctx, "create_error", "user_roles_overrides", map[string]any{"error": err, "organization_id": u.OrganizationID})
+		return nil, err
+	}
+	if _, err := s.setUserPermissionOverridesTx(ctx, tx, u.ID, overrides); err != nil {
+		logStoreStep(ctx, "create_error", "user_roles_overrides", map[string]any{"error": err, "organization_id": u.OrganizationID})
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		logStoreStep(ctx, "create_error", "user_roles_overrides", map[string]any{"error": err, "organization_id": u.OrganizationID})
+		return nil, err
+	}
+	logStoreStep(ctx, "create_success", "user_roles_overrides", map[string]any{"user_id": u.ID, "organization_id": u.OrganizationID})
+	return u, nil
+}
+
 func (s *Store) UpdateUser(ctx context.Context, userID string, input UpdateUserInput) (*User, error) {
 	logStoreStep(ctx, "update_start", "user", map[string]any{
 		"user_id":             strings.TrimSpace(userID),
@@ -1083,9 +1136,10 @@ func (s *Store) setUserOrganizationRolesTx(ctx context.Context, tx *sql.Tx, user
 }
 
 func (s *Store) SetUserPermissionOverrides(ctx context.Context, userID string, overrides []UserPermissionOverrideInput) error {
+	normalizedOverrides := NormalizePermissionOverrideInputs(overrides)
 	logStoreStep(ctx, "update_start", "user_overrides", map[string]any{
 		"user_id":        strings.TrimSpace(userID),
-		"override_count": len(overrides),
+		"override_count": len(normalizedOverrides),
 	})
 	tx, err := s.DB.BeginTx(ctx, nil)
 	if err != nil {
@@ -1093,33 +1147,10 @@ func (s *Store) SetUserPermissionOverrides(ctx context.Context, userID string, o
 		return err
 	}
 	defer rollbackTx(tx)
-	if _, err := tx.ExecContext(ctx, `DELETE FROM user_permission_overrides WHERE user_id = ?`, userID); err != nil {
+	appliedCount, err := s.setUserPermissionOverridesTx(ctx, tx, userID, normalizedOverrides)
+	if err != nil {
 		logStoreStep(ctx, "update_error", "user_overrides", map[string]any{"error": err, "user_id": strings.TrimSpace(userID)})
 		return err
-	}
-	appliedCount := 0
-	for _, override := range overrides {
-		code := strings.TrimSpace(override.PermissionCode)
-		effect := strings.ToLower(strings.TrimSpace(override.Effect))
-		if code == "" || (effect != "allow" && effect != "deny") {
-			continue
-		}
-		permID, err := s.lookupPermissionID(ctx, tx, code)
-		if err != nil {
-			logStoreStep(ctx, "update_error", "user_overrides", map[string]any{"error": err, "user_id": strings.TrimSpace(userID)})
-			return err
-		}
-		if permID == "" {
-			continue
-		}
-		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO user_permission_overrides(user_id, permission_id, effect)
-			VALUES(?, ?, ?)
-		`, userID, permID, effect); err != nil {
-			logStoreStep(ctx, "update_error", "user_overrides", map[string]any{"error": err, "user_id": strings.TrimSpace(userID)})
-			return err
-		}
-		appliedCount++
 	}
 	if err := tx.Commit(); err != nil {
 		logStoreStep(ctx, "update_error", "user_overrides", map[string]any{"error": err, "user_id": strings.TrimSpace(userID)})
@@ -1127,10 +1158,34 @@ func (s *Store) SetUserPermissionOverrides(ctx context.Context, userID string, o
 	}
 	logStoreStep(ctx, "update_success", "user_overrides", map[string]any{
 		"user_id":        strings.TrimSpace(userID),
-		"override_count": len(overrides),
+		"override_count": len(normalizedOverrides),
 		"applied_count":  appliedCount,
 	})
 	return nil
+}
+
+func (s *Store) setUserPermissionOverridesTx(ctx context.Context, tx *sql.Tx, userID string, overrides []UserPermissionOverrideInput) (int, error) {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM user_permission_overrides WHERE user_id = ?`, userID); err != nil {
+		return 0, err
+	}
+	appliedCount := 0
+	for _, override := range overrides {
+		permID, err := s.lookupPermissionID(ctx, tx, override.PermissionCode)
+		if err != nil {
+			return 0, err
+		}
+		if permID == "" {
+			continue
+		}
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO user_permission_overrides(user_id, permission_id, effect)
+			VALUES(?, ?, ?)
+		`, userID, permID, override.Effect); err != nil {
+			return 0, err
+		}
+		appliedCount++
+	}
+	return appliedCount, nil
 }
 
 func (s *Store) SetGlobalRolePermissionsByCode(ctx context.Context, roleCode string, permissionCodes []string) error {
@@ -2014,6 +2069,28 @@ func uniqueNormalizedCodes(values []string) []string {
 		}
 		seen[code] = struct{}{}
 		out = append(out, code)
+	}
+	return out
+}
+
+func NormalizePermissionOverrideInputs(overrides []UserPermissionOverrideInput) []UserPermissionOverrideInput {
+	seen := map[string]int{}
+	out := make([]UserPermissionOverrideInput, 0, len(overrides))
+	for _, override := range overrides {
+		code := strings.TrimSpace(override.PermissionCode)
+		effect := strings.ToLower(strings.TrimSpace(override.Effect))
+		if code == "" || (effect != "allow" && effect != "deny") {
+			continue
+		}
+		if index, exists := seen[code]; exists {
+			out[index].Effect = effect
+			continue
+		}
+		seen[code] = len(out)
+		out = append(out, UserPermissionOverrideInput{
+			PermissionCode: code,
+			Effect:         effect,
+		})
 	}
 	return out
 }

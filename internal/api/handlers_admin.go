@@ -33,7 +33,8 @@ type createUserRequest struct {
 }
 
 type bulkCreateUsersRequest struct {
-	Emails []string `json:"emails"`
+	Emails    []string                            `json:"emails"`
+	Overrides []store.UserPermissionOverrideInput `json:"overrides"`
 }
 
 type bulkCreateUsersResponse struct {
@@ -320,11 +321,13 @@ func (a *App) createOrganizationUsersBulk(c *fiber.Ctx) error {
 		logAPIStep(c, "admin", route, "request_validation_error", "create_organization_users_bulk", map[string]any{"reason": "missing_emails", "organization_id": orgID})
 		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{Error: "at least one email is required"})
 	}
+	normalizedOverrides := store.NormalizePermissionOverrideInputs(req.Overrides)
 
 	ctx := requestContext(c)
 	logAPIStep(c, "admin", route, "bulk_start", "create_organization_users_bulk", map[string]any{
 		"organization_id": orgID,
 		"email_count":     len(req.Emails),
+		"override_count":  len(normalizedOverrides),
 	})
 	result := bulkCreateUsersResponse{
 		Created: []bulkCreateUsersResponseItem{},
@@ -396,7 +399,7 @@ func (a *App) createOrganizationUsersBulk(c *fiber.Ctx) error {
 		}
 
 		logAPIStep(c, "admin", route, "create_start", "create_organization_users_bulk", map[string]any{"organization_id": orgID, "email_index": index + 1})
-		created, err := a.Store.CreateUserWithRoles(ctx, orgID, normalizedEmail, hash, "active", []string{"user"}, []string{"org_member"})
+		created, err := a.Store.CreateUserWithRolesAndOverrides(ctx, orgID, normalizedEmail, hash, "active", []string{"user"}, []string{"org_member"}, normalizedOverrides)
 		if err != nil {
 			logAPIStep(c, "admin", route, "create_error", "create_organization_users_bulk", map[string]any{"organization_id": orgID, "error": err, "email_index": index + 1})
 			result.Failed = append(result.Failed, bulkCreateUsersFailedItem{

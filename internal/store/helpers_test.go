@@ -35,6 +35,25 @@ func TestUniqueNormalizedCodes(t *testing.T) {
 	}
 }
 
+func TestNormalizePermissionOverrideInputs(t *testing.T) {
+	out := NormalizePermissionOverrideInputs([]UserPermissionOverrideInput{
+		{PermissionCode: " feature.settings ", Effect: "ALLOW"},
+		{PermissionCode: "feature.settings", Effect: "deny"},
+		{PermissionCode: "", Effect: "allow"},
+		{PermissionCode: "feature.telemetry", Effect: "skip"},
+		{PermissionCode: "provider.cloud.whisper", Effect: "deny"},
+	})
+	if len(out) != 2 {
+		t.Fatalf("expected 2 normalized overrides, got %+v", out)
+	}
+	if out[0].PermissionCode != "feature.settings" || out[0].Effect != "deny" {
+		t.Fatalf("expected last effect to win for feature.settings, got %+v", out)
+	}
+	if out[1].PermissionCode != "provider.cloud.whisper" || out[1].Effect != "deny" {
+		t.Fatalf("unexpected second normalized override, got %+v", out)
+	}
+}
+
 func TestSortStrings(t *testing.T) {
 	vals := []string{"z", "a", "m"}
 	sortStrings(vals)

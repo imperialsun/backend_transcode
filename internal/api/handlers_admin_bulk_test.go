@@ -24,6 +24,16 @@ func TestCreateOrganizationUsersBulk_CreatesUsersAndSendsProvisioningEmails(t *t
 				"bulk.one@example.com",
 				"bulk.two@example.com",
 			},
+			"overrides": []map[string]string{
+				{
+					"permissionCode": "feature.settings",
+					"effect":         "deny",
+				},
+				{
+					"permissionCode": "provider.cloud.whisper",
+					"effect":         "deny",
+				},
+			},
 		},
 		nil,
 		adminHeaders(t, fixture.adminUser, fixture.appCtx.Config.JWTSecret),
@@ -46,26 +56,46 @@ func TestCreateOrganizationUsersBulk_CreatesUsersAndSendsProvisioningEmails(t *t
 		t.Fatalf("expected 2 provisioning emails, got %d", len(fixture.mailer.provisionedSent))
 	}
 
-	createdUser, err := fixture.store.FindUserByEmail(ctx, "bulk.one@example.com")
-	if err != nil {
-		t.Fatalf("failed to reload created user: %v", err)
-	}
-	if createdUser == nil {
-		t.Fatal("expected first created user to exist")
-	}
-	globalRoles, err := fixture.store.GetGlobalRoleCodesByUser(ctx, createdUser.ID)
-	if err != nil {
-		t.Fatalf("failed to load global roles: %v", err)
-	}
-	if len(globalRoles) != 1 || globalRoles[0] != "user" {
-		t.Fatalf("expected default global role, got %v", globalRoles)
-	}
-	orgRoles, err := fixture.store.GetOrganizationRoleCodesByUser(ctx, createdUser.ID)
-	if err != nil {
-		t.Fatalf("failed to load organization roles: %v", err)
-	}
-	if len(orgRoles) != 1 || orgRoles[0] != "org_member" {
-		t.Fatalf("expected default organization role, got %v", orgRoles)
+	for _, email := range []string{"bulk.one@example.com", "bulk.two@example.com"} {
+		createdUser, err := fixture.store.FindUserByEmail(ctx, email)
+		if err != nil {
+			t.Fatalf("failed to reload created user %s: %v", email, err)
+		}
+		if createdUser == nil {
+			t.Fatalf("expected created user %s to exist", email)
+		}
+		globalRoles, err := fixture.store.GetGlobalRoleCodesByUser(ctx, createdUser.ID)
+		if err != nil {
+			t.Fatalf("failed to load global roles for %s: %v", email, err)
+		}
+		if len(globalRoles) != 1 || globalRoles[0] != "user" {
+			t.Fatalf("expected default global role for %s, got %v", email, globalRoles)
+		}
+		orgRoles, err := fixture.store.GetOrganizationRoleCodesByUser(ctx, createdUser.ID)
+		if err != nil {
+			t.Fatalf("failed to load organization roles for %s: %v", email, err)
+		}
+		if len(orgRoles) != 1 || orgRoles[0] != "org_member" {
+			t.Fatalf("expected default organization role for %s, got %v", email, orgRoles)
+		}
+		overrides, err := fixture.store.GetUserPermissionOverrides(ctx, createdUser.ID)
+		if err != nil {
+			t.Fatalf("failed to load overrides for %s: %v", email, err)
+		}
+		if len(overrides) != 2 {
+			t.Fatalf("expected 2 overrides for %s, got %+v", email, overrides)
+		}
+		perms, err := fixture.store.ResolveEffectivePermissions(ctx, createdUser.ID)
+		if err != nil {
+			t.Fatalf("failed to resolve permissions for %s: %v", email, err)
+		}
+		for _, forbidden := range []string{"feature.settings", "provider.cloud.whisper"} {
+			for _, perm := range perms {
+				if perm == forbidden {
+					t.Fatalf("expected %s to be denied for %s, got %v", forbidden, email, perms)
+				}
+			}
+		}
 	}
 }
 
