@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"strings"
 	"time"
 
@@ -23,6 +24,8 @@ type BackendErrorEvent struct {
 	DurationMS     int64     `json:"durationMs,omitempty"`
 	ErrorMessage   string    `json:"errorMessage,omitempty"`
 	PayloadJSON    string    `json:"payloadJson"`
+	AnnexJSON      string    `json:"annexJson,omitempty"`
+	RecoveryStatus string    `json:"recoveryStatus,omitempty"`
 	CreatedAt      time.Time `json:"createdAt"`
 }
 
@@ -47,6 +50,10 @@ func (s *Store) InsertBackendErrorEvent(ctx context.Context, input backenderrors
 	if payload == "" {
 		payload = "{}"
 	}
+	annex := strings.TrimSpace(string(input.AnnexJSON))
+	if annex == "" {
+		annex = "{}"
+	}
 
 	createdAt := input.CreatedAt.UTC()
 	if createdAt.IsZero() {
@@ -67,8 +74,10 @@ func (s *Store) InsertBackendErrorEvent(ctx context.Context, input backenderrors
 			duration_ms,
 			error_message,
 			payload_json,
+			annex_json,
+			recovery_status,
 			created_at
-		) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, uuid.NewString(),
 		normalizeNullableString(input.TraceID),
 		normalizeNullableString(input.UserID),
@@ -81,9 +90,43 @@ func (s *Store) InsertBackendErrorEvent(ctx context.Context, input backenderrors
 		nullableInt64(input.DurationMS),
 		normalizeNullableString(input.ErrorMessage),
 		payload,
+		annex,
+		normalizeNullableString(input.RecoveryStatus),
 		createdAt,
 	)
 	return err
+}
+
+func (s *Store) AttachBackendErrorAnnex(ctx context.Context, traceID string, annex json.RawMessage, recoveryStatus string) (int64, error) {
+	normalizedTraceID := strings.TrimSpace(traceID)
+	if normalizedTraceID == "" {
+		return 0, nil
+	}
+
+	payload := strings.TrimSpace(string(annex))
+	if payload == "" {
+		payload = "{}"
+	}
+
+	result, err := s.DB.ExecContext(ctx, `
+		UPDATE backend_error_events
+		SET annex_json = ?, recovery_status = ?
+		WHERE id IN (
+			SELECT id
+			FROM backend_error_events
+			WHERE trace_id = ?
+			ORDER BY created_at DESC, id DESC
+			LIMIT 1
+		)
+	`, payload, normalizeNullableString(recoveryStatus), normalizedTraceID)
+	if err != nil {
+		return 0, err
+	}
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+	return rowsAffected, nil
 }
 
 func (s *Store) ListBackendErrorEvents(ctx context.Context, filters BackendErrorEventFilters) (BackendErrorEventListResult, error) {
@@ -98,7 +141,7 @@ func (s *Store) ListBackendErrorEvents(ctx context.Context, filters BackendError
 
 	queryArgs := append(append([]any{}, args...), limit, offset)
 	rows, err := s.DB.QueryContext(ctx, `
-		SELECT id, trace_id, user_id, organization_id, component, route, step, title, status_code, duration_ms, error_message, payload_json, created_at
+		SELECT id, trace_id, user_id, organization_id, component, route, step, title, status_code, duration_ms, error_message, payload_json, annex_json, recovery_status, created_at
 		FROM backend_error_events
 		WHERE `+whereSQL+`
 		ORDER BY created_at DESC, id DESC
@@ -118,6 +161,8 @@ func (s *Store) ListBackendErrorEvents(ctx context.Context, filters BackendError
 			status sql.NullInt64
 			dur    sql.NullInt64
 			errMsg sql.NullString
+			annex  sql.NullString
+			recov  sql.NullString
 		)
 		if err := rows.Scan(
 			&item.ID,
@@ -132,6 +177,8 @@ func (s *Store) ListBackendErrorEvents(ctx context.Context, filters BackendError
 			&dur,
 			&errMsg,
 			&item.PayloadJSON,
+			&annex,
+			&recov,
 			&item.CreatedAt,
 		); err != nil {
 			return BackendErrorEventListResult{}, err
@@ -148,6 +195,11 @@ func (s *Store) ListBackendErrorEvents(ctx context.Context, filters BackendError
 		if strings.TrimSpace(item.PayloadJSON) == "" {
 			item.PayloadJSON = "{}"
 		}
+		item.AnnexJSON = strings.TrimSpace(annex.String)
+		if strings.TrimSpace(item.AnnexJSON) == "" {
+			item.AnnexJSON = "{}"
+		}
+		item.RecoveryStatus = strings.TrimSpace(recov.String)
 		items = append(items, item)
 	}
 	if err := rows.Err(); err != nil {
@@ -206,9 +258,11 @@ func buildBackendErrorWhereClause(filters BackendErrorEventFilters) (string, []a
 			instr(lower(title), ?) > 0 OR
 			instr(lower(COALESCE(error_message, '')), ?) > 0 OR
 			instr(lower(trace_id), ?) > 0 OR
-			instr(lower(COALESCE(payload_json, '')), ?) > 0
+			instr(lower(COALESCE(payload_json, '')), ?) > 0 OR
+			instr(lower(COALESCE(annex_json, '')), ?) > 0 OR
+			instr(lower(COALESCE(recovery_status, '')), ?) > 0
 		)`)
-		args = append(args, normalized, normalized, normalized, normalized, normalized, normalized, normalized)
+		args = append(args, normalized, normalized, normalized, normalized, normalized, normalized, normalized, normalized, normalized)
 	}
 	return strings.Join(clauses, " AND "), args
 }

@@ -6,7 +6,7 @@ Le repo fournit:
 
 - un binaire local via `go run ./cmd/server`,
 - un helper `scripts/run-local-backend.sh`,
-- une image Docker multi-stage `golang -> distroless`.
+- une image Docker multi-stage `golang -> Debian slim` avec `ffmpeg` et `ffprobe` installes pour le chunking audio cote serveur.
 
 ## Variables d environnement
 
@@ -27,7 +27,7 @@ Le repo fournit:
 | `MISTRAL_API_BASE_URL` | `https://api.mistral.ai` | base URL upstream |
 | `MISTRAL_API_KEY` | vide | cle requise pour Demeter et `readyz` |
 | `MISTRAL_REQUEST_TIMEOUT_SECONDS` | `480` | timeout des appels Mistral non audio |
-| `MISTRAL_AUDIO_TRANSCRIPTION_TIMEOUT_SECONDS` | `1200` | timeout dedie a `POST /v1/audio/transcriptions` |
+| `MISTRAL_AUDIO_TRANSCRIPTION_TIMEOUT_SECONDS` | `1200` | timeout dedie a `POST /v1/audio/transcriptions` et `POST /v1/audio/transcriptions/backend` |
 | `BOOTSTRAP_ADMIN_EMAIL` | vide | email admin cree au premier boot |
 | `BOOTSTRAP_ADMIN_PASSWORD` | vide | mot de passe admin cree au premier boot |
 | `BOOTSTRAP_ORG_NAME` | `Default Organization` | nom org bootstrap |
@@ -69,7 +69,8 @@ Caracteristiques de l image:
 
 - build avec `CGO_ENABLED=0`,
 - binaire `/server`,
-- runtime `gcr.io/distroless/base-debian12:nonroot`,
+- runtime `debian:bookworm-slim`,
+- `ffmpeg` et `ffprobe` sont disponibles dans l image runtime,
 - `VOLUME ["/data"]`,
 - `EXPOSE 8080`.
 
@@ -99,7 +100,7 @@ Specificites Compose:
 - `compose.yml` persiste SQLite dans le volume nomme `backend-data`,
 - `compose.dev.yml` utilise des volumes nommes separes pour SQLite et les caches Go,
 - les vrais secrets doivent toujours venir de la substitution d environnement, pas de valeurs committees,
-- il n y a pas de `healthcheck` Docker car l image runtime distroless n embarque pas d outil de sonde HTTP.
+- il n y a pas de `healthcheck` Docker defini car la disponibilite est verifiee via les endpoints applicatifs.
 
 ## Runbook minimal
 

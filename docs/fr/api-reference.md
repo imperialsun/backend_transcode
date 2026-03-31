@@ -127,6 +127,7 @@ Exemple ingestion:
 | --- | --- | --- | --- | --- |
 | `GET` | `/api/v1/providers/demeter-sante/models` | session app | `provider.cloud.demeter_sante` ou `provider.llm.demeter_sante` | proxy `GET /v1/models` |
 | `POST` | `/api/v1/providers/demeter-sante/audio/transcriptions` | session app | `feature.cloudupload` + `provider.cloud.demeter_sante` | exige `multipart/form-data` |
+| `POST` | `/api/v1/providers/demeter-sante/audio/transcriptions/backend` | session app | `feature.cloudupload` + `provider.cloud.demeter_sante` | envoi brut pour les audios longs, même reponse que la route standard |
 | `POST` | `/api/v1/providers/demeter-sante/chat/completions` | session app | `feature.llmapi` + `provider.llm.demeter_sante` | proxy JSON vers Mistral |
 
 ## Admin

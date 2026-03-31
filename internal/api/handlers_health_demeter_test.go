@@ -3,7 +3,9 @@ package api
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"mime"
@@ -331,6 +333,261 @@ func TestDemeterAudioTranscriptions_ReturnsBadGatewayOnUpstreamError(t *testing.
 	defer closeHTTPResponse(t, resp)
 	if resp.StatusCode != fiber.StatusBadGateway {
 		t.Fatalf("expected 502 for transcription upstream transport error, got %d", resp.StatusCode)
+	}
+}
+
+func TestDemeterAudioTranscriptions_BackendRouteChunksServerSideAndLogsDurationAndMode(t *testing.T) {
+	var buffer bytes.Buffer
+	var upstreamAttempts int32
+	originalWriter := log.Writer()
+	originalFlags := log.Flags()
+	log.SetOutput(&buffer)
+	log.SetFlags(0)
+	t.Cleanup(func() {
+		log.SetOutput(originalWriter)
+		log.SetFlags(originalFlags)
+	})
+
+	app, token, appCtx := setupDemeterRoutesApp(t, []store.UserPermissionOverrideInput{
+		{PermissionCode: "feature.settings", Effect: "allow"},
+		{PermissionCode: "feature.cloudupload", Effect: "allow"},
+		{PermissionCode: "provider.cloud.demeter_sante", Effect: "allow"},
+	}, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/audio/transcriptions" {
+			t.Fatalf("unexpected upstream path: %s", r.URL.Path)
+		}
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("failed to read upstream body: %v", err)
+		}
+		receivedContentType := r.Header.Get(fiber.HeaderContentType)
+		if receivedContentType == "" {
+			t.Fatalf("expected multipart content type on upstream request")
+		}
+		_, params, err := mime.ParseMediaType(receivedContentType)
+		if err != nil {
+			t.Fatalf("failed to parse upstream content type: %v", err)
+		}
+		reader := multipart.NewReader(bytes.NewReader(body), params["boundary"])
+		parts := map[string][]byte{}
+		for {
+			part, err := reader.NextPart()
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				t.Fatalf("failed to read upstream multipart: %v", err)
+			}
+			data, err := io.ReadAll(part)
+			if err != nil {
+				t.Fatalf("failed to read upstream multipart part: %v", err)
+			}
+			parts[part.FormName()] = data
+		}
+		if got := string(parts["diarize"]); got != "false" {
+			t.Fatalf("expected diarize=false, got %q", got)
+		}
+		if got := string(parts["model"]); got != defaultDemeterAudioTranscriptionModelID {
+			t.Fatalf("expected default model %q, got %q", defaultDemeterAudioTranscriptionModelID, got)
+		}
+		if len(parts["file"]) < 12 || !bytes.HasPrefix(parts["file"], []byte("RIFF")) || !bytes.Equal(parts["file"][8:12], []byte("WAVE")) {
+			t.Fatalf("expected upstream chunk to be wav, got %x", parts["file"][:min(12, len(parts["file"]))])
+		}
+		attempt := int(atomic.AddInt32(&upstreamAttempts, 1))
+		w.Header().Set(fiber.HeaderContentType, fiber.MIMEApplicationJSON)
+		segmentText := fmt.Sprintf("chunk-%d", attempt)
+		response := fmt.Sprintf(`{"text":"%s","segments":[{"text":"%s","start":0,"end":1,"speaker":"SPEAKER_%02d"}]}`, segmentText, segmentText, attempt)
+		w.Header().Set(fiber.HeaderContentType, fiber.MIMEApplicationJSON)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(response))
+	}))
+
+	claims, err := auth.ParseAccessToken(appCtx.Config.JWTSecret, token)
+	if err != nil {
+		t.Fatalf("failed to parse access token: %v", err)
+	}
+	if _, err := appCtx.Store.SaveUserSettings(
+		context.Background(),
+		claims.UserID,
+		claims.OrgID,
+		json.RawMessage(`{"cloudMistralChunkDurationSec":5,"cloudMistralOverlapSec":1}`),
+		1,
+	); err != nil {
+		t.Fatalf("failed to save user settings: %v", err)
+	}
+
+	wavBytes := buildSilentWAVBytes(t, 10, 16_000)
+	var multipartBody bytes.Buffer
+	writer := multipart.NewWriter(&multipartBody)
+	filePart, err := writer.CreateFormFile("file", "sample.wav")
+	if err != nil {
+		t.Fatalf("failed to create multipart file part: %v", err)
+	}
+	if _, err := filePart.Write(wavBytes); err != nil {
+		t.Fatalf("failed to write multipart file part: %v", err)
+	}
+	if err := writer.WriteField("model", defaultDemeterAudioTranscriptionModelID); err != nil {
+		t.Fatalf("failed to write multipart model field: %v", err)
+	}
+	if err := writer.WriteField("diarize", "false"); err != nil {
+		t.Fatalf("failed to write multipart diarize field: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("failed to close multipart writer: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/providers/demeter-sante/audio/transcriptions/backend", bytes.NewReader(multipartBody.Bytes()))
+	req.Header.Set(fiber.HeaderAuthorization, "Bearer "+token)
+	req.Header.Set(fiber.HeaderContentType, writer.FormDataContentType())
+	req.Header.Set("X-Cloud-Audio-Duration-Sec", "7201")
+
+	resp, err := app.Test(req, 5_000)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer closeHTTPResponse(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 for backend direct transcription, got %d", resp.StatusCode)
+	}
+
+	var payload struct {
+		Text     string  `json:"text"`
+		Duration float64 `json:"duration"`
+		Chunks   []struct {
+			ChunkID      string  `json:"chunkId"`
+			Index        int     `json:"index"`
+			StartSec     float64 `json:"startSec"`
+			EndSec       float64 `json:"endSec"`
+			DurationSec  float64 `json:"durationSec"`
+			SegmentCount int     `json:"segmentCount"`
+			Text         string  `json:"text"`
+		} `json:"chunks"`
+		Segments []struct {
+			Index   int     `json:"index"`
+			Start   float64 `json:"start"`
+			End     float64 `json:"end"`
+			Text    string  `json:"text"`
+			ChunkID string  `json:"chunkId"`
+		} `json:"segments"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		t.Fatalf("failed to decode backend direct response: %v", err)
+	}
+	if payload.Text != "chunk-1\nchunk-2\nchunk-3" {
+		t.Fatalf("unexpected aggregated text: %+v", payload)
+	}
+	if len(payload.Chunks) != 3 {
+		t.Fatalf("expected 3 chunks, got %+v", payload)
+	}
+	if len(payload.Segments) != 3 {
+		t.Fatalf("expected 3 flattened segments, got %+v", payload)
+	}
+	if payload.Segments[0].ChunkID == payload.Segments[1].ChunkID {
+		t.Fatalf("expected distinct chunk ids across backend chunks, got %+v", payload.Segments)
+	}
+
+	logged := buffer.String()
+	for _, needle := range []string{
+		"route=/api/v1/providers/demeter-sante/audio/transcriptions/backend",
+		"route_mode=\"backend_direct\"",
+		"audio_duration_sec=7201",
+		"chunk_count=3",
+		"effective_duration_sec=5",
+		"effective_overlap_sec=1",
+		"normalized_format=\"audio/wav\"",
+		"file_name=\"sample.wav\"",
+		"title=\"audio_transcription\"",
+	} {
+		if !strings.Contains(logged, needle) {
+			t.Fatalf("expected %q in backend direct logs, got %q", needle, logged)
+		}
+	}
+}
+
+func buildSilentWAVBytes(t *testing.T, durationSeconds int, sampleRate int) []byte {
+	t.Helper()
+	if durationSeconds <= 0 {
+		t.Fatalf("duration must be positive")
+	}
+	if sampleRate <= 0 {
+		t.Fatalf("sample rate must be positive")
+	}
+
+	numSamples := durationSeconds * sampleRate
+	dataSize := numSamples * 2
+	byteRate := sampleRate * 2
+	blockAlign := 2
+	chunkSize := 36 + dataSize
+	buf := bytes.NewBuffer(make([]byte, 0, 44+dataSize))
+
+	writeLE := func(value any) {
+		if err := binary.Write(buf, binary.LittleEndian, value); err != nil {
+			t.Fatalf("failed to write wav bytes: %v", err)
+		}
+	}
+
+	_, _ = buf.WriteString("RIFF")
+	writeLE(uint32(chunkSize))
+	_, _ = buf.WriteString("WAVE")
+	_, _ = buf.WriteString("fmt ")
+	writeLE(uint32(16))
+	writeLE(uint16(1))
+	writeLE(uint16(1))
+	writeLE(uint32(sampleRate))
+	writeLE(uint32(byteRate))
+	writeLE(uint16(blockAlign))
+	writeLE(uint16(16))
+	_, _ = buf.WriteString("data")
+	writeLE(uint32(dataSize))
+	if _, err := buf.Write(make([]byte, dataSize)); err != nil {
+		t.Fatalf("failed to write wav silence data: %v", err)
+	}
+	return buf.Bytes()
+}
+
+func TestDemeterAudioTranscriptions_RejectsEmptyAudioFile(t *testing.T) {
+	app, token, _ := setupDemeterRoutesApp(t, []store.UserPermissionOverrideInput{
+		{PermissionCode: "feature.cloudupload", Effect: "allow"},
+		{PermissionCode: "provider.cloud.demeter_sante", Effect: "allow"},
+	}, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("upstream should not be reached for empty audio")
+	}))
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	filePart, err := writer.CreateFormFile("file", "empty.wav")
+	if err != nil {
+		t.Fatalf("failed to create multipart file part: %v", err)
+	}
+	if _, err := filePart.Write(nil); err != nil {
+		t.Fatalf("failed to write empty multipart file part: %v", err)
+	}
+	if err := writer.WriteField("model", defaultDemeterAudioTranscriptionModelID); err != nil {
+		t.Fatalf("failed to write multipart model field: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("failed to close multipart writer: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/providers/demeter-sante/audio/transcriptions/backend", bytes.NewReader(body.Bytes()))
+	req.Header.Set(fiber.HeaderAuthorization, "Bearer "+token)
+	req.Header.Set(fiber.HeaderContentType, writer.FormDataContentType())
+
+	resp, err := app.Test(req, 5_000)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer closeHTTPResponse(t, resp)
+	if resp.StatusCode != fiber.StatusBadRequest {
+		t.Fatalf("expected 400 for empty audio file, got %d", resp.StatusCode)
+	}
+
+	var payload map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		t.Fatalf("failed to decode empty audio response: %v", err)
+	}
+	if payload["code"] != "empty_audio_file" {
+		t.Fatalf("expected empty_audio_file code, got %+v", payload)
 	}
 }
 

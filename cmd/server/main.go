@@ -43,7 +43,8 @@ func buildApp(cfg config.Config, st *store.Store, mistralClient *mistral.Client,
 	app.Use(cors.New(cors.Config{
 		AllowOrigins:     joinOrigins(combineOrigins(cfg.AppCORSOrigins, cfg.AdminCORSOrigins)),
 		AllowCredentials: true,
-		AllowHeaders:     "Origin, Content-Type, Accept, Authorization, X-Admin-CSRF",
+		AllowHeaders:     "Origin, Content-Type, Accept, Authorization, X-Admin-CSRF, X-Cloud-Audio-Duration-Sec",
+		ExposeHeaders:    "X-Trace-Id",
 		AllowMethods:     "GET,POST,PUT,PATCH,DELETE,OPTIONS",
 	}))
 
@@ -61,6 +62,7 @@ func buildApp(cfg config.Config, st *store.Store, mistralClient *mistral.Client,
 	appCtx.RegisterActivityRoutes(apiV1Short)
 	appCtx.RegisterDemeterRoutes(apiV1Long)
 	appCtx.RegisterMeetingRoutes(apiV1Long)
+	appCtx.RegisterSupportRoutes(apiV1Long)
 	appCtx.RegisterAdminCoreRoutes(apiV1Short)
 	appCtx.RegisterAdminMailRoutes(apiV1Mail)
 	return app

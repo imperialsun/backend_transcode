@@ -333,6 +333,8 @@ func (s *Store) Migrate(ctx context.Context) error {
 			duration_ms INTEGER,
 			error_message TEXT,
 			payload_json TEXT NOT NULL DEFAULT '{}',
+			annex_json TEXT NOT NULL DEFAULT '{}',
+			recovery_status TEXT,
 			created_at DATETIME NOT NULL,
 			FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE SET NULL,
 			FOREIGN KEY(organization_id) REFERENCES organizations(id) ON DELETE SET NULL
@@ -400,6 +402,14 @@ func (s *Store) Migrate(ctx context.Context) error {
 	}
 
 	if err := ensureColumnExists(ctx, tx, "refresh_sessions", "session_type", `ALTER TABLE refresh_sessions ADD COLUMN session_type TEXT NOT NULL DEFAULT 'app'`); err != nil {
+		logStoreStep(ctx, "migrate_error", "schema", map[string]any{"error": err})
+		return err
+	}
+	if err := ensureColumnExists(ctx, tx, "backend_error_events", "annex_json", `ALTER TABLE backend_error_events ADD COLUMN annex_json TEXT NOT NULL DEFAULT '{}'`); err != nil {
+		logStoreStep(ctx, "migrate_error", "schema", map[string]any{"error": err})
+		return err
+	}
+	if err := ensureColumnExists(ctx, tx, "backend_error_events", "recovery_status", `ALTER TABLE backend_error_events ADD COLUMN recovery_status TEXT`); err != nil {
 		logStoreStep(ctx, "migrate_error", "schema", map[string]any{"error": err})
 		return err
 	}

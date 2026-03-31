@@ -34,6 +34,7 @@ func ensureRequestTraceID(c *fiber.Ctx) string {
 			} else {
 				c.SetUserContext(observability.WithTraceID(context.Background(), traceID))
 			}
+			c.Set("X-Trace-Id", traceID)
 			c.Locals(traceIDLocalsKey, traceID)
 			return traceID
 		}
@@ -52,6 +53,7 @@ func ensureRequestTraceID(c *fiber.Ctx) string {
 		ctx = context.Background()
 	}
 	c.SetUserContext(observability.WithTraceID(ctx, traceID))
+	c.Set("X-Trace-Id", traceID)
 	c.Locals(traceIDLocalsKey, traceID)
 	return traceID
 }

@@ -3,11 +3,15 @@ package api
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"math"
 	"mime"
 	"mime/multipart"
 	"net/textproto"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -19,6 +23,7 @@ const (
 	demeterModelsUpstreamPath               = "/v1/models"
 	demeterChatCompletionsUpstreamPath      = "/v1/chat/completions"
 	demeterAudioTranscriptionsUpstreamPath  = "/v1/audio/transcriptions"
+	demeterAudioTranscriptionsBackendPath   = "/audio/transcriptions/backend"
 	defaultDemeterAudioTranscriptionModelID = "voxtral-mini-latest"
 	demeterAudioTranscriptionMaxAttempts    = 2
 	demeterAudioTranscriptionRetryDelay     = 250 * time.Millisecond
@@ -26,10 +31,30 @@ const (
 
 var demeterAudioSequenceCounter uint64
 
+type demeterAudioFileInfo struct {
+	FileName  string
+	MimeType  string
+	SizeBytes int64
+}
+
+type demeterAudioValidationError struct {
+	code    string
+	message string
+	file    demeterAudioFileInfo
+}
+
+func (e *demeterAudioValidationError) Error() string {
+	if e == nil {
+		return ""
+	}
+	return e.message
+}
+
 func (a *App) RegisterDemeterRoutes(router fiber.Router) {
 	group := router.Group("/providers/demeter-sante", a.AppAuthRequired())
 	group.Get("/models", RequireAnyPermission("provider.cloud.demeter_sante", "provider.llm.demeter_sante"), a.demeterModels)
 	group.Post("/audio/transcriptions", RequirePermissions("feature.cloudupload", "provider.cloud.demeter_sante"), a.demeterAudioTranscriptions)
+	group.Post("/audio/transcriptions/backend", RequirePermissions("feature.cloudupload", "provider.cloud.demeter_sante"), a.demeterAudioTranscriptions)
 	group.Post("/chat/completions", RequirePermissions("feature.llmapi", "provider.llm.demeter_sante"), a.demeterChatCompletions)
 }
 
@@ -100,67 +125,91 @@ func (a *App) demeterAudioTranscriptions(c *fiber.Ctx) error {
 	route := requestRoutePath(c)
 	startedAt := time.Now()
 	seq := nextDemeterAudioSequenceID()
+	routeMode := demeterAudioRouteMode(route)
+	audioDurationSec, audioDurationProvided := requestDemeterAudioDurationSec(c)
 	contentType := strings.TrimSpace(c.Get(fiber.HeaderContentType))
-	requestBody := c.Body()
-	requestBytes := len(requestBody)
+	requestBytes := c.Request().Header.ContentLength()
+	if requestBytes < 0 {
+		requestBytes = 0
+	}
 
-	logDemeterAudioStage(c, route, seq, "front_received", map[string]any{
+	logDemeterAudioStage(c, route, seq, "front_received", demeterAudioRequestBaseFields(routeMode, audioDurationSec, audioDurationProvided, map[string]any{
 		"content_type":  contentType,
 		"request_bytes": requestBytes,
-	})
+	}))
 
 	if !a.MistralClient.IsConfigured() {
 		logDemeterRelayIssue(c, route, fiber.StatusServiceUnavailable, "mistral client is not configured")
-		logDemeterAudioStage(c, route, seq, "sequence_end", map[string]any{
+		logDemeterAudioStage(c, route, seq, "sequence_end", demeterAudioRequestBaseFields(routeMode, audioDurationSec, audioDurationProvided, map[string]any{
 			"result":            "mistral_not_configured",
 			"total_duration_ms": time.Since(startedAt).Milliseconds(),
 			"request_bytes":     requestBytes,
-		})
+		}))
 		return c.Status(fiber.StatusServiceUnavailable).JSON(ErrorResponse{Error: "mistral is not configured"})
 	}
 	if !strings.HasPrefix(contentType, fiber.MIMEMultipartForm) {
 		logDemeterRelayIssue(c, route, fiber.StatusBadRequest, "multipart/form-data is required")
-		logDemeterAudioStage(c, route, seq, "sequence_end", map[string]any{
+		logDemeterAudioStage(c, route, seq, "sequence_end", demeterAudioRequestBaseFields(routeMode, audioDurationSec, audioDurationProvided, map[string]any{
 			"result":            "invalid_content_type",
 			"total_duration_ms": time.Since(startedAt).Milliseconds(),
 			"request_bytes":     requestBytes,
 			"content_type":      contentType,
-		})
+		}))
 		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{Error: "multipart/form-data is required"})
 	}
 
-	normalizedBody, normalizedContentType, err := normalizeDemeterAudioTranscriptionRequest(requestBody, contentType)
+	if routeMode == "backend_direct" {
+		return a.demeterAudioTranscriptionsBackendDirect(c, route, seq, startedAt, routeMode, audioDurationSec, audioDurationProvided, requestBytes, contentType)
+	}
+
+	requestBody := c.Body()
+	requestBytes = len(requestBody)
+
+	normalizedBody, normalizedContentType, fileInfo, err := normalizeDemeterAudioTranscriptionRequest(requestBody, contentType)
 	if err != nil {
+		var validationErr *demeterAudioValidationError
+		if errors.As(err, &validationErr) {
+			return a.demeterAudioValidationFailure(c, route, seq, startedAt, requestBytes, contentType, routeMode, audioDurationSec, audioDurationProvided, validationErr)
+		}
 		logDemeterRelayIssue(c, route, fiber.StatusBadRequest, err.Error())
-		logDemeterAudioStage(c, route, seq, "sequence_end", map[string]any{
+		logDemeterAudioStage(c, route, seq, "request_failed", demeterAudioRequestBaseFields(routeMode, audioDurationSec, audioDurationProvided, map[string]any{
 			"result":            "invalid_multipart",
+			"status_code":       fiber.StatusBadRequest,
 			"total_duration_ms": time.Since(startedAt).Milliseconds(),
 			"request_bytes":     requestBytes,
 			"content_type":      contentType,
 			"message":           err.Error(),
+		}))
+		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
+			Error:   "invalid multipart form",
+			Code:    "invalid_multipart",
+			TraceID: requestTraceID(c),
+			Path:    route,
 		})
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{Error: "invalid multipart form"})
 	}
 	requestBody = normalizedBody
 	contentType = normalizedContentType
 	requestBytes = len(requestBody)
 
-	logDemeterAudioStage(c, route, seq, "upstream_send_start", map[string]any{
+	logDemeterAudioStage(c, route, seq, "upstream_send_start", demeterAudioRequestBaseFields(routeMode, audioDurationSec, audioDurationProvided, map[string]any{
 		"upstream":      demeterAudioTranscriptionsUpstreamPath,
 		"request_bytes": requestBytes,
-	})
+		"file_name":     fileInfo.FileName,
+		"file_size":     fileInfo.SizeBytes,
+		"mime_type":     fileInfo.MimeType,
+	}))
 
-	relayResult, err := a.demeterAudioTranscriptionWithRetry(c, route, seq, requestBody, contentType, requestBytes)
+	relayResult, err := a.demeterAudioTranscriptionWithRetry(c, route, seq, routeMode, audioDurationSec, audioDurationProvided, requestBody, contentType, requestBytes)
 	if err != nil {
 		logDemeterRelayIssue(c, route, fiber.StatusBadGateway, err.Error())
-		logDemeterAudioStage(c, route, seq, "sequence_end", map[string]any{
+		logDemeterAudioStage(c, route, seq, "sequence_end", demeterAudioRequestBaseFields(routeMode, audioDurationSec, audioDurationProvided, map[string]any{
 			"result":               "upstream_transport_error",
 			"upstream":             demeterAudioTranscriptionsUpstreamPath,
 			"upstream_duration_ms": 0,
 			"total_duration_ms":    time.Since(startedAt).Milliseconds(),
 			"request_bytes":        requestBytes,
 			"message":              err.Error(),
-		})
+		}))
 		return c.Status(fiber.StatusBadGateway).JSON(ErrorResponse{Error: "failed to reach mistral"})
 	}
 
@@ -168,23 +217,23 @@ func (a *App) demeterAudioTranscriptions(c *fiber.Ctx) error {
 	responseBody := relayResult.responseBody
 	upstreamDurationMs := relayResult.upstreamDurationMs
 
-	logDemeterAudioStage(c, route, seq, "upstream_response_received", map[string]any{
+	logDemeterAudioStage(c, route, seq, "upstream_response_received", demeterAudioRequestBaseFields(routeMode, audioDurationSec, audioDurationProvided, map[string]any{
 		"upstream":             demeterAudioTranscriptionsUpstreamPath,
 		"upstream_status":      statusCode,
 		"upstream_duration_ms": upstreamDurationMs,
 		"request_bytes":        requestBytes,
 		"response_bytes":       len(responseBody),
 		"attempts":             relayResult.attempts,
-	})
+	}))
 
-	logDemeterAudioStage(c, route, seq, "return_to_front", map[string]any{
+	logDemeterAudioStage(c, route, seq, "return_to_front", demeterAudioRequestBaseFields(routeMode, audioDurationSec, audioDurationProvided, map[string]any{
 		"upstream":             demeterAudioTranscriptionsUpstreamPath,
 		"upstream_status":      statusCode,
 		"upstream_duration_ms": upstreamDurationMs,
 		"request_bytes":        requestBytes,
 		"response_bytes":       len(responseBody),
 		"attempts":             relayResult.attempts,
-	})
+	}))
 
 	logDemeterUpstreamStatus(c, route, statusCode)
 	c.Status(statusCode)
@@ -196,7 +245,7 @@ func (a *App) demeterAudioTranscriptions(c *fiber.Ctx) error {
 	} else if statusCode >= fiber.StatusBadRequest {
 		result = "upstream_status_error"
 	}
-	logDemeterAudioStage(c, route, seq, "sequence_end", map[string]any{
+	logDemeterAudioStage(c, route, seq, "sequence_end", demeterAudioRequestBaseFields(routeMode, audioDurationSec, audioDurationProvided, map[string]any{
 		"result":               result,
 		"upstream":             demeterAudioTranscriptionsUpstreamPath,
 		"upstream_status":      statusCode,
@@ -205,7 +254,7 @@ func (a *App) demeterAudioTranscriptions(c *fiber.Ctx) error {
 		"request_bytes":        requestBytes,
 		"response_bytes":       len(responseBody),
 		"attempts":             relayResult.attempts,
-	})
+	}))
 	return sendErr
 }
 
@@ -216,7 +265,7 @@ type demeterAudioTranscriptionRelayResult struct {
 	attempts           int
 }
 
-func (a *App) demeterAudioTranscriptionWithRetry(c *fiber.Ctx, route string, seq uint64, requestBody []byte, contentType string, requestBytes int) (demeterAudioTranscriptionRelayResult, error) {
+func (a *App) demeterAudioTranscriptionWithRetry(c *fiber.Ctx, route string, seq uint64, routeMode string, audioDurationSec float64, audioDurationProvided bool, requestBody []byte, contentType string, requestBytes int) (demeterAudioTranscriptionRelayResult, error) {
 	ctx := requestContext(c)
 	for attempt := 1; attempt <= demeterAudioTranscriptionMaxAttempts; attempt++ {
 		upstreamStartedAt := time.Now()
@@ -227,7 +276,7 @@ func (a *App) demeterAudioTranscriptionWithRetry(c *fiber.Ctx, route string, seq
 		}
 		if shouldRetryDemeterAudioTranscriptionStatus(statusCode) && attempt < demeterAudioTranscriptionMaxAttempts {
 			delayMs := demeterAudioTranscriptionRetryDelay.Milliseconds()
-			logDemeterAudioStage(c, route, seq, "upstream_retry", map[string]any{
+			logDemeterAudioStage(c, route, seq, "upstream_retry", demeterAudioRequestBaseFields(routeMode, audioDurationSec, audioDurationProvided, map[string]any{
 				"upstream":             demeterAudioTranscriptionsUpstreamPath,
 				"attempt":              attempt,
 				"next_attempt":         attempt + 1,
@@ -238,7 +287,7 @@ func (a *App) demeterAudioTranscriptionWithRetry(c *fiber.Ctx, route string, seq
 				"response_bytes":       len(responseBody),
 				"retry_delay_ms":       delayMs,
 				"reason":               "upstream_5xx",
-			})
+			}))
 			if err := sleepContext(ctx, demeterAudioTranscriptionRetryDelay); err != nil {
 				return demeterAudioTranscriptionRelayResult{}, err
 			}
@@ -259,19 +308,21 @@ type demeterMultipartPart struct {
 	body   []byte
 }
 
-func normalizeDemeterAudioTranscriptionRequest(body []byte, contentType string) ([]byte, string, error) {
+func normalizeDemeterAudioTranscriptionRequest(body []byte, contentType string) ([]byte, string, demeterAudioFileInfo, error) {
 	_, params, err := mime.ParseMediaType(contentType)
 	if err != nil {
-		return nil, "", fmt.Errorf("invalid multipart content type: %w", err)
+		return nil, "", demeterAudioFileInfo{}, fmt.Errorf("invalid multipart content type: %w", err)
 	}
 	boundary := strings.TrimSpace(params["boundary"])
 	if boundary == "" {
-		return nil, "", fmt.Errorf("multipart boundary is missing")
+		return nil, "", demeterAudioFileInfo{}, fmt.Errorf("multipart boundary is missing")
 	}
 
 	reader := multipart.NewReader(bytes.NewReader(body), boundary)
 	parts := make([]demeterMultipartPart, 0)
 	modelSeen := false
+	var fileInfo demeterAudioFileInfo
+	fileSeen := false
 
 	for {
 		part, err := reader.NextPart()
@@ -279,13 +330,24 @@ func normalizeDemeterAudioTranscriptionRequest(body []byte, contentType string) 
 			break
 		}
 		if err != nil {
-			return nil, "", fmt.Errorf("failed to read multipart body: %w", err)
+			return nil, "", demeterAudioFileInfo{}, fmt.Errorf("failed to read multipart body: %w", err)
 		}
 		data, err := io.ReadAll(part)
 		if err != nil {
-			return nil, "", fmt.Errorf("failed to read multipart part: %w", err)
+			return nil, "", demeterAudioFileInfo{}, fmt.Errorf("failed to read multipart part: %w", err)
 		}
 		name := strings.TrimSpace(part.FormName())
+		if name == "file" {
+			fileSeen = true
+			fileInfo = demeterAudioFileInfo{
+				FileName:  normalizeDemeterAudioFileName(part.FileName()),
+				MimeType:  normalizeDemeterAudioMimeType(part.Header.Get("Content-Type"), part.FileName()),
+				SizeBytes: int64(len(data)),
+			}
+			if err := validateDemeterAudioFileInfo(data, fileInfo); err != nil {
+				return nil, "", fileInfo, err
+			}
+		}
 		if name == "model" {
 			if strings.TrimSpace(string(data)) != "" {
 				modelSeen = true
@@ -300,22 +362,25 @@ func normalizeDemeterAudioTranscriptionRequest(body []byte, contentType string) 
 	writer := multipart.NewWriter(&buffer)
 	if !modelSeen {
 		if err := writer.WriteField("model", defaultDemeterAudioTranscriptionModelID); err != nil {
-			return nil, "", fmt.Errorf("failed to inject default model: %w", err)
+			return nil, "", demeterAudioFileInfo{}, fmt.Errorf("failed to inject default model: %w", err)
 		}
+	}
+	if !fileSeen {
+		return nil, "", demeterAudioFileInfo{}, fmt.Errorf("multipart file part is missing")
 	}
 	for _, part := range parts {
 		dst, err := writer.CreatePart(part.header)
 		if err != nil {
-			return nil, "", fmt.Errorf("failed to rebuild multipart body: %w", err)
+			return nil, "", demeterAudioFileInfo{}, fmt.Errorf("failed to rebuild multipart body: %w", err)
 		}
 		if _, err := dst.Write(part.body); err != nil {
-			return nil, "", fmt.Errorf("failed to write multipart body: %w", err)
+			return nil, "", demeterAudioFileInfo{}, fmt.Errorf("failed to write multipart body: %w", err)
 		}
 	}
 	if err := writer.Close(); err != nil {
-		return nil, "", fmt.Errorf("failed to finalize multipart body: %w", err)
+		return nil, "", demeterAudioFileInfo{}, fmt.Errorf("failed to finalize multipart body: %w", err)
 	}
-	return buffer.Bytes(), writer.FormDataContentType(), nil
+	return buffer.Bytes(), writer.FormDataContentType(), fileInfo, nil
 }
 
 func cloneMultipartHeader(src textproto.MIMEHeader) textproto.MIMEHeader {
@@ -324,6 +389,208 @@ func cloneMultipartHeader(src textproto.MIMEHeader) textproto.MIMEHeader {
 		dst[key] = append([]string(nil), values...)
 	}
 	return dst
+}
+
+func (a *App) demeterAudioValidationFailure(
+	c *fiber.Ctx,
+	route string,
+	seq uint64,
+	startedAt time.Time,
+	requestBytes int,
+	contentType string,
+	routeMode string,
+	audioDurationSec float64,
+	audioDurationProvided bool,
+	validationErr *demeterAudioValidationError,
+) error {
+	fileInfo := validationErr.file
+	statusCode := demeterAudioValidationStatusCode(validationErr.code)
+	fields := demeterAudioRequestBaseFields(routeMode, audioDurationSec, audioDurationProvided, map[string]any{
+		"result":            validationErr.code,
+		"status_code":       statusCode,
+		"total_duration_ms": time.Since(startedAt).Milliseconds(),
+		"request_bytes":     requestBytes,
+		"content_type":      contentType,
+		"file_name":         fileInfo.FileName,
+		"file_size_bytes":   fileInfo.SizeBytes,
+		"mime_type":         fileInfo.MimeType,
+		"message":           validationErr.message,
+	})
+	logDemeterAudioStage(c, route, seq, "request_failed", fields)
+	logDemeterAudioStage(c, route, seq, "sequence_end", demeterAudioRequestBaseFields(routeMode, audioDurationSec, audioDurationProvided, map[string]any{
+		"result":            validationErr.code,
+		"status_code":       statusCode,
+		"total_duration_ms": time.Since(startedAt).Milliseconds(),
+		"request_bytes":     requestBytes,
+		"content_type":      contentType,
+		"file_name":         fileInfo.FileName,
+		"file_size_bytes":   fileInfo.SizeBytes,
+		"mime_type":         fileInfo.MimeType,
+	}))
+	fileSizeBytes := fileInfo.SizeBytes
+	return c.Status(statusCode).JSON(ErrorResponse{
+		Error:         validationErr.message,
+		Code:          validationErr.code,
+		TraceID:       requestTraceID(c),
+		Path:          route,
+		FileName:      fileInfo.FileName,
+		FileSizeBytes: &fileSizeBytes,
+		MimeType:      fileInfo.MimeType,
+	})
+}
+
+func demeterAudioValidationStatusCode(code string) int {
+	switch strings.TrimSpace(strings.ToLower(code)) {
+	case "audio_pipeline_unavailable":
+		return fiber.StatusServiceUnavailable
+	default:
+		return fiber.StatusBadRequest
+	}
+}
+
+func normalizeDemeterAudioFileName(fileName string) string {
+	normalized := strings.TrimSpace(fileName)
+	if normalized == "" {
+		return ""
+	}
+	return filepath.Base(normalized)
+}
+
+func normalizeDemeterAudioMimeType(rawMimeType, fileName string) string {
+	normalized := strings.ToLower(strings.TrimSpace(rawMimeType))
+	if normalized != "" {
+		if mediaType, _, err := mime.ParseMediaType(normalized); err == nil {
+			normalized = strings.ToLower(strings.TrimSpace(mediaType))
+		}
+	}
+	if normalized != "" {
+		return normalized
+	}
+
+	switch strings.ToLower(strings.TrimPrefix(filepath.Ext(fileName), ".")) {
+	case "wav", "wave", "x-wav":
+		return "audio/wav"
+	case "webm":
+		return "audio/webm"
+	case "ogg", "oga":
+		return "audio/ogg"
+	case "mp3":
+		return "audio/mpeg"
+	case "m4a", "mp4":
+		return "audio/mp4"
+	case "aac":
+		return "audio/aac"
+	default:
+		return ""
+	}
+}
+
+func validateDemeterAudioFileInfo(data []byte, fileInfo demeterAudioFileInfo) error {
+	if len(data) == 0 {
+		return &demeterAudioValidationError{
+			code:    "empty_audio_file",
+			message: "fichier audio vide",
+			file:    fileInfo,
+		}
+	}
+
+	return nil
+}
+
+func demeterAudioRouteMode(route string) string {
+	normalizedRoute := strings.ToLower(strings.TrimSpace(route))
+	if strings.Contains(normalizedRoute, "/backend") {
+		return "backend_direct"
+	}
+	return "relay"
+}
+
+func requestDemeterAudioDurationSec(c *fiber.Ctx) (float64, bool) {
+	if c == nil {
+		return 0, false
+	}
+
+	raw := strings.TrimSpace(c.Get("X-Cloud-Audio-Duration-Sec"))
+	if raw == "" {
+		return 0, false
+	}
+
+	value, err := strconv.ParseFloat(raw, 64)
+	if err != nil || math.IsNaN(value) || math.IsInf(value, 0) {
+		return 0, false
+	}
+	if value < 0 {
+		value = 0
+	}
+	return value, true
+}
+
+func demeterAudioRequestBaseFields(routeMode string, audioDurationSec float64, audioDurationProvided bool, fields map[string]any) map[string]any {
+	normalizedRouteMode := strings.TrimSpace(routeMode)
+	if normalizedRouteMode == "" {
+		normalizedRouteMode = "relay"
+	}
+	out := map[string]any{
+		"route_mode": normalizedRouteMode,
+	}
+	if audioDurationProvided {
+		out["audio_duration_sec"] = audioDurationSec
+	}
+	for key, value := range fields {
+		out[key] = value
+	}
+	return out
+}
+
+func resolveDemeterAudioKind(fileName, mimeType string) string {
+	normalizedMime := strings.ToLower(strings.TrimSpace(mimeType))
+	extension := strings.ToLower(strings.TrimPrefix(filepath.Ext(fileName), "."))
+
+	switch {
+	case strings.HasPrefix(normalizedMime, "audio/wav"), extension == "wav", extension == "wave", extension == "x-wav":
+		return "wav"
+	case strings.HasPrefix(normalizedMime, "audio/webm"), extension == "webm":
+		return "webm"
+	case strings.HasPrefix(normalizedMime, "audio/ogg"), extension == "ogg", extension == "oga":
+		return "ogg"
+	case strings.HasPrefix(normalizedMime, "audio/mpeg"), strings.HasPrefix(normalizedMime, "audio/mp3"), extension == "mp3":
+		return "mp3"
+	case strings.HasPrefix(normalizedMime, "audio/mp4"), strings.HasPrefix(normalizedMime, "audio/x-m4a"), extension == "m4a", extension == "mp4":
+		return "mp4"
+	case strings.HasPrefix(normalizedMime, "audio/aac"), extension == "aac":
+		return "aac"
+	default:
+		return ""
+	}
+}
+
+func isKnownDemeterAudioSignature(data []byte) bool {
+	return matchesDemeterAudioSignature(data, "wav") ||
+		matchesDemeterAudioSignature(data, "webm") ||
+		matchesDemeterAudioSignature(data, "ogg") ||
+		matchesDemeterAudioSignature(data, "mp3") ||
+		matchesDemeterAudioSignature(data, "mp4") ||
+		matchesDemeterAudioSignature(data, "aac")
+}
+
+func matchesDemeterAudioSignature(data []byte, kind string) bool {
+	switch kind {
+	case "wav":
+		return len(data) >= 12 && bytes.Equal(data[:4], []byte("RIFF")) && bytes.Equal(data[8:12], []byte("WAVE"))
+	case "webm":
+		return len(data) >= 4 && bytes.Equal(data[:4], []byte{0x1A, 0x45, 0xDF, 0xA3})
+	case "ogg":
+		return len(data) >= 4 && bytes.Equal(data[:4], []byte("OggS"))
+	case "mp3":
+		return len(data) >= 3 && bytes.Equal(data[:3], []byte("ID3")) ||
+			(len(data) >= 2 && data[0] == 0xFF && (data[1]&0xE0) == 0xE0)
+	case "mp4":
+		return len(data) >= 12 && bytes.Equal(data[4:8], []byte("ftyp"))
+	case "aac":
+		return len(data) >= 2 && data[0] == 0xFF && (data[1]&0xF6) == 0xF0
+	default:
+		return false
+	}
 }
 
 func nextDemeterAudioSequenceID() uint64 {

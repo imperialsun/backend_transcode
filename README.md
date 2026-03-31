@@ -14,7 +14,7 @@ Backend `Go + Fiber + SQLite` for the Transcode frontend backend mode and admin 
 - Multi-tenant organization model with global roles, organization roles, and per-user permission overrides.
 - Backend-owned user settings storage exposed under `/api/v1/settings`.
 - Activity ingestion and admin summaries for transcription and report usage.
-- `Demeter Sante` relay routes that call Mistral server-side.
+- `Demeter Sante` relay routes that call Mistral server-side, with long-audio chunking requiring `ffmpeg` and `ffprobe` in the runtime image.
 - SQLite persistence with WAL enabled and optional bootstrap admin creation.
 
 ## Quickstart

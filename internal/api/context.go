@@ -19,7 +19,13 @@ type App struct {
 }
 
 type ErrorResponse struct {
-	Error string `json:"error"`
+	Error         string `json:"error"`
+	Code          string `json:"code,omitempty"`
+	TraceID       string `json:"traceId,omitempty"`
+	Path          string `json:"path,omitempty"`
+	FileName      string `json:"fileName,omitempty"`
+	FileSizeBytes *int64 `json:"fileSizeBytes,omitempty"`
+	MimeType      string `json:"mimeType,omitempty"`
 }
 
 type AuthResponse struct {

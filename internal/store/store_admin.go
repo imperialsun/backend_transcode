@@ -18,6 +18,8 @@ func resolveTableInfoQuery(tableName string) (string, error) {
 	switch strings.TrimSpace(tableName) {
 	case "refresh_sessions":
 		return `PRAGMA table_info(refresh_sessions)`, nil
+	case "backend_error_events":
+		return `PRAGMA table_info(backend_error_events)`, nil
 	default:
 		return "", fmt.Errorf("%w: %s", errUnsupportedTableInfoTarget, strings.TrimSpace(tableName))
 	}

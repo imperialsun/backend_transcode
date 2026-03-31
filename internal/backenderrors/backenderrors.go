@@ -32,6 +32,8 @@ type Event struct {
 	DurationMS     int64           `json:"durationMs"`
 	ErrorMessage   string          `json:"errorMessage"`
 	PayloadJSON    json.RawMessage `json:"payloadJson"`
+	AnnexJSON      json.RawMessage `json:"annexJson,omitempty"`
+	RecoveryStatus string          `json:"recoveryStatus,omitempty"`
 	CreatedAt      time.Time       `json:"createdAt"`
 }
 
@@ -110,6 +112,8 @@ func buildEvent(ctx context.Context, component, route, step, title string, field
 		DurationMS:     durationMS,
 		ErrorMessage:   normalizeText(errorMessage),
 		PayloadJSON:    payloadJSON,
+		AnnexJSON:      nil,
+		RecoveryStatus:  "",
 		CreatedAt:      time.Now().UTC(),
 	}
 }
