@@ -113,7 +113,7 @@ func buildEvent(ctx context.Context, component, route, step, title string, field
 		ErrorMessage:   normalizeText(errorMessage),
 		PayloadJSON:    payloadJSON,
 		AnnexJSON:      nil,
-		RecoveryStatus:  "",
+		RecoveryStatus: "",
 		CreatedAt:      time.Now().UTC(),
 	}
 }
