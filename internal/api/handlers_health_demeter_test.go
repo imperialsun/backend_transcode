@@ -144,7 +144,7 @@ func TestDemeterModels_RequiresPermissionAndMistral(t *testing.T) {
 	// When mistral is not configured, should return 503
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/providers/demeter-sante/models", nil)
 	req.Header.Set(fiber.HeaderAuthorization, "Bearer "+token)
-	resp, err := app.Test(req, 5_000)
+	resp, err := app.Test(req, 15_000)
 	if err != nil {
 		t.Fatalf("request failed: %v", err)
 	}
@@ -326,7 +326,7 @@ func TestDemeterAudioTranscriptions_ReturnsBadGatewayOnUpstreamError(t *testing.
 	req.Header.Set(fiber.HeaderAuthorization, "Bearer "+token)
 	req.Header.Set(fiber.HeaderContentType, fiber.MIMEMultipartForm+"; boundary="+boundary)
 
-	resp, err := app.Test(req, 5_000)
+	resp, err := app.Test(req, 15_000)
 	if err != nil {
 		t.Fatalf("request failed: %v", err)
 	}
@@ -441,49 +441,108 @@ func TestDemeterAudioTranscriptions_BackendRouteChunksServerSideAndLogsDurationA
 	req.Header.Set(fiber.HeaderContentType, writer.FormDataContentType())
 	req.Header.Set("X-Cloud-Audio-Duration-Sec", "7201")
 
-	resp, err := app.Test(req, 5_000)
+	resp, err := app.Test(req, 15_000)
 	if err != nil {
 		t.Fatalf("request failed: %v", err)
 	}
 	defer closeHTTPResponse(t, resp)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("expected 200 for backend direct transcription, got %d", resp.StatusCode)
+	if resp.StatusCode != fiber.StatusAccepted {
+		t.Fatalf("expected 202 for backend direct transcription start, got %d", resp.StatusCode)
 	}
 
-	var payload struct {
-		Text     string  `json:"text"`
-		Duration float64 `json:"duration"`
-		Chunks   []struct {
-			ChunkID      string  `json:"chunkId"`
-			Index        int     `json:"index"`
-			StartSec     float64 `json:"startSec"`
-			EndSec       float64 `json:"endSec"`
-			DurationSec  float64 `json:"durationSec"`
-			SegmentCount int     `json:"segmentCount"`
-			Text         string  `json:"text"`
-		} `json:"chunks"`
-		Segments []struct {
-			Index   int     `json:"index"`
-			Start   float64 `json:"start"`
-			End     float64 `json:"end"`
-			Text    string  `json:"text"`
-			ChunkID string  `json:"chunkId"`
-		} `json:"segments"`
+	var startPayload struct {
+		OperationID string  `json:"operationId"`
+		Status      string  `json:"status"`
+		StatusCode  int     `json:"statusCode"`
+		ChunkIndex  int     `json:"chunkIndex"`
+		ChunkCount  int     `json:"chunkCount"`
+		Progress    float64 `json:"progress"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
-		t.Fatalf("failed to decode backend direct response: %v", err)
+	if err := json.NewDecoder(resp.Body).Decode(&startPayload); err != nil {
+		t.Fatalf("failed to decode backend direct start response: %v", err)
 	}
-	if payload.Text != "chunk-1\nchunk-2\nchunk-3" {
-		t.Fatalf("unexpected aggregated text: %+v", payload)
+	if startPayload.OperationID == "" {
+		t.Fatalf("expected backend operation id, got %+v", startPayload)
 	}
-	if len(payload.Chunks) != 3 {
-		t.Fatalf("expected 3 chunks, got %+v", payload)
+	if startPayload.ChunkCount != 3 {
+		t.Fatalf("expected 3 chunks at start, got %+v", startPayload)
 	}
-	if len(payload.Segments) != 3 {
-		t.Fatalf("expected 3 flattened segments, got %+v", payload)
+	if startPayload.StatusCode != fiber.StatusAccepted {
+		t.Fatalf("expected accepted status code in start payload, got %+v", startPayload)
 	}
-	if payload.Segments[0].ChunkID == payload.Segments[1].ChunkID {
-		t.Fatalf("expected distinct chunk ids across backend chunks, got %+v", payload.Segments)
+
+	var finalPayload struct {
+		OperationID string  `json:"operationId"`
+		Status      string  `json:"status"`
+		StatusCode  int     `json:"statusCode"`
+		Stage       string  `json:"stage"`
+		ChunkIndex  int     `json:"chunkIndex"`
+		ChunkCount  int     `json:"chunkCount"`
+		Progress    float64 `json:"progress"`
+		PartialText string  `json:"partialText"`
+		Response    struct {
+			Text     string  `json:"text"`
+			Duration float64 `json:"duration"`
+			Chunks   []struct {
+				ChunkID      string  `json:"chunkId"`
+				Index        int     `json:"index"`
+				StartSec     float64 `json:"startSec"`
+				EndSec       float64 `json:"endSec"`
+				DurationSec  float64 `json:"durationSec"`
+				SegmentCount int     `json:"segmentCount"`
+				Text         string  `json:"text"`
+			} `json:"chunks"`
+			Segments []struct {
+				Index   int     `json:"index"`
+				Start   float64 `json:"start"`
+				End     float64 `json:"end"`
+				Text    string  `json:"text"`
+				ChunkID string  `json:"chunkId"`
+			} `json:"segments"`
+		} `json:"response"`
+	}
+
+	deadline := time.Now().Add(20 * time.Second)
+	for {
+		statusReq := httptest.NewRequest(http.MethodGet, "/api/v1/providers/demeter-sante/audio/transcriptions/backend/operations/"+startPayload.OperationID, nil)
+		statusReq.Header.Set(fiber.HeaderAuthorization, "Bearer "+token)
+		statusResp, statusErr := app.Test(statusReq, 5_000)
+		if statusErr != nil {
+			t.Fatalf("status request failed: %v", statusErr)
+		}
+		if err := json.NewDecoder(statusResp.Body).Decode(&finalPayload); err != nil {
+			_ = statusResp.Body.Close()
+			t.Fatalf("failed to decode backend operation status: %v", err)
+		}
+		_ = statusResp.Body.Close()
+		if finalPayload.Status == store.DemeterAudioTranscriptionOperationStatusCompleted {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for backend operation completion, last payload: %+v", finalPayload)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if finalPayload.ChunkIndex != 3 {
+		t.Fatalf("expected 3 completed chunks, got %+v", finalPayload)
+	}
+	if finalPayload.ChunkCount != 3 {
+		t.Fatalf("expected 3 total chunks, got %+v", finalPayload)
+	}
+	if finalPayload.Progress != 1 {
+		t.Fatalf("expected final progress 1, got %+v", finalPayload)
+	}
+	if finalPayload.Response.Text != "chunk-1\nchunk-2\nchunk-3" {
+		t.Fatalf("unexpected aggregated text: %+v", finalPayload)
+	}
+	if len(finalPayload.Response.Chunks) != 3 {
+		t.Fatalf("expected 3 chunks, got %+v", finalPayload)
+	}
+	if len(finalPayload.Response.Segments) != 3 {
+		t.Fatalf("expected 3 flattened segments, got %+v", finalPayload)
+	}
+	if finalPayload.Response.Segments[0].ChunkID == finalPayload.Response.Segments[1].ChunkID {
+		t.Fatalf("expected distinct chunk ids across backend chunks, got %+v", finalPayload.Response.Segments)
 	}
 
 	logged := buffer.String()
@@ -693,13 +752,128 @@ func TestDemeterAudioTranscriptions_RetriesOnceOnUpstream500(t *testing.T) {
 		"title=\"audio_transcription\"",
 		"attempt=1",
 		"next_attempt=2",
-		"max_attempts=2",
+		"max_attempts=5",
 		"upstream_status=500",
+		"retry_delay_ms=2000",
 		"request_bytes=",
 		"response_bytes=",
 	} {
 		if !strings.Contains(retryLine, needle) {
 			t.Fatalf("expected %q in retry log line, got %q", needle, retryLine)
+		}
+	}
+}
+
+func TestDemeterAudioTranscriptions_RetriesOnServiceTierCapacityExceededAndLogsObservability(t *testing.T) {
+	var buffer bytes.Buffer
+	var upstreamAttempts int32
+	originalWriter := log.Writer()
+	originalFlags := log.Flags()
+	log.SetOutput(&buffer)
+	log.SetFlags(0)
+	t.Cleanup(func() {
+		log.SetOutput(originalWriter)
+		log.SetFlags(originalFlags)
+	})
+
+	app, token, _ := setupDemeterRoutesApp(t, []store.UserPermissionOverrideInput{
+		{PermissionCode: "feature.cloudupload", Effect: "allow"},
+		{PermissionCode: "provider.cloud.demeter_sante", Effect: "allow"},
+	}, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/audio/transcriptions" {
+			t.Fatalf("unexpected upstream path: %s", r.URL.Path)
+		}
+		if r.Method != http.MethodPost {
+			t.Fatalf("unexpected upstream method: %s", r.Method)
+		}
+		if _, err := io.ReadAll(r.Body); err != nil {
+			t.Fatalf("failed to read upstream body: %v", err)
+		}
+
+		attempt := atomic.AddInt32(&upstreamAttempts, 1)
+		w.Header().Set(fiber.HeaderContentType, fiber.MIMEApplicationJSON)
+		if attempt == 1 {
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = w.Write([]byte(`{"error":"Service tier capacity exceeded for this model"}`))
+			return
+		}
+		if attempt == 2 {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"text":"transcribed"}`))
+			return
+		}
+		t.Fatalf("unexpected upstream attempt %d", attempt)
+	}))
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	filePart, err := writer.CreateFormFile("file", "sample.wav")
+	if err != nil {
+		t.Fatalf("failed to create multipart file part: %v", err)
+	}
+	if _, err := filePart.Write([]byte("wave-data")); err != nil {
+		t.Fatalf("failed to write multipart file part: %v", err)
+	}
+	if err := writer.WriteField("model", defaultDemeterAudioTranscriptionModelID); err != nil {
+		t.Fatalf("failed to write multipart model field: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("failed to close multipart writer: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/providers/demeter-sante/audio/transcriptions", bytes.NewReader(body.Bytes()))
+	req.Header.Set(fiber.HeaderAuthorization, "Bearer "+token)
+	req.Header.Set(fiber.HeaderContentType, writer.FormDataContentType())
+
+	resp, err := app.Test(req, 8_000)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer closeHTTPResponse(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 after capacity retry, got %d", resp.StatusCode)
+	}
+
+	if got := atomic.LoadInt32(&upstreamAttempts); got != 2 {
+		t.Fatalf("expected 2 upstream attempts, got %d", got)
+	}
+
+	var payload map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		t.Fatalf("failed to decode transcription response: %v", err)
+	}
+	if payload["text"] != "transcribed" {
+		t.Fatalf("unexpected transcription response: %+v", payload)
+	}
+
+	logged := buffer.String()
+	retryLine := ""
+	for _, line := range strings.Split(logged, "\n") {
+		if strings.Contains(line, "step=upstream_capacity_error") {
+			retryLine = line
+			break
+		}
+	}
+	if retryLine == "" {
+		t.Fatalf("expected upstream capacity error log, got %q", logged)
+	}
+	for _, needle := range []string{
+		"[demeter]",
+		"route=/api/v1/providers/demeter-sante/audio/transcriptions",
+		"trace_id=",
+		"user=",
+		"org=",
+		"title=\"audio_transcription\"",
+		"attempt=1",
+		"next_attempt=2",
+		"max_attempts=5",
+		"upstream_status=429",
+		"retry_delay_ms=2000",
+		"reason=\"upstream_429\"",
+		"Service tier capacity exceeded for this model",
+	} {
+		if !strings.Contains(retryLine, needle) {
+			t.Fatalf("expected %q in capacity retry log line, got %q", needle, retryLine)
 		}
 	}
 }

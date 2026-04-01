@@ -25,8 +25,8 @@ const (
 	demeterAudioTranscriptionsUpstreamPath  = "/v1/audio/transcriptions"
 	demeterAudioTranscriptionsBackendPath   = "/audio/transcriptions/backend"
 	defaultDemeterAudioTranscriptionModelID = "voxtral-mini-latest"
-	demeterAudioTranscriptionMaxAttempts    = 2
-	demeterAudioTranscriptionRetryDelay     = 250 * time.Millisecond
+	demeterAudioTranscriptionMaxAttempts    = 5
+	demeterAudioTranscriptionBaseDelay      = 2 * time.Second
 )
 
 var demeterAudioSequenceCounter uint64
@@ -55,6 +55,8 @@ func (a *App) RegisterDemeterRoutes(router fiber.Router) {
 	group.Get("/models", RequireAnyPermission("provider.cloud.demeter_sante", "provider.llm.demeter_sante"), a.demeterModels)
 	group.Post("/audio/transcriptions", RequirePermissions("feature.cloudupload", "provider.cloud.demeter_sante"), a.demeterAudioTranscriptions)
 	group.Post("/audio/transcriptions/backend", RequirePermissions("feature.cloudupload", "provider.cloud.demeter_sante"), a.demeterAudioTranscriptions)
+	group.Get("/audio/transcriptions/backend/operations/:operationId", RequirePermissions("feature.cloudupload", "provider.cloud.demeter_sante"), a.getDemeterAudioTranscriptionOperationStatus)
+	group.Delete("/audio/transcriptions/backend/operations/:operationId", RequirePermissions("feature.cloudupload", "provider.cloud.demeter_sante"), a.cancelDemeterAudioTranscriptionOperation)
 	group.Post("/chat/completions", RequirePermissions("feature.llmapi", "provider.llm.demeter_sante"), a.demeterChatCompletions)
 }
 
@@ -199,7 +201,7 @@ func (a *App) demeterAudioTranscriptions(c *fiber.Ctx) error {
 		"mime_type":     fileInfo.MimeType,
 	}))
 
-	relayResult, err := a.demeterAudioTranscriptionWithRetry(c, route, seq, routeMode, audioDurationSec, audioDurationProvided, requestBody, contentType, requestBytes)
+	relayResult, err := a.demeterAudioTranscriptionWithRetry(newDemeterAudioLogContextFromFiber(c), route, seq, routeMode, audioDurationSec, audioDurationProvided, requestBody, contentType, requestBytes)
 	if err != nil {
 		logDemeterRelayIssue(c, route, fiber.StatusBadGateway, err.Error())
 		logDemeterAudioStage(c, route, seq, "sequence_end", demeterAudioRequestBaseFields(routeMode, audioDurationSec, audioDurationProvided, map[string]any{
@@ -265,8 +267,8 @@ type demeterAudioTranscriptionRelayResult struct {
 	attempts           int
 }
 
-func (a *App) demeterAudioTranscriptionWithRetry(c *fiber.Ctx, route string, seq uint64, routeMode string, audioDurationSec float64, audioDurationProvided bool, requestBody []byte, contentType string, requestBytes int) (demeterAudioTranscriptionRelayResult, error) {
-	ctx := requestContext(c)
+func (a *App) demeterAudioTranscriptionWithRetry(logCtx demeterAudioLogContext, route string, seq uint64, routeMode string, audioDurationSec float64, audioDurationProvided bool, requestBody []byte, contentType string, requestBytes int) (demeterAudioTranscriptionRelayResult, error) {
+	ctx := logCtx.ctx
 	for attempt := 1; attempt <= demeterAudioTranscriptionMaxAttempts; attempt++ {
 		upstreamStartedAt := time.Now()
 		statusCode, responseBody, err := a.MistralClient.DoMultipart(ctx, demeterAudioTranscriptionsUpstreamPath, requestBody, contentType)
@@ -274,24 +276,39 @@ func (a *App) demeterAudioTranscriptionWithRetry(c *fiber.Ctx, route string, seq
 		if err != nil {
 			return demeterAudioTranscriptionRelayResult{}, err
 		}
-		if shouldRetryDemeterAudioTranscriptionStatus(statusCode) && attempt < demeterAudioTranscriptionMaxAttempts {
-			delayMs := demeterAudioTranscriptionRetryDelay.Milliseconds()
-			logDemeterAudioStage(c, route, seq, "upstream_retry", demeterAudioRequestBaseFields(routeMode, audioDurationSec, audioDurationProvided, map[string]any{
+		if shouldRetryDemeterAudioTranscriptionResponse(statusCode, responseBody) {
+			delay := demeterAudioTranscriptionRetryDelayForAttempt(attempt)
+			fields := demeterAudioRequestBaseFields(routeMode, audioDurationSec, audioDurationProvided, map[string]any{
 				"upstream":             demeterAudioTranscriptionsUpstreamPath,
 				"attempt":              attempt,
-				"next_attempt":         attempt + 1,
 				"max_attempts":         demeterAudioTranscriptionMaxAttempts,
 				"request_bytes":        requestBytes,
 				"upstream_status":      statusCode,
 				"upstream_duration_ms": upstreamDurationMs,
 				"response_bytes":       len(responseBody),
-				"retry_delay_ms":       delayMs,
-				"reason":               "upstream_5xx",
-			}))
-			if err := sleepContext(ctx, demeterAudioTranscriptionRetryDelay); err != nil {
-				return demeterAudioTranscriptionRelayResult{}, err
+				"retry_delay_ms":       delay.Milliseconds(),
+			})
+			if demeterAudioTranscriptionResponseIsCapacityExceeded(statusCode, responseBody) {
+				fields["reason"] = demeterAudioTranscriptionCapacityErrorReason(statusCode)
+				fields["message"] = strings.TrimSpace(string(responseBody))
+				if attempt < demeterAudioTranscriptionMaxAttempts {
+					fields["action"] = "retry"
+					fields["next_attempt"] = attempt + 1
+				} else {
+					fields["action"] = "exhausted"
+				}
+				logDemeterAudioStageCtx(logCtx, route, seq, "upstream_capacity_error", fields)
+			} else if attempt < demeterAudioTranscriptionMaxAttempts {
+				fields["next_attempt"] = attempt + 1
+				fields["reason"] = demeterAudioTranscriptionRetryReason(statusCode)
+				logDemeterAudioStageCtx(logCtx, route, seq, "upstream_retry", fields)
 			}
-			continue
+			if attempt < demeterAudioTranscriptionMaxAttempts {
+				if err := sleepContext(ctx, delay); err != nil {
+					return demeterAudioTranscriptionRelayResult{}, err
+				}
+				continue
+			}
 		}
 		return demeterAudioTranscriptionRelayResult{
 			statusCode:         statusCode,
@@ -598,31 +615,74 @@ func nextDemeterAudioSequenceID() uint64 {
 }
 
 func logDemeterAudioStage(c *fiber.Ctx, route string, seq uint64, stage string, fields map[string]any) {
-	if fields == nil {
-		fields = map[string]any{}
-	}
-	fields["seq"] = seq
-	logAPIStep(c, "demeter", route, stage, "audio_transcription", fields)
+	logDemeterAudioStageCtx(newDemeterAudioLogContextFromFiber(c), route, seq, stage, fields)
 }
 
 func logDemeterRelayIssue(c *fiber.Ctx, route string, status int, message string) {
-	logAPIStep(c, "demeter", route, "relay_issue", "relay", map[string]any{
-		"status":  status,
-		"message": message,
-	})
+	logDemeterRelayIssueCtx(newDemeterAudioLogContextFromFiber(c), route, status, message)
 }
 
 func logDemeterUpstreamStatus(c *fiber.Ctx, route string, status int) {
-	if status < fiber.StatusBadRequest {
-		return
-	}
-	logAPIStep(c, "demeter", route, "upstream_error", "upstream", map[string]any{
-		"status": status,
-	})
+	logDemeterUpstreamStatusCtx(newDemeterAudioLogContextFromFiber(c), route, status)
 }
 
 func shouldRetryDemeterAudioTranscriptionStatus(status int) bool {
+	return shouldRetryDemeterAudioTranscriptionResponse(status, nil)
+}
+
+func shouldRetryDemeterAudioTranscriptionResponse(status int, responseBody []byte) bool {
+	if demeterAudioTranscriptionResponseIsCapacityExceeded(status, responseBody) {
+		return true
+	}
 	return status >= fiber.StatusInternalServerError && status < 600
+}
+
+func demeterAudioTranscriptionResponseIsCapacityExceeded(status int, responseBody []byte) bool {
+	switch status {
+	case fiber.StatusTooManyRequests, fiber.StatusServiceUnavailable:
+		return true
+	}
+	if len(responseBody) == 0 {
+		return false
+	}
+	normalizedBody := strings.ToLower(strings.TrimSpace(string(responseBody)))
+	if normalizedBody == "" {
+		return false
+	}
+	return strings.Contains(normalizedBody, "service tier capacity exceeded")
+}
+
+func demeterAudioTranscriptionRetryDelayForAttempt(attempt int) time.Duration {
+	if attempt <= 1 {
+		return demeterAudioTranscriptionBaseDelay
+	}
+	delay := demeterAudioTranscriptionBaseDelay
+	for i := 1; i < attempt; i++ {
+		delay *= 2
+	}
+	return delay
+}
+
+func demeterAudioTranscriptionCapacityErrorReason(status int) string {
+	switch status {
+	case fiber.StatusTooManyRequests:
+		return "upstream_429"
+	case fiber.StatusServiceUnavailable:
+		return "upstream_503"
+	default:
+		return "service_tier_capacity_exceeded"
+	}
+}
+
+func demeterAudioTranscriptionRetryReason(status int) string {
+	switch status {
+	case fiber.StatusTooManyRequests:
+		return "upstream_429"
+	case fiber.StatusServiceUnavailable:
+		return "upstream_503"
+	default:
+		return "upstream_5xx"
+	}
 }
 
 func sleepContext(ctx context.Context, delay time.Duration) error {
