@@ -18,6 +18,27 @@ func TestBuildPasswordResetMessage_RequiresData(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error when reset url is missing")
 	}
+
+	_, err = m.buildPasswordResetMessage(PasswordResetEmail{
+		ToEmail:        "user@test",
+		ResetURL:       "https://app.test/reset-password?token=abc",
+		ApplicationURL: "",
+	})
+	if err == nil {
+		t.Fatal("expected error when application url is missing")
+	}
+}
+
+func TestBuildUserProvisioningMessage_RequiresApplicationURL(t *testing.T) {
+	m := NewSMTPMailer(Config{Host: "smtp.test", Port: 587, FromEmail: "noreply@test"})
+	_, err := m.buildUserProvisioningMessage(UserProvisioningEmail{
+		ToEmail:           "user@test",
+		Login:             "user@test",
+		TemporaryPassword: "TmpPass-123456",
+	})
+	if err == nil {
+		t.Fatal("expected error when application url is missing")
+	}
 }
 
 func TestFormatAddress(t *testing.T) {

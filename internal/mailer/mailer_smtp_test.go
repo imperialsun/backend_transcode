@@ -35,10 +35,11 @@ func TestSMTPMailerSendPasswordResetEmail_Success(t *testing.T) {
 
 	ctx := observability.WithTraceID(context.Background(), "mailer-reset-trace")
 	err := m.SendPasswordResetEmail(ctx, PasswordResetEmail{
-		ToEmail:     "user@example.com",
-		ResetURL:    "https://app.demeter.test/reset-password?token=abc",
-		ExpiresAt:   time.Date(2026, time.March, 14, 20, 0, 0, 0, time.UTC),
-		SessionType: auth.SessionTypeApp,
+		ToEmail:        "user@example.com",
+		ResetURL:       "https://app.demeter.test/reset-password?token=abc",
+		ApplicationURL: "https://app.demeter.test/",
+		ExpiresAt:      time.Date(2026, time.March, 14, 20, 0, 0, 0, time.UTC),
+		SessionType:    auth.SessionTypeApp,
 	})
 	if err != nil {
 		t.Fatalf("SendPasswordResetEmail returned error: %v", err)
@@ -50,6 +51,12 @@ func TestSMTPMailerSendPasswordResetEmail_Success(t *testing.T) {
 	}
 	if !strings.Contains(message, "https://app.demeter.test/reset-password?token=abc") {
 		t.Fatalf("expected reset url in SMTP message, got %q", message)
+	}
+	if !strings.Contains(message, "https://app.demeter.test/") {
+		t.Fatalf("expected application url in SMTP message, got %q", message)
+	}
+	if !strings.Contains(message, "Accéder à l'application") {
+		t.Fatalf("expected application CTA in SMTP message, got %q", message)
 	}
 	if !strings.Contains(logBuf.String(), "trace_id=mailer-reset-trace") {
 		t.Fatalf("expected trace id in mailer logs, got %q", logBuf.String())
@@ -77,10 +84,11 @@ func TestSMTPMailerSendPasswordResetEmail_RCPTFailure(t *testing.T) {
 
 	ctx := observability.WithTraceID(context.Background(), "mailer-reset-failure-trace")
 	err := m.SendPasswordResetEmail(ctx, PasswordResetEmail{
-		ToEmail:     "user@example.com",
-		ResetURL:    "https://app.demeter.test/reset-password?token=abc",
-		ExpiresAt:   time.Now().UTC().Add(time.Hour),
-		SessionType: auth.SessionTypeAdmin,
+		ToEmail:        "user@example.com",
+		ResetURL:       "https://app.demeter.test/reset-password?token=abc",
+		ApplicationURL: "https://app.demeter.test/",
+		ExpiresAt:      time.Now().UTC().Add(time.Hour),
+		SessionType:    auth.SessionTypeAdmin,
 	})
 	if err == nil {
 		t.Fatal("expected SMTP RCPT failure")
@@ -142,6 +150,7 @@ func TestSMTPMailerSendUserProvisioningEmail_Success(t *testing.T) {
 		ToEmail:           "user@example.com",
 		Login:             "user@example.com",
 		TemporaryPassword: "TmpPass-123456",
+		ApplicationURL:    "https://app.demeter.test/",
 	})
 	if err != nil {
 		t.Fatalf("SendUserProvisioningEmail returned error: %v", err)
@@ -153,6 +162,12 @@ func TestSMTPMailerSendUserProvisioningEmail_Success(t *testing.T) {
 	}
 	if !strings.Contains(message, "TmpPass-123456") {
 		t.Fatalf("expected temporary password in SMTP message, got %q", message)
+	}
+	if !strings.Contains(message, "https://app.demeter.test/") {
+		t.Fatalf("expected application url in SMTP message, got %q", message)
+	}
+	if !strings.Contains(message, "Accéder à l'application") {
+		t.Fatalf("expected application CTA in SMTP message, got %q", message)
 	}
 }
 

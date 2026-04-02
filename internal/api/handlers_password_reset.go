@@ -128,7 +128,8 @@ func (a *App) sendPasswordResetForUser(
 	if user.Status != "active" {
 		return fiber.NewError(fiber.StatusBadRequest, "user is inactive")
 	}
-	if err := a.ensurePasswordResetAvailable(sessionType); err != nil {
+	applicationURL, err := a.ensurePasswordResetAvailable(sessionType)
+	if err != nil {
 		logContextStep(ctx, "password-reset", route, "mailer_unavailable", sessionType.String(), map[string]any{"error": err})
 		return err
 	}
@@ -171,10 +172,11 @@ func (a *App) sendPasswordResetForUser(
 
 	logContextStep(ctx, "password-reset", route, "mailer_send_start", sessionType.String(), nil)
 	if err := a.Mailer.SendPasswordResetEmail(ctx, mailer.PasswordResetEmail{
-		ToEmail:     user.Email,
-		ResetURL:    resetURL,
-		ExpiresAt:   token.ExpiresAt,
-		SessionType: sessionType,
+		ToEmail:        user.Email,
+		ResetURL:       resetURL,
+		ApplicationURL: applicationURL,
+		ExpiresAt:      token.ExpiresAt,
+		SessionType:    sessionType,
 	}); err != nil {
 		_ = a.Store.RevokePasswordResetTokensByUser(ctx, user.ID, sessionType.String())
 		logContextStep(ctx, "password-reset", route, "mailer_send_error", sessionType.String(), map[string]any{"error": err})
@@ -184,17 +186,40 @@ func (a *App) sendPasswordResetForUser(
 	return nil
 }
 
-func (a *App) ensurePasswordResetAvailable(sessionType auth.SessionType) error {
+func (a *App) ensurePasswordResetAvailable(sessionType auth.SessionType) (string, error) {
+	applicationURL, err := a.applicationPublicURL()
+	if err != nil {
+		return "", errPasswordResetUnavailable
+	}
 	if _, err := a.passwordResetBaseURL(sessionType); err != nil {
-		return errPasswordResetUnavailable
+		return "", errPasswordResetUnavailable
 	}
 	if a.Mailer == nil {
-		return errPasswordResetUnavailable
+		return "", errPasswordResetUnavailable
 	}
 	if err := a.Mailer.Ready(); err != nil {
-		return errPasswordResetUnavailable
+		return "", errPasswordResetUnavailable
 	}
-	return nil
+	return applicationURL, nil
+}
+
+func (a *App) applicationPublicURL() (string, error) {
+	baseURL := strings.TrimSpace(a.Config.AppPublicURL)
+	if baseURL == "" {
+		return "", errPasswordResetUnavailable
+	}
+	parsed, err := url.Parse(baseURL)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return "", errPasswordResetUnavailable
+	}
+	path := strings.TrimSpace(parsed.Path)
+	if path != "" && path != "/" {
+		return "", errPasswordResetUnavailable
+	}
+	if strings.TrimSpace(parsed.RawQuery) != "" || strings.TrimSpace(parsed.Fragment) != "" {
+		return "", errPasswordResetUnavailable
+	}
+	return strings.TrimRight(baseURL, "/") + "/", nil
 }
 
 func (a *App) passwordResetURL(sessionType auth.SessionType, token string) (string, error) {

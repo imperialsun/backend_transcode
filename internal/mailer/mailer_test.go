@@ -30,10 +30,11 @@ func TestBuildPasswordResetMessageIncludesResetURL(t *testing.T) {
 	})
 
 	message, err := mailer.buildPasswordResetMessage(PasswordResetEmail{
-		ToEmail:     "user@example.com",
-		ResetURL:    "https://app.demeter.test/reset-password?token=abc",
-		ExpiresAt:   time.Date(2026, time.March, 13, 18, 0, 0, 0, time.UTC),
-		SessionType: auth.SessionTypeAdmin,
+		ToEmail:        "user@example.com",
+		ResetURL:       "https://app.demeter.test/reset-password?token=abc",
+		ApplicationURL: "https://app.demeter.test/",
+		ExpiresAt:      time.Date(2026, time.March, 13, 18, 0, 0, 0, time.UTC),
+		SessionType:    auth.SessionTypeAdmin,
 	})
 	if err != nil {
 		t.Fatalf("buildPasswordResetMessage returned error: %v", err)
@@ -41,6 +42,12 @@ func TestBuildPasswordResetMessageIncludesResetURL(t *testing.T) {
 	raw := string(message)
 	if !strings.Contains(raw, "https://app.demeter.test/reset-password?token=abc") {
 		t.Fatalf("expected message to contain reset url, got %q", raw)
+	}
+	if !strings.Contains(raw, "https://app.demeter.test/") {
+		t.Fatalf("expected message to contain application url, got %q", raw)
+	}
+	if !strings.Contains(raw, "Accéder à l'application") {
+		t.Fatalf("expected application CTA in message, got %q", raw)
 	}
 	if !strings.Contains(raw, "administration Demeter Speech") {
 		t.Fatalf("expected admin-specific content, got %q", raw)
@@ -192,6 +199,7 @@ func TestBuildUserProvisioningMessageIncludesLoginAndPassword(t *testing.T) {
 		ToEmail:           "user@example.com",
 		Login:             "user@example.com",
 		TemporaryPassword: "TmpPass-123456",
+		ApplicationURL:    "https://app.demeter.test/",
 	})
 	if err != nil {
 		t.Fatalf("buildUserProvisioningMessage returned error: %v", err)
@@ -202,6 +210,12 @@ func TestBuildUserProvisioningMessageIncludesLoginAndPassword(t *testing.T) {
 	}
 	if !strings.Contains(raw, "TmpPass-123456") {
 		t.Fatalf("expected temporary password in message, got %q", raw)
+	}
+	if !strings.Contains(raw, "https://app.demeter.test/") {
+		t.Fatalf("expected application url in message, got %q", raw)
+	}
+	if !strings.Contains(raw, "Accéder à l'application") {
+		t.Fatalf("expected application CTA in message, got %q", raw)
 	}
 	if !strings.Contains(raw, "Vos identifiants Demeter Speech") {
 		t.Fatalf("expected provisioning subject, got %q", raw)

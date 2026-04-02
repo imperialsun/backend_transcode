@@ -307,6 +307,11 @@ func (a *App) createOrganizationUsersBulk(c *fiber.Ctx) error {
 		logAPIStep(c, "admin", route, "request_forbidden", "create_organization_users_bulk", map[string]any{"organization_id": orgID})
 		return c.Status(fiber.StatusForbidden).JSON(ErrorResponse{Error: "forbidden organization scope"})
 	}
+	applicationURL, err := a.applicationPublicURL()
+	if err != nil {
+		logAPIStep(c, "admin", route, "application_url_unavailable", "create_organization_users_bulk", map[string]any{"organization_id": orgID, "error": err})
+		return c.Status(fiber.StatusServiceUnavailable).JSON(ErrorResponse{Error: "provisioning email unavailable"})
+	}
 	if a.Mailer == nil || a.Mailer.Ready() != nil {
 		logAPIStep(c, "admin", route, "mailer_unavailable", "create_organization_users_bulk", map[string]any{"organization_id": orgID})
 		return c.Status(fiber.StatusServiceUnavailable).JSON(ErrorResponse{Error: "provisioning email unavailable"})
@@ -414,6 +419,7 @@ func (a *App) createOrganizationUsersBulk(c *fiber.Ctx) error {
 			ToEmail:           created.Email,
 			Login:             created.Email,
 			TemporaryPassword: temporaryPassword,
+			ApplicationURL:    applicationURL,
 		}); err != nil {
 			logAPIStep(c, "admin", route, "provisioning_email_error", "create_organization_users_bulk", map[string]any{"organization_id": orgID, "user_id": created.ID, "error": err, "email_index": index + 1})
 			result.Failed = append(result.Failed, bulkCreateUsersFailedItem{

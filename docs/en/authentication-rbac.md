@@ -54,13 +54,13 @@ All session cookies are:
   - updates the user's Argon2id password hash,
   - revokes every refresh session for that user,
   - invalidates every other outstanding reset token for that user.
-- Admins also get `POST /api/v1/admin/users/:id/password-reset-email` to send an app reset link to a user inside their scope.
-- Admins also get `POST /api/v1/admin/organizations/:id/users/bulk` to create multiple users in one request, assign the default roles, generate a temporary password server-side, and email each login plus password to the new account.
+- Admins also get `POST /api/v1/admin/users/:id/password-reset-email` to send an app reset link to a user inside their scope, with an application access link included in the email.
+- Admins also get `POST /api/v1/admin/organizations/:id/users/bulk` to create multiple users in one request, assign the default roles, generate a temporary password server-side, and email each login, temporary password, and application access link to the new account.
 - Admins also get `DELETE /api/v1/admin/users/:id` to permanently delete a user inside their scope, with protections against self-deletion and deleting the last required admin.
 
 ## Email and public URL configuration
 
-Backend variables used by the email reset flow:
+Backend variables used by the account email flow:
 
 - `SMTP_HOST`
 - `SMTP_PORT`
@@ -68,8 +68,8 @@ Backend variables used by the email reset flow:
 - `SMTP_PASSWORD`
 - `SMTP_FROM_EMAIL`
 - `SMTP_FROM_NAME`
-- `APP_PUBLIC_URL`
-- `ADMIN_PUBLIC_URL`
+- `APP_PUBLIC_URL`: public application URL, also used for the access link in provisioning and reset emails
+- `ADMIN_PUBLIC_URL`: public admin URL, used for admin reset links
 - `PASSWORD_RESET_TTL_MINUTES`
 
 ## Access token loading

@@ -90,6 +90,9 @@ func TestForgotPassword_NonEnumeratingForExistingAbsentAndInactiveUsers(t *testi
 	if fixture.mailer.sent[0].ResetURL[:24] != "https://app.demeter.test" {
 		t.Fatalf("expected app public url, got %q", fixture.mailer.sent[0].ResetURL)
 	}
+	if fixture.mailer.sent[0].ApplicationURL != "https://app.demeter.test/" {
+		t.Fatalf("expected normalized app public url, got %q", fixture.mailer.sent[0].ApplicationURL)
+	}
 
 	fixture.mailer.sent = nil
 	absentResp := performPasswordResetRequest(
@@ -144,6 +147,9 @@ func TestForgotPassword_NonEnumeratingForExistingAbsentAndInactiveUsers(t *testi
 	}
 	if fixture.mailer.sent[0].ResetURL[:26] != "https://admin.demeter.test" {
 		t.Fatalf("expected admin public url, got %q", fixture.mailer.sent[0].ResetURL)
+	}
+	if fixture.mailer.sent[0].ApplicationURL != "https://app.demeter.test/" {
+		t.Fatalf("expected normalized app public url in admin reset email, got %q", fixture.mailer.sent[0].ApplicationURL)
 	}
 }
 
@@ -406,6 +412,9 @@ func TestAdminSendUserPasswordResetEmail_EnforcesScopeAndSurfacesMailerErrors(t 
 	tokenValue := sentURL.Query().Get("token")
 	if tokenValue == "" {
 		t.Fatalf("expected token query parameter in reset url %q", fixture.mailer.sent[0].ResetURL)
+	}
+	if fixture.mailer.sent[0].ApplicationURL != "https://app.demeter.test/" {
+		t.Fatalf("expected normalized app public url in admin password reset email, got %q", fixture.mailer.sent[0].ApplicationURL)
 	}
 	record, err := fixture.store.GetPasswordResetTokenByHash(context.Background(), auth.HashPasswordResetToken(tokenValue))
 	if err != nil {

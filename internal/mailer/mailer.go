@@ -42,10 +42,11 @@ type Config struct {
 }
 
 type PasswordResetEmail struct {
-	ToEmail     string
-	ResetURL    string
-	ExpiresAt   time.Time
-	SessionType auth.SessionType
+	ToEmail        string
+	ResetURL       string
+	ApplicationURL string
+	ExpiresAt      time.Time
+	SessionType    auth.SessionType
 }
 
 type MailAttachment struct {
@@ -66,6 +67,7 @@ type UserProvisioningEmail struct {
 	ToEmail           string
 	Login             string
 	TemporaryPassword string
+	ApplicationURL    string
 }
 
 type SMTPMailer struct {
@@ -259,7 +261,8 @@ func (m *SMTPMailer) sendMessage(ctx context.Context, toEmail string, message []
 func (m *SMTPMailer) buildPasswordResetMessage(input PasswordResetEmail) ([]byte, error) {
 	to := strings.TrimSpace(input.ToEmail)
 	resetURL := strings.TrimSpace(input.ResetURL)
-	if to == "" || resetURL == "" {
+	applicationURL := strings.TrimSpace(input.ApplicationURL)
+	if to == "" || resetURL == "" || applicationURL == "" {
 		return nil, ErrUnavailable
 	}
 
@@ -367,7 +370,8 @@ func (m *SMTPMailer) buildUserProvisioningMessage(input UserProvisioningEmail) (
 	to := strings.TrimSpace(input.ToEmail)
 	login := strings.TrimSpace(input.Login)
 	temporaryPassword := strings.TrimSpace(input.TemporaryPassword)
-	if to == "" || login == "" || temporaryPassword == "" {
+	applicationURL := strings.TrimSpace(input.ApplicationURL)
+	if to == "" || login == "" || temporaryPassword == "" || applicationURL == "" {
 		return nil, ErrUnavailable
 	}
 
@@ -402,11 +406,14 @@ func buildPasswordResetBodies(input PasswordResetEmail) (string, string) {
 	if input.SessionType == auth.SessionTypeAdmin {
 		space = "administration"
 	}
+	applicationURL := strings.TrimSpace(input.ApplicationURL)
 
 	textBody := strings.Join([]string{
 		"Bonjour,",
 		"",
 		"Une demande de reinitialisation de mot de passe a ete recue pour votre " + space + " Demeter Speech.",
+		"",
+		"Accéder à l'application: " + applicationURL,
 		"",
 		"Utilisez ce lien pour choisir un nouveau mot de passe:",
 		input.ResetURL,
@@ -420,6 +427,7 @@ func buildPasswordResetBodies(input PasswordResetEmail) (string, string) {
 		"<html><body style=\"font-family:Arial,sans-serif;color:#1f2937;line-height:1.5\">",
 		"<p>Bonjour,</p>",
 		"<p>Une demande de reinitialisation de mot de passe a ete recue pour votre " + html.EscapeString(space) + " Demeter Speech.</p>",
+		"<p><a href=\"" + html.EscapeString(applicationURL) + "\">Accéder à l'application</a></p>",
 		"<p><a href=\"" + html.EscapeString(input.ResetURL) + "\">Choisir un nouveau mot de passe</a></p>",
 		"<p>Ce lien expire le " + html.EscapeString(expiresAt) + ".</p>",
 		"<p>Si vous n etes pas a l origine de cette demande, ignorez simplement cet email.</p>",
@@ -431,10 +439,13 @@ func buildPasswordResetBodies(input PasswordResetEmail) (string, string) {
 func buildUserProvisioningBodies(input UserProvisioningEmail) (string, string) {
 	login := strings.TrimSpace(input.Login)
 	temporaryPassword := strings.TrimSpace(input.TemporaryPassword)
+	applicationURL := strings.TrimSpace(input.ApplicationURL)
 	textBody := strings.Join([]string{
 		"Bonjour,",
 		"",
 		"Votre compte Demeter Speech vient d etre cree.",
+		"",
+		"Accéder à l'application: " + applicationURL,
 		"",
 		"Identifiant: " + login,
 		"Mot de passe temporaire: " + temporaryPassword,
@@ -446,6 +457,7 @@ func buildUserProvisioningBodies(input UserProvisioningEmail) (string, string) {
 		"<html><body style=\"font-family:Arial,sans-serif;color:#1f2937;line-height:1.5\">",
 		"<p>Bonjour,</p>",
 		"<p>Votre compte Demeter Speech vient d etre cree.</p>",
+		"<p><a href=\"" + html.EscapeString(applicationURL) + "\">Accéder à l'application</a></p>",
 		"<p><strong>Identifiant :</strong> " + html.EscapeString(login) + "<br>",
 		"<strong>Mot de passe temporaire :</strong> " + html.EscapeString(temporaryPassword) + "</p>",
 		"<p>Connectez-vous puis changez ce mot de passe des que possible.</p>",

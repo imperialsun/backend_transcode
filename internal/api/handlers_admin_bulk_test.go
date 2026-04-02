@@ -55,6 +55,11 @@ func TestCreateOrganizationUsersBulk_CreatesUsersAndSendsProvisioningEmails(t *t
 	if len(fixture.mailer.provisionedSent) != 2 {
 		t.Fatalf("expected 2 provisioning emails, got %d", len(fixture.mailer.provisionedSent))
 	}
+	for _, sent := range fixture.mailer.provisionedSent {
+		if sent.ApplicationURL != "https://app.demeter.test/" {
+			t.Fatalf("expected normalized app public url in provisioning email, got %q", sent.ApplicationURL)
+		}
+	}
 
 	for _, email := range []string{"bulk.one@example.com", "bulk.two@example.com"} {
 		createdUser, err := fixture.store.FindUserByEmail(ctx, email)
@@ -242,5 +247,28 @@ func TestCreateOrganizationUsersBulk_PreservesCreatedUsersWhenProvisioningEmailF
 	}
 	if createdUser == nil {
 		t.Fatal("expected user to remain in database after smtp failure")
+	}
+}
+
+func TestCreateOrganizationUsersBulk_RequiresApplicationPublicURL(t *testing.T) {
+	fixture := setupPasswordResetRoutesTest(t)
+	fixture.appCtx.Config.AppPublicURL = ""
+
+	resp := performJSONRequestWithHeaders(
+		t,
+		fixture.app,
+		http.MethodPost,
+		"/api/v1/admin/organizations/"+fixture.org.ID+"/users/bulk",
+		map[string]any{
+			"emails": []string{"app.url.fail@example.com"},
+		},
+		nil,
+		adminHeaders(t, fixture.adminUser, fixture.appCtx.Config.JWTSecret),
+	)
+	if resp.StatusCode != fiber.StatusServiceUnavailable {
+		t.Fatalf("expected 503 when app public url is unavailable, got %d", resp.StatusCode)
+	}
+	if len(fixture.mailer.provisionedSent) != 0 {
+		t.Fatalf("expected no provisioning email when app public url is unavailable, got %d", len(fixture.mailer.provisionedSent))
 	}
 }

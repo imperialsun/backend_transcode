@@ -54,13 +54,13 @@ Toutes les cookies de session sont:
   - met a jour le hash Argon2id du user,
   - revoque toutes ses refresh sessions,
   - invalide tous ses autres tokens de reset en attente.
-- L admin dispose aussi de `POST /api/v1/admin/users/:id/password-reset-email` pour envoyer un lien de reset app a un utilisateur de son scope.
-- L admin dispose aussi de `POST /api/v1/admin/organizations/:id/users/bulk` pour creer plusieurs users en une seule requete, leur attribuer les roles par defaut, generer un mot de passe temporaire cote serveur, et envoyer a chacun son login et son mot de passe par email.
+- L admin dispose aussi de `POST /api/v1/admin/users/:id/password-reset-email` pour envoyer un lien de reset app a un utilisateur de son scope, avec aussi un lien d acces a l application dans le mail.
+- L admin dispose aussi de `POST /api/v1/admin/organizations/:id/users/bulk` pour creer plusieurs users en une seule requete, leur attribuer les roles par defaut, generer un mot de passe temporaire cote serveur, et envoyer a chacun son login, son mot de passe temporaire, et un lien d acces a l application par email.
 - L admin dispose aussi de `DELETE /api/v1/admin/users/:id` pour supprimer definitivement un utilisateur de son scope, avec protections contre l auto-suppression et la suppression du dernier admin requis.
 
 ## Configuration email et liens publics
 
-Variables backend utilisees par le reset email:
+Variables backend utilisees par les mails de compte:
 
 - `SMTP_HOST`
 - `SMTP_PORT`
@@ -68,8 +68,8 @@ Variables backend utilisees par le reset email:
 - `SMTP_PASSWORD`
 - `SMTP_FROM_EMAIL`
 - `SMTP_FROM_NAME`
-- `APP_PUBLIC_URL`
-- `ADMIN_PUBLIC_URL`
+- `APP_PUBLIC_URL`: URL publique de l application, utilisee aussi pour le lien d acces dans les mails de provisioning et de reset
+- `ADMIN_PUBLIC_URL`: URL publique de l administration, utilisee pour les liens de reset admin
 - `PASSWORD_RESET_TTL_MINUTES`
 
 ## Chargement des access tokens
