@@ -25,7 +25,7 @@ const (
 	demeterAudioTranscriptionsUpstreamPath  = "/v1/audio/transcriptions"
 	demeterAudioTranscriptionsBackendPath   = "/audio/transcriptions/backend"
 	defaultDemeterAudioTranscriptionModelID = "voxtral-mini-latest"
-	demeterAudioTranscriptionMaxAttempts    = 5
+	demeterAudioTranscriptionMaxAttempts    = 10
 	demeterAudioTranscriptionBaseDelay      = 2 * time.Second
 )
 
