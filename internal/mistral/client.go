@@ -167,7 +167,23 @@ func (c *Client) DoGet(ctx context.Context, path string) (int, []byte, error) {
 
 func logUpstreamStep(ctx context.Context, route, step string, fields map[string]any) {
 	log.Print(observability.FormatStepLine("mistral", route, step, observability.TraceIDFromContext(ctx), observability.DefaultTraceID, observability.DefaultTraceID, "", fields))
-	backenderrors.RecordLog(ctx, "mistral", route, step, "", fields)
+	backenderrors.RecordLog(ctx, "mistral", route, step, performanceTaskForRoute(route, step), fields)
+}
+
+func performanceTaskForRoute(route, step string) string {
+	family := "mistral"
+	normalizedRoute := strings.TrimSpace(route)
+	normalizedStep := strings.TrimSpace(step)
+	if normalizedStep == "" {
+		normalizedStep = "unknown"
+	}
+	switch {
+	case strings.HasPrefix(normalizedRoute, "/v1/audio/transcriptions"):
+		family = "transcription"
+	case strings.HasPrefix(normalizedRoute, "/v1/chat/completions"):
+		family = "cr_generation"
+	}
+	return family + "_" + normalizedStep
 }
 
 func logUpstreamTransportError(ctx context.Context, method, route string, duration time.Duration, err error) {

@@ -146,7 +146,7 @@ func TestDoGet_PersistsPerformanceEvent(t *testing.T) {
 	if event == nil {
 		t.Fatal("expected upstream request to persist a performance event")
 	}
-	if event.Component != "mistral" || event.Task != "response_received" || event.Route != "/models" {
+	if event.Component != "mistral" || event.Task != "mistral_response_received" || event.Route != "/models" {
 		t.Fatalf("unexpected upstream performance event: %#v", event)
 	}
 	if event.Surface != "backend" || event.Status != "success" {
@@ -154,6 +154,106 @@ func TestDoGet_PersistsPerformanceEvent(t *testing.T) {
 	}
 	if event.DurationMS <= 0 {
 		t.Fatalf("expected upstream duration to be recorded, got %d", event.DurationMS)
+	}
+}
+
+func TestDoJSON_PersistsPerformanceEventWithFamilyTaskPrefix(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "mistral-json-performance.sqlite")
+	st, err := store.Open(context.Background(), dbPath)
+	if err != nil {
+		t.Fatalf("failed to open store: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = st.Close()
+	})
+
+	backendperformance.RegisterSink(st)
+	t.Cleanup(func() {
+		backendperformance.RegisterSink(nil)
+	})
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Fatalf("unexpected method: %s", r.Method)
+		}
+		if r.URL.Path != "/v1/chat/completions" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"id":"chatcmpl-1"}`))
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, "key", time.Second, time.Second)
+	ctx := observability.WithTraceID(context.Background(), "mistral-cr-trace")
+	status, body, err := client.DoJSON(ctx, http.MethodPost, "/v1/chat/completions", []byte(`{"model":"mistral"}`))
+	if err != nil {
+		t.Fatalf("DoJSON returned error: %v", err)
+	}
+	if status != http.StatusOK || string(body) != `{"id":"chatcmpl-1"}` {
+		t.Fatalf("unexpected DoJSON response: status=%d body=%q", status, string(body))
+	}
+
+	event := waitForMistralPerformanceEvent(t, st, "mistral-cr-trace")
+	if event == nil {
+		t.Fatal("expected chat completion request to persist a performance event")
+	}
+	if event.Task != "cr_generation_response_received" || event.Route != "/v1/chat/completions" {
+		t.Fatalf("unexpected chat completion performance event: %#v", event)
+	}
+	if event.Component != "mistral" || event.Status != "success" {
+		t.Fatalf("unexpected chat completion event surface/status: %#v", event)
+	}
+}
+
+func TestDoMultipart_PersistsPerformanceEventWithFamilyTaskPrefix(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "mistral-multipart-performance.sqlite")
+	st, err := store.Open(context.Background(), dbPath)
+	if err != nil {
+		t.Fatalf("failed to open store: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = st.Close()
+	})
+
+	backendperformance.RegisterSink(st)
+	t.Cleanup(func() {
+		backendperformance.RegisterSink(nil)
+	})
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Fatalf("unexpected method: %s", r.Method)
+		}
+		if r.URL.Path != "/v1/audio/transcriptions" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"text":"hello"}`))
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, "key", time.Second, time.Second)
+	ctx := observability.WithTraceID(context.Background(), "mistral-transcription-trace")
+	status, body, err := client.DoMultipart(ctx, "/v1/audio/transcriptions", []byte("--body--"), "multipart/form-data; boundary=test")
+	if err != nil {
+		t.Fatalf("DoMultipart returned error: %v", err)
+	}
+	if status != http.StatusOK || string(body) != `{"text":"hello"}` {
+		t.Fatalf("unexpected DoMultipart response: status=%d body=%q", status, string(body))
+	}
+
+	event := waitForMistralPerformanceEvent(t, st, "mistral-transcription-trace")
+	if event == nil {
+		t.Fatal("expected transcription request to persist a performance event")
+	}
+	if event.Task != "transcription_response_received" || event.Route != "/v1/audio/transcriptions" {
+		t.Fatalf("unexpected transcription performance event: %#v", event)
+	}
+	if event.Component != "mistral" || event.Status != "success" {
+		t.Fatalf("unexpected transcription event surface/status: %#v", event)
 	}
 }
 
