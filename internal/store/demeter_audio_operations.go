@@ -142,11 +142,78 @@ func (s *Store) UpdateDemeterAudioTranscriptionOperation(ctx context.Context, re
 
 	rows, _ := res.RowsAffected()
 	if rows == 0 {
+		stored, peekErr := s.peekDemeterAudioTranscriptionOperation(ctx, record.OperationID)
+		if peekErr != nil && !errors.Is(peekErr, sql.ErrNoRows) {
+			logStoreStep(ctx, "ownership_update_error", "demeter_audio_transcription_operation", map[string]any{
+				"operation_id":    record.OperationID,
+				"request_org_id":  record.OrganizationID,
+				"request_user_id": record.UserID,
+				"source":          "store_update",
+				"reason":          "peek_error",
+				"error":           peekErr,
+			})
+			return peekErr
+		}
+
+		reason := "ownership_mismatch"
+		if stored == nil {
+			reason = "record_not_found"
+		}
+		ownershipErr := newDemeterAudioTranscriptionOperationOwnershipError("store_update", reason, record.OperationID, record.OrganizationID, record.UserID, stored)
+		logStoreStep(ctx, "ownership_update_error", "demeter_audio_transcription_operation", ownershipErr.LogFields())
+		return ownershipErr
+	}
+
+	logStoreStep(ctx, "demeter_update_success", "demeter_audio_transcription_operation", map[string]any{
+		"operation_id": record.OperationID,
+		"status":       record.Status,
+		"stage":        record.Stage,
+		"chunk_index":  record.ChunkIndex,
+		"chunk_count":  record.ChunkCount,
+	})
+	return nil
+}
+
+func (s *Store) UpdateDemeterAudioTranscriptionOperationByID(ctx context.Context, record *DemeterAudioTranscriptionOperationRecord) error {
+	if record == nil {
+		return fmt.Errorf("record is required")
+	}
+	record.OperationID = strings.TrimSpace(record.OperationID)
+	record.Status = strings.TrimSpace(record.Status)
+	record.Stage = strings.TrimSpace(record.Stage)
+	record.UpdatedAt = record.UpdatedAt.UTC()
+	if record.OperationID == "" {
+		return fmt.Errorf("operation_id is required")
+	}
+
+	logStoreStep(ctx, "demeter_update_start", "demeter_audio_transcription_operation", map[string]any{
+		"operation_id": record.OperationID,
+		"status":       record.Status,
+		"stage":        record.Stage,
+		"chunk_index":  record.ChunkIndex,
+		"chunk_count":  record.ChunkCount,
+	})
+
+	res, err := s.DB.ExecContext(ctx, `
+		UPDATE demeter_audio_transcription_operations
+		SET status = ?, stage = ?, chunk_index = ?, chunk_count = ?, progress = ?, partial_text = ?, response_json = ?, last_error = ?, status_code = ?, updated_at = ?, finished_at = ?
+		WHERE operation_id = ?
+	`, record.Status, record.Stage, record.ChunkIndex, record.ChunkCount, record.Progress, textValue(record.PartialText), nullStringValue(record.ResponseJSON), nullStringValue(record.LastError), record.StatusCode, record.UpdatedAt, nullTimeValue(record.FinishedAt), record.OperationID)
+	if err != nil {
 		logStoreStep(ctx, "demeter_update_error", "demeter_audio_transcription_operation", map[string]any{
 			"operation_id": record.OperationID,
-			"error":        ErrDemeterAudioTranscriptionOperationOwnership,
+			"error":        err,
 		})
-		return ErrDemeterAudioTranscriptionOperationOwnership
+		return err
+	}
+
+	rows, _ := res.RowsAffected()
+	if rows == 0 {
+		logStoreStep(ctx, "demeter_update_error", "demeter_audio_transcription_operation", map[string]any{
+			"operation_id": record.OperationID,
+			"error":        sql.ErrNoRows,
+		})
+		return sql.ErrNoRows
 	}
 
 	logStoreStep(ctx, "demeter_update_success", "demeter_audio_transcription_operation", map[string]any{
@@ -195,11 +262,9 @@ func (s *Store) GetDemeterAudioTranscriptionOperation(ctx context.Context, opera
 	}
 
 	if record.OrganizationID != organizationID || record.UserID != userID {
-		logStoreStep(ctx, "demeter_get_error", "demeter_audio_transcription_operation", map[string]any{
-			"operation_id": operationID,
-			"error":        ErrDemeterAudioTranscriptionOperationOwnership,
-		})
-		return nil, ErrDemeterAudioTranscriptionOperationOwnership
+		ownershipErr := newDemeterAudioTranscriptionOperationOwnershipError("store_get", "ownership_mismatch", operationID, organizationID, userID, record)
+		logStoreStep(ctx, "ownership_mismatch_error", "demeter_audio_transcription_operation", ownershipErr.LogFields())
+		return nil, ownershipErr
 	}
 
 	logStoreStep(ctx, "demeter_get_success", "demeter_audio_transcription_operation", map[string]any{
@@ -229,6 +294,10 @@ func (s *Store) CancelDemeterAudioTranscriptionOperation(ctx context.Context, op
 
 	existing, err := s.GetDemeterAudioTranscriptionOperation(ctx, record.OperationID, record.OrganizationID, record.UserID)
 	if err != nil {
+		var ownershipErr *DemeterAudioTranscriptionOperationOwnershipError
+		if errors.As(err, &ownershipErr) {
+			logStoreStep(ctx, "ownership_cancel_error", "demeter_audio_transcription_operation", ownershipErr.WithSource("store_cancel").LogFields())
+		}
 		return nil, err
 	}
 	if existing.Status == DemeterAudioTranscriptionOperationStatusCompleted || existing.Status == DemeterAudioTranscriptionOperationStatusFailed || existing.Status == DemeterAudioTranscriptionOperationStatusCancelled {
@@ -244,6 +313,10 @@ func (s *Store) CancelDemeterAudioTranscriptionOperation(ctx context.Context, op
 	record.StatusCode = http.StatusRequestTimeout
 
 	if err := s.UpdateDemeterAudioTranscriptionOperation(ctx, record); err != nil {
+		var ownershipErr *DemeterAudioTranscriptionOperationOwnershipError
+		if errors.As(err, &ownershipErr) {
+			logStoreStep(ctx, "ownership_cancel_error", "demeter_audio_transcription_operation", ownershipErr.WithSource("store_cancel").LogFields())
+		}
 		return nil, err
 	}
 

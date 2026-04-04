@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"math"
 	"mime/multipart"
 	"os"
@@ -20,9 +19,10 @@ import (
 )
 
 const (
-	demeterBackendDefaultChunkDurationSec = 900
+	demeterBackendDefaultChunkDurationSec = 25 * 60
 	demeterBackendDefaultChunkOverlapSec  = 0
-	demeterBackendChunkMinDurationSec     = 5
+	demeterBackendChunkMinDurationSec     = 10 * 60
+	demeterBackendChunkMaxDurationSec     = 28 * 60
 	demeterAudioPipelineSampleRate        = 16000
 	demeterAudioPipelineChannels          = 1
 	demeterAudioPipelineSampleFormat      = "pcm_s16le"
@@ -121,13 +121,27 @@ type demeterBackendChunkMetadata struct {
 	Text             string  `json:"text,omitempty"`
 }
 
+type demeterBackendTranscriptionChunk struct {
+	ChunkID          string                               `json:"chunkId"`
+	Index            int                                  `json:"index"`
+	StartSec         float64                              `json:"startSec"`
+	EndSec           float64                              `json:"endSec"`
+	DurationSec      float64                              `json:"durationSec"`
+	FileName         string                               `json:"fileName,omitempty"`
+	MimeType         string                               `json:"mimeType,omitempty"`
+	SourceFormat     string                               `json:"sourceFormat,omitempty"`
+	NormalizedFormat string                               `json:"normalizedFormat,omitempty"`
+	SegmentCount     int                                  `json:"segmentCount,omitempty"`
+	Text             string                               `json:"text,omitempty"`
+	Segments         []demeterBackendTranscriptionSegment `json:"segments,omitempty"`
+}
+
 type demeterBackendTranscriptionResponse struct {
-	Text     string                               `json:"text,omitempty"`
-	Language string                               `json:"language,omitempty"`
-	Duration float64                              `json:"duration,omitempty"`
-	Segments []demeterBackendTranscriptionSegment `json:"segments,omitempty"`
-	Chunks   []demeterBackendChunkMetadata        `json:"chunks,omitempty"`
-	Words    []demeterMistralWord                 `json:"words,omitempty"`
+	Text     string                             `json:"text,omitempty"`
+	Language string                             `json:"language,omitempty"`
+	Duration float64                            `json:"duration,omitempty"`
+	Chunks   []demeterBackendTranscriptionChunk `json:"chunks,omitempty"`
+	Words    []demeterMistralWord               `json:"words,omitempty"`
 }
 
 func (a *App) demeterAudioTranscriptionsBackendDirect(
@@ -141,9 +155,6 @@ func (a *App) demeterAudioTranscriptionsBackendDirect(
 	requestBytes int,
 	contentType string,
 ) error {
-	logCtx := newDemeterAudioLogContextFromFiber(c)
-	uploadCleanup := false
-	var upload *demeterBackendAudioUpload
 	if !a.MistralClient.IsConfigured() {
 		logDemeterRelayIssue(c, route, fiber.StatusServiceUnavailable, "mistral client is not configured")
 		logDemeterAudioStage(c, route, seq, "sequence_end", demeterAudioRequestBaseFields(routeMode, audioDurationSec, audioDurationProvided, map[string]any{
@@ -166,95 +177,26 @@ func (a *App) demeterAudioTranscriptionsBackendDirect(
 		return c.Status(fiber.StatusUnauthorized).JSON(ErrorResponse{Error: "unauthorized", Code: "unauthorized", TraceID: requestTraceID(c), Path: route})
 	}
 
-	var err error
-	upload, err = a.loadDemeterBackendAudioUpload(c)
-	if err != nil {
-		var validationErr *demeterAudioValidationError
-		if errors.As(err, &validationErr) {
-			return a.demeterAudioValidationFailure(c, route, seq, startedAt, requestBytes, contentType, routeMode, audioDurationSec, audioDurationProvided, validationErr)
-		}
-		logDemeterRelayIssue(c, route, fiber.StatusBadRequest, err.Error())
+	if !isDemeterAudioSliceTransport(c) {
+		message := "X-Demeter-Transport: slice-v1 is required for /audio/transcriptions/backend"
+		logDemeterRelayIssue(c, route, fiber.StatusBadRequest, message)
 		logDemeterAudioStage(c, route, seq, "request_failed", demeterAudioRequestBaseFields(routeMode, audioDurationSec, audioDurationProvided, map[string]any{
-			"result":            "invalid_multipart",
+			"result":            "invalid_transport",
 			"status_code":       fiber.StatusBadRequest,
 			"total_duration_ms": time.Since(startedAt).Milliseconds(),
 			"request_bytes":     requestBytes,
 			"content_type":      contentType,
-			"message":           err.Error(),
+			"message":           message,
 		}))
 		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-			Error:   "invalid multipart form",
-			Code:    "invalid_multipart",
+			Error:   message,
+			Code:    "invalid_transport",
 			TraceID: requestTraceID(c),
 			Path:    route,
 		})
 	}
-	uploadCleanup = true
-	defer func() {
-		if uploadCleanup && upload != nil && upload.cleanup != nil {
-			upload.cleanup()
-		}
-	}()
 
-	logDemeterAudioStage(c, route, seq, "upload_ready", demeterAudioRequestBaseFields(routeMode, audioDurationSec, audioDurationProvided, map[string]any{
-		"file_name":          upload.FileName,
-		"file_size_bytes":    upload.SizeBytes,
-		"mime_type":          upload.MimeType,
-		"source_format":      upload.SourceFormat,
-		"probed_format":      upload.ProbedFormat,
-		"audio_duration_sec": upload.DurationSec,
-		"model":              upload.Model,
-		"diarize":            upload.Diarize,
-	}))
-
-	settings, err := a.loadDemeterBackendAudioChunkSettings(requestContext(c), claims.UserID)
-	if err != nil {
-		logDemeterAudioStage(c, route, seq, "request_failed", demeterAudioRequestBaseFields(routeMode, audioDurationSec, audioDurationProvided, map[string]any{
-			"result":            "settings_load_error",
-			"status_code":       fiber.StatusInternalServerError,
-			"total_duration_ms": time.Since(startedAt).Milliseconds(),
-			"request_bytes":     requestBytes,
-			"message":           err.Error(),
-		}))
-		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{Error: "failed to load user settings"})
-	}
-
-	chunking := resolveDemeterBackendChunkingConfig(settings, upload.Model)
-	chunkPlans := buildDemeterBackendChunkPlans(upload.DurationSec, chunking.EffectiveDurationSec, chunking.EffectiveOverlapSec)
-	if len(chunkPlans) == 0 {
-		validationErr := &demeterAudioValidationError{
-			code:    "invalid_audio_file",
-			message: "fichier audio illisible",
-			file: demeterAudioFileInfo{
-				FileName:  upload.FileName,
-				MimeType:  upload.MimeType,
-				SizeBytes: upload.SizeBytes,
-			},
-		}
-		return a.demeterAudioValidationFailure(c, route, seq, startedAt, requestBytes, contentType, routeMode, audioDurationSec, audioDurationProvided, validationErr)
-	}
-
-	logDemeterAudioStage(c, route, seq, "chunk_plan_ready", demeterAudioRequestBaseFields(routeMode, audioDurationSec, audioDurationProvided, map[string]any{
-		"file_name":              upload.FileName,
-		"file_size_bytes":        upload.SizeBytes,
-		"mime_type":              upload.MimeType,
-		"source_format":          upload.SourceFormat,
-		"probed_format":          upload.ProbedFormat,
-		"duration_sec":           upload.DurationSec,
-		"chunk_count":            len(chunkPlans),
-		"requested_duration_sec": chunking.RequestedDurationSec,
-		"effective_duration_sec": chunking.EffectiveDurationSec,
-		"effective_overlap_sec":  chunking.EffectiveOverlapSec,
-		"model_max_duration_sec": chunking.ModelMaxDurationSec,
-		"duration_was_capped":    chunking.DurationWasCapped,
-		"normalized_format":      "audio/wav",
-	}))
-
-	if err := a.startDemeterAudioTranscriptionOperation(c, logCtx, route, seq, routeMode, audioDurationSec, audioDurationProvided, requestBytes, upload, chunkPlans, startedAt); err != nil {
-		return err
-	}
-	uploadCleanup = false
-	return nil
+	return a.demeterAudioTranscriptionsTransportSlice(c, route, seq, startedAt, routeMode, audioDurationSec, audioDurationProvided, requestBytes, contentType)
 }
 
 func (a *App) demeterBackendTranscribeChunks(
@@ -272,8 +214,7 @@ func (a *App) demeterBackendTranscribeChunks(
 	finalResponse := &demeterBackendTranscriptionResponse{}
 	nextIndex := 0
 	var totalUpstreamDurationMs int64
-	flatSegments := make([]demeterBackendTranscriptionSegment, 0)
-	chunkMetadata := make([]demeterBackendChunkMetadata, 0, len(chunkPlans))
+	chunkResponses := make([]demeterBackendTranscriptionChunk, 0, len(chunkPlans))
 	var combinedTextParts []string
 	completedChunks := 0
 
@@ -281,7 +222,7 @@ func (a *App) demeterBackendTranscribeChunks(
 		if plan.Duration <= 0 {
 			continue
 		}
-		if len(flatSegments) > 0 || len(chunkMetadata) > 0 {
+		if len(chunkResponses) > 0 {
 			if err := sleepContext(ctx, demeterAudioTranscriptionBaseDelay); err != nil {
 				return nil, fiber.StatusBadGateway, nil, totalUpstreamDurationMs, err
 			}
@@ -293,22 +234,9 @@ func (a *App) demeterBackendTranscribeChunks(
 			return nil, chunkResult.statusCode, chunkResult.responseBody, totalUpstreamDurationMs, err
 		}
 
-		parsed, chunkText := flattenDemeterChunkResponse(chunkResult.response, plan, nextIndex)
-		nextIndex += len(parsed)
-		flatSegments = append(flatSegments, parsed...)
-		chunkMetadata = append(chunkMetadata, demeterBackendChunkMetadata{
-			ChunkID:          plan.ChunkID,
-			Index:            plan.Index,
-			StartSec:         plan.StartSec,
-			EndSec:           plan.EndSec,
-			DurationSec:      plan.Duration,
-			FileName:         plan.FileName,
-			MimeType:         plan.MimeType,
-			SourceFormat:     upload.SourceFormat,
-			NormalizedFormat: "audio/wav",
-			SegmentCount:     len(parsed),
-			Text:             chunkText,
-		})
+		chunkResponse, chunkText := buildDemeterBackendTranscriptionChunk(chunkResult.response, plan, upload, nextIndex)
+		nextIndex += len(chunkResponse.Segments)
+		chunkResponses = append(chunkResponses, chunkResponse)
 		if chunkText != "" {
 			combinedTextParts = append(combinedTextParts, chunkText)
 		}
@@ -316,8 +244,7 @@ func (a *App) demeterBackendTranscribeChunks(
 		finalResponse.Text = strings.TrimSpace(strings.Join(combinedTextParts, "\n"))
 		finalResponse.Duration = upload.DurationSec
 		finalResponse.Language = ""
-		finalResponse.Segments = flatSegments
-		finalResponse.Chunks = chunkMetadata
+		finalResponse.Chunks = chunkResponses
 		if onChunkComplete != nil {
 			snapshot := *finalResponse
 			onChunkComplete(completedChunks, len(chunkPlans), &snapshot)
@@ -327,8 +254,7 @@ func (a *App) demeterBackendTranscribeChunks(
 	finalResponse.Text = strings.TrimSpace(strings.Join(combinedTextParts, "\n"))
 	finalResponse.Duration = upload.DurationSec
 	finalResponse.Language = ""
-	finalResponse.Segments = flatSegments
-	finalResponse.Chunks = chunkMetadata
+	finalResponse.Chunks = chunkResponses
 	return finalResponse, fiber.StatusOK, nil, totalUpstreamDurationMs, nil
 }
 
@@ -520,7 +446,12 @@ func buildDemeterAudioMultipart(fileBytes []byte, fileName, model string, diariz
 	return buffer.Bytes(), writer.FormDataContentType(), nil
 }
 
-func flattenDemeterChunkResponse(resp demeterMistralTranscriptionResponse, plan demeterBackendChunkPlan, startIndex int) ([]demeterBackendTranscriptionSegment, string) {
+func buildDemeterBackendTranscriptionChunk(
+	resp demeterMistralTranscriptionResponse,
+	plan demeterBackendChunkPlan,
+	upload *demeterBackendAudioUpload,
+	startIndex int,
+) (demeterBackendTranscriptionChunk, string) {
 	rawSegments := resp.Segments
 	if len(rawSegments) == 0 {
 		rawSegments = resp.Chunks
@@ -582,7 +513,25 @@ func flattenDemeterChunkResponse(resp demeterMistralTranscriptionResponse, plan 
 		chunkText = strings.TrimSpace(strings.Join(textParts, "\n"))
 	}
 
-	return segments, chunkText
+	sourceFormat := ""
+	if upload != nil {
+		sourceFormat = strings.TrimSpace(upload.SourceFormat)
+	}
+
+	return demeterBackendTranscriptionChunk{
+		ChunkID:          plan.ChunkID,
+		Index:            plan.Index,
+		StartSec:         plan.StartSec,
+		EndSec:           plan.EndSec,
+		DurationSec:      plan.Duration,
+		FileName:         plan.FileName,
+		MimeType:         plan.MimeType,
+		SourceFormat:     sourceFormat,
+		NormalizedFormat: "audio/wav",
+		SegmentCount:     len(segments),
+		Text:             chunkText,
+		Segments:         segments,
+	}, chunkText
 }
 
 func offsetDemeterWords(words []demeterMistralWord, offsetSec float64) []demeterMistralWord {
@@ -609,130 +558,24 @@ func offsetDemeterWords(words []demeterMistralWord, offsetSec float64) []demeter
 	return out
 }
 
-func (a *App) loadDemeterBackendAudioUpload(c *fiber.Ctx) (*demeterBackendAudioUpload, error) {
-	form, err := c.MultipartForm()
-	if err != nil {
-		return nil, fmt.Errorf("failed to read multipart form: %w", err)
-	}
-	fileHeaders := form.File["file"]
-	if len(fileHeaders) == 0 {
-		return nil, &demeterAudioValidationError{
-			code:    "invalid_multipart",
-			message: "multipart file part is missing",
-			file:    demeterAudioFileInfo{},
-		}
-	}
-
-	fileHeader := fileHeaders[0]
-	fileName := normalizeDemeterAudioFileName(fileHeader.Filename)
-	mimeType := normalizeDemeterAudioMimeType(fileHeader.Header.Get("Content-Type"), fileHeader.Filename)
-	sizeBytes := fileHeader.Size
-	if sizeBytes <= 0 {
-		return nil, &demeterAudioValidationError{
-			code:    "empty_audio_file",
-			message: "fichier audio vide",
-			file: demeterAudioFileInfo{
-				FileName:  fileName,
-				MimeType:  mimeType,
-				SizeBytes: sizeBytes,
-			},
-		}
-	}
-
-	tempDir, err := os.MkdirTemp("", "demeter-audio-*")
-	if err != nil {
-		return nil, fmt.Errorf("failed to create audio temp dir: %w", err)
-	}
-
-	kind := resolveDemeterAudioKind(fileName, mimeType)
-	sourceFormat := kind
-	if sourceFormat == "" {
-		sourceFormat = "unknown"
-	}
-	sourceExt := demeterAudioChunkFileExt
-	switch kind {
-	case "mp3":
-		sourceExt = ".mp3"
-	case "mp4":
-		sourceExt = ".m4a"
-	case "aac":
-		sourceExt = ".aac"
-	case "ogg":
-		sourceExt = ".ogg"
-	case "webm":
-		sourceExt = ".webm"
-	case "wav":
-		sourceExt = ".wav"
-	}
-	sourcePath := filepath.Join(tempDir, "source"+sourceExt)
-
-	input, err := fileHeader.Open()
-	if err != nil {
-		_ = os.RemoveAll(tempDir)
-		return nil, fmt.Errorf("failed to open uploaded audio: %w", err)
-	}
-	defer func() {
-		_ = input.Close()
-	}()
-
-	sourceFile, err := os.Create(sourcePath)
-	if err != nil {
-		_ = os.RemoveAll(tempDir)
-		return nil, fmt.Errorf("failed to create uploaded audio temp file: %w", err)
-	}
-
-	sizeCopied, copyErr := io.Copy(sourceFile, input)
-	closeErr := sourceFile.Close()
-	if copyErr != nil {
-		_ = os.RemoveAll(tempDir)
-		return nil, fmt.Errorf("failed to persist uploaded audio: %w", copyErr)
-	}
-	if closeErr != nil {
-		_ = os.RemoveAll(tempDir)
-		return nil, fmt.Errorf("failed to close uploaded audio temp file: %w", closeErr)
-	}
-	if sizeCopied <= 0 {
-		_ = os.RemoveAll(tempDir)
-		return nil, &demeterAudioValidationError{
-			code:    "empty_audio_file",
-			message: "fichier audio vide",
-			file: demeterAudioFileInfo{
-				FileName:  fileName,
-				MimeType:  mimeType,
-				SizeBytes: sizeCopied,
-			},
-		}
-	}
-
-	model := defaultDemeterAudioTranscriptionModelID
-	if values := form.Value["model"]; len(values) > 0 && strings.TrimSpace(values[0]) != "" {
-		model = strings.TrimSpace(values[0])
-	}
-	diarize := false
-	if values := form.Value["diarize"]; len(values) > 0 {
-		if parsed, err := strconv.ParseBool(strings.TrimSpace(values[0])); err == nil {
-			diarize = parsed
-		}
-	}
-	if !diarize {
-		if values := form.Value["timestamp_granularities"]; len(values) > 0 {
-			for _, value := range values {
-				if strings.TrimSpace(value) != "" {
-					diarize = true
-					break
-				}
-			}
-		}
-	}
-
-	probe, err := probeDemeterAudioFile(c, sourcePath)
+func buildDemeterBackendAudioUploadFromSource(
+	ctx context.Context,
+	tempDir string,
+	sourcePath string,
+	fileName string,
+	mimeType string,
+	model string,
+	diarize bool,
+	sourceFormat string,
+) (*demeterBackendAudioUpload, error) {
+	probe, err := probeDemeterAudioFile(ctx, sourcePath)
 	if err != nil {
 		var validationErr *demeterAudioValidationError
 		if errors.As(err, &validationErr) {
 			validationErr.file = demeterAudioFileInfo{
 				FileName:  fileName,
 				MimeType:  mimeType,
-				SizeBytes: sizeCopied,
+				SizeBytes: fileSizeBytes(sourcePath),
 			}
 			_ = os.RemoveAll(tempDir)
 			return nil, validationErr
@@ -742,19 +585,19 @@ func (a *App) loadDemeterBackendAudioUpload(c *fiber.Ctx) (*demeterBackendAudioU
 	}
 
 	return &demeterBackendAudioUpload{
-		FileName:     fileName,
-		MimeType:     mimeType,
-		SizeBytes:    sizeCopied,
-		Model:        model,
+		FileName:     cloneDemeterRequestString(fileName),
+		MimeType:     cloneDemeterRequestString(mimeType),
+		SizeBytes:    fileSizeBytes(sourcePath),
+		Model:        cloneDemeterRequestString(model),
 		Diarize:      diarize,
 		SourcePath:   sourcePath,
 		SourceDir:    tempDir,
-		SourceFormat: sourceFormat,
+		SourceFormat: cloneDemeterRequestString(sourceFormat),
 		ProbedFormat: func() string {
 			if strings.TrimSpace(probe.FormatName) == "" {
 				return "unknown"
 			}
-			return strings.TrimSpace(probe.FormatName)
+			return strings.Clone(strings.TrimSpace(probe.FormatName))
 		}(),
 		DurationSec:   probe.DurationSec,
 		ChunkSettings: demeterBackendChunkingConfig{},
@@ -762,6 +605,14 @@ func (a *App) loadDemeterBackendAudioUpload(c *fiber.Ctx) (*demeterBackendAudioU
 			_ = os.RemoveAll(tempDir)
 		},
 	}, nil
+}
+
+func fileSizeBytes(path string) int64 {
+	info, err := os.Stat(path)
+	if err != nil {
+		return 0
+	}
+	return info.Size()
 }
 
 type demeterAudioProbeResult struct {
@@ -772,7 +623,7 @@ type demeterAudioProbeResult struct {
 	Channels    int
 }
 
-func probeDemeterAudioFile(c *fiber.Ctx, inputPath string) (*demeterAudioProbeResult, error) {
+func probeDemeterAudioFile(ctx context.Context, inputPath string) (*demeterAudioProbeResult, error) {
 	ffprobePath, err := exec.LookPath(demeterBackendFfprobeBinary)
 	if err != nil {
 		return nil, &demeterAudioValidationError{
@@ -788,7 +639,7 @@ func probeDemeterAudioFile(c *fiber.Ctx, inputPath string) (*demeterAudioProbeRe
 		"-of", "json",
 		inputPath,
 	}
-	cmd := exec.CommandContext(requestContext(c), ffprobePath, args...)
+	cmd := exec.CommandContext(ctx, ffprobePath, args...)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	stdout, err := cmd.Output()
@@ -885,6 +736,9 @@ func resolveDemeterBackendChunkingConfig(settings demeterBackendAudioChunkSettin
 	if requestedDuration < demeterBackendChunkMinDurationSec {
 		requestedDuration = demeterBackendChunkMinDurationSec
 	}
+	if requestedDuration > demeterBackendChunkMaxDurationSec {
+		requestedDuration = demeterBackendChunkMaxDurationSec
+	}
 	effectiveDuration := requestedDuration
 	if effectiveDuration > modelMax {
 		effectiveDuration = modelMax
@@ -909,12 +763,12 @@ func resolveDemeterBackendChunkingConfig(settings demeterBackendAudioChunkSettin
 func resolveDemeterBackendModelMaxDurationSec(model string) int {
 	normalized := strings.ToLower(strings.TrimSpace(model))
 	if normalized == "" {
-		return demeterBackendDefaultChunkDurationSec
+		return demeterBackendChunkMaxDurationSec
 	}
 	if normalized == "voxtral-mini-latest" || strings.HasPrefix(normalized, "voxtral-mini-") {
-		return demeterBackendDefaultChunkDurationSec
+		return demeterBackendChunkMaxDurationSec
 	}
-	return 30
+	return demeterBackendChunkMaxDurationSec
 }
 
 func (a *App) loadDemeterBackendAudioChunkSettings(ctx context.Context, userID string) (demeterBackendAudioChunkSettings, error) {
@@ -940,17 +794,26 @@ func (a *App) loadDemeterBackendAudioChunkSettings(ctx context.Context, userID s
 		return settings, nil
 	}
 
-	if value, ok := payload["cloudMistralChunkDurationSec"]; ok {
-		if parsed, ok := readDemeterBackendIntSetting(value); ok {
-			settings.ChunkDurationSec = parsed
-		}
+	if parsed, ok := readDemeterBackendIntSettingFromKeys(payload, "cloudDemeterChunkDurationSec", "cloudMistralChunkDurationSec"); ok {
+		settings.ChunkDurationSec = parsed
 	}
-	if value, ok := payload["cloudMistralOverlapSec"]; ok {
-		if parsed, ok := readDemeterBackendIntSetting(value); ok {
-			settings.OverlapSec = parsed
-		}
+	if parsed, ok := readDemeterBackendIntSettingFromKeys(payload, "cloudDemeterOverlapSec", "cloudMistralOverlapSec"); ok {
+		settings.OverlapSec = parsed
 	}
 	return settings, nil
+}
+
+func readDemeterBackendIntSettingFromKeys(payload map[string]any, keys ...string) (int, bool) {
+	for _, key := range keys {
+		value, ok := payload[key]
+		if !ok {
+			continue
+		}
+		if parsed, ok := readDemeterBackendIntSetting(value); ok {
+			return parsed, true
+		}
+	}
+	return 0, false
 }
 
 func readDemeterBackendIntSetting(value any) (int, bool) {
@@ -986,8 +849,16 @@ func readDemeterBackendIntSetting(value any) (int, bool) {
 }
 
 func buildDemeterBackendChunkPlans(durationSec float64, chunkDurationSec, overlapSec int) []demeterBackendChunkPlan {
+	return buildDemeterBackendChunkPlansWithPrefix(durationSec, chunkDurationSec, overlapSec, "demeter-backend")
+}
+
+func buildDemeterBackendChunkPlansWithPrefix(durationSec float64, chunkDurationSec, overlapSec int, chunkIDPrefix string) []demeterBackendChunkPlan {
 	if !(durationSec > 0) {
 		return nil
+	}
+	prefix := strings.TrimSpace(chunkIDPrefix)
+	if prefix == "" {
+		prefix = "demeter-backend"
 	}
 	segmentDuration := math.Max(1, float64(chunkDurationSec))
 	step := math.Max(1, segmentDuration-float64(overlapSec))
@@ -1003,7 +874,7 @@ func buildDemeterBackendChunkPlans(durationSec float64, chunkDurationSec, overla
 			StartSec: start,
 			EndSec:   end,
 			Duration: end - start,
-			ChunkID:  fmt.Sprintf("demeter-backend-%03d", index+1),
+			ChunkID:  fmt.Sprintf("%s-%03d", prefix, index+1),
 			FileName: fmt.Sprintf("chunk_%03d%s", index+1, demeterAudioChunkFileExt),
 			MimeType: "audio/wav",
 		})

@@ -23,7 +23,6 @@ const (
 	demeterModelsUpstreamPath               = "/v1/models"
 	demeterChatCompletionsUpstreamPath      = "/v1/chat/completions"
 	demeterAudioTranscriptionsUpstreamPath  = "/v1/audio/transcriptions"
-	demeterAudioTranscriptionsBackendPath   = "/audio/transcriptions/backend"
 	defaultDemeterAudioTranscriptionModelID = "voxtral-mini-latest"
 	demeterAudioTranscriptionMaxAttempts    = 10
 	demeterAudioTranscriptionBaseDelay      = 2 * time.Second
@@ -55,8 +54,8 @@ func (a *App) RegisterDemeterRoutes(router fiber.Router) {
 	group.Get("/models", RequireAnyPermission("provider.cloud.demeter_sante", "provider.llm.demeter_sante"), a.demeterModels)
 	group.Post("/audio/transcriptions", RequirePermissions("feature.cloudupload", "provider.cloud.demeter_sante"), a.demeterAudioTranscriptions)
 	group.Post("/audio/transcriptions/backend", RequirePermissions("feature.cloudupload", "provider.cloud.demeter_sante"), a.demeterAudioTranscriptions)
-	group.Get("/audio/transcriptions/backend/operations/:operationId", RequirePermissions("feature.cloudupload", "provider.cloud.demeter_sante"), a.getDemeterAudioTranscriptionOperationStatus)
-	group.Delete("/audio/transcriptions/backend/operations/:operationId", RequirePermissions("feature.cloudupload", "provider.cloud.demeter_sante"), a.cancelDemeterAudioTranscriptionOperation)
+	group.Get("/audio/transcriptions/operations/:operationId", RequirePermissions("feature.cloudupload", "provider.cloud.demeter_sante"), a.getDemeterAudioTranscriptionOperationStatus)
+	group.Delete("/audio/transcriptions/operations/:operationId", RequirePermissions("feature.cloudupload", "provider.cloud.demeter_sante"), a.cancelDemeterAudioTranscriptionOperation)
 	group.Post("/chat/completions", RequirePermissions("feature.llmapi", "provider.llm.demeter_sante"), a.demeterChatCompletions)
 }
 
@@ -158,6 +157,10 @@ func (a *App) demeterAudioTranscriptions(c *fiber.Ctx) error {
 			"content_type":      contentType,
 		}))
 		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{Error: "multipart/form-data is required"})
+	}
+
+	if isDemeterAudioSliceTransport(c) {
+		return a.demeterAudioTranscriptionsTransportSlice(c, route, seq, startedAt, routeMode, audioDurationSec, audioDurationProvided, requestBytes, contentType)
 	}
 
 	if routeMode == "backend_direct" {

@@ -77,6 +77,19 @@ func logDemeterUpstreamStatusCtx(logCtx demeterAudioLogContext, route string, st
 	})
 }
 
+func logDemeterOwnershipStageCtx(logCtx demeterAudioLogContext, route string, seq uint64, step string, fields map[string]any) {
+	if fields == nil {
+		fields = map[string]any{}
+	}
+	if _, ok := fields["request_user_id"]; !ok {
+		fields["request_user_id"] = logCtx.userID
+	}
+	if _, ok := fields["request_org_id"]; !ok {
+		fields["request_org_id"] = logCtx.orgID
+	}
+	logDemeterAudioStageCtx(logCtx, route, seq, step, fields)
+}
+
 func normalizeDemeterLogID(value string) string {
 	value = strings.TrimSpace(value)
 	if value == "" {

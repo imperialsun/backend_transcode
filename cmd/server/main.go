@@ -43,7 +43,7 @@ func buildApp(cfg config.Config, st *store.Store, mistralClient *mistral.Client,
 	app.Use(cors.New(cors.Config{
 		AllowOrigins:     joinOrigins(combineOrigins(cfg.AppCORSOrigins, cfg.AdminCORSOrigins)),
 		AllowCredentials: true,
-		AllowHeaders:     "Origin, Content-Type, Accept, Authorization, X-Admin-CSRF, X-Cloud-Audio-Duration-Sec",
+		AllowHeaders:     "Origin, Content-Type, Accept, Authorization, X-Admin-CSRF, X-Cloud-Audio-Duration-Sec, X-Demeter-Transport, X-Demeter-Upload-Id, X-Demeter-Upload-Index, X-Demeter-Upload-Count, X-Demeter-Upload-Final",
 		ExposeHeaders:    "X-Trace-Id",
 		AllowMethods:     "GET,POST,PUT,PATCH,DELETE,OPTIONS",
 	}))

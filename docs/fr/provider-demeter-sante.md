@@ -9,7 +9,7 @@ Le backend expose un provider nomme `Demeter Sante`, mais le transport reel pass
 - `MISTRAL_API_KEY` doit etre renseigne.
 - `MISTRAL_API_BASE_URL` pointe par defaut vers `https://api.mistral.ai`.
 - `readyz` retourne `503` tant que le client Mistral n est pas configure.
-- L image runtime backend doit fournir `ffmpeg` et `ffprobe` pour `/audio/transcriptions/backend`, qui decoupe les longs fichiers cote serveur avant l appel a Mistral.
+- L image runtime backend doit fournir `ffmpeg` et `ffprobe` pour `/audio/transcriptions/backend`, qui accepte un transport `slice-v1` en morceaux de 5 Mo, reconstitue l audio cote serveur, puis decoupe les longs fichiers avant l appel a Mistral.
 
 ## Endpoints relay
 
@@ -24,7 +24,7 @@ Le backend expose un provider nomme `Demeter Sante`, mais le transport reel pass
 
 - Le backend ne reinterprette pas les payloads JSON.
 - Pour l audio, il exige `multipart/form-data` puis relaie le corps tel quel.
-- La route `/audio/transcriptions/backend` est destinee aux fichiers longs: le frontend lui envoie le fichier brut sans preprocessing local.
+- La route `/audio/transcriptions/backend` est reservee au transport par slices: le frontend envoie des morceaux de 5 Mo avec `X-Demeter-Transport: slice-v1`, et le backend reconstitue le fichier source avant le traitement.
 - Le backend preserve le format audio transmis par le client et ne reencode pas le fichier.
 - Les formats courants acceptes incluent `wav`, `mp3`, `m4a/mp4`, `aac`, `ogg/opus` et `webm` tant que le fichier n est pas vide et reste decodable par l upstream.
 - Le status code et le body upstream sont renvoyes tels quels au client.

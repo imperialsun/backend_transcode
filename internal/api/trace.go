@@ -28,7 +28,7 @@ func ensureRequestTraceID(c *fiber.Ctx) string {
 
 	if traceID, ok := c.Locals(traceIDLocalsKey).(string); ok {
 		if normalized := observability.NormalizeTraceID(traceID); normalized != "" {
-			traceID = normalized
+			traceID = strings.Clone(normalized)
 			if ctx := c.UserContext(); ctx != nil {
 				c.SetUserContext(observability.WithTraceID(ctx, traceID))
 			} else {
@@ -47,6 +47,7 @@ func ensureRequestTraceID(c *fiber.Ctx) string {
 	if traceID == "" {
 		traceID = observability.NewTraceID()
 	}
+	traceID = strings.Clone(traceID)
 
 	ctx := c.UserContext()
 	if ctx == nil {
@@ -70,7 +71,7 @@ func requestTraceID(c *fiber.Ctx) string {
 	}
 
 	if traceID := observability.TraceIDFromContext(requestContext(c)); traceID != observability.DefaultTraceID {
-		return traceID
+		return strings.Clone(traceID)
 	}
 
 	return ensureRequestTraceID(c)
@@ -103,11 +104,23 @@ func claimsActorIDs(claims *auth.Claims) (string, string) {
 	orgID := strings.TrimSpace(claims.OrgID)
 	if userID == "" {
 		userID = observability.DefaultTraceID
+	} else {
+		userID = strings.Clone(userID)
 	}
 	if orgID == "" {
 		orgID = observability.DefaultTraceID
+	} else {
+		orgID = strings.Clone(orgID)
 	}
 	return userID, orgID
+}
+
+func cloneDemeterRequestString(value string) string {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return ""
+	}
+	return strings.Clone(trimmed)
 }
 
 func logAPIStep(c *fiber.Ctx, component, route, step, title string, fields map[string]any) {

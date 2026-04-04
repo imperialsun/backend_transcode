@@ -2,9 +2,13 @@ package main
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -20,11 +24,37 @@ import (
 const serverShutdownTimeout = 10 * time.Second
 const meetingFinalizeCleanupInterval = 15 * time.Minute
 
+const (
+	managedBackendTmpAudioPattern    = "demeter-audio-*"
+	managedBackendTmpChunkPattern    = "demeter-chunk-*"
+	managedBackendTmpTransportFolder = "demeter-transport"
+)
+
 type serverRuntime struct {
 	listen   func() error
 	shutdown func(context.Context) error
 	signalCh <-chan os.Signal
 }
+
+type managedBackendTmpPurgeSummary struct {
+	TargetCount  int
+	RemovedCount int
+	ErrorCount   int
+}
+
+type managedBackendTmpPurgeTarget struct {
+	name    string
+	pattern string
+	glob    bool
+}
+
+var managedBackendTmpPurgeTargets = []managedBackendTmpPurgeTarget{
+	{name: "demeter-audio", pattern: managedBackendTmpAudioPattern, glob: true},
+	{name: "demeter-chunk", pattern: managedBackendTmpChunkPattern, glob: true},
+	{name: "demeter-transport", pattern: managedBackendTmpTransportFolder, glob: false},
+}
+
+var purgeManagedBackendTmpDirsFn = purgeManagedBackendTmpDirs
 
 type meetingFinalizeOperationPurger interface {
 	PurgeExpiredMeetingFinalizeOperations(context.Context, time.Time) (int64, error)
@@ -99,7 +129,14 @@ func run(ctx context.Context, cfg config.Config) error {
 	defer cleanupCancel()
 	go runMeetingFinalizeOperationCleanupLoop(cleanupCtx, processTraceID, st, meetingFinalizeCleanupInterval)
 
-	return runServerLifecycle(ctx, processTraceID, cfg.Port, runtime)
+	return runServerLifecycleWithManagedTmpCleanup(ctx, processTraceID, cfg.Port, runtime)
+}
+
+func runServerLifecycleWithManagedTmpCleanup(ctx context.Context, processTraceID, port string, runtime serverRuntime) error {
+	tmpDir := os.TempDir()
+	purgeManagedBackendTmpDirsFn(tmpDir, processTraceID, "boot")
+	defer purgeManagedBackendTmpDirsFn(tmpDir, processTraceID, "shutdown")
+	return runServerLifecycle(ctx, processTraceID, port, runtime)
 }
 
 func runMeetingFinalizeOperationCleanup(ctx context.Context, traceID string, purger meetingFinalizeOperationPurger) {
@@ -177,4 +214,83 @@ func runServerLifecycle(ctx context.Context, processTraceID, port string, runtim
 	serverLogStep(processTraceID, "listen_stopped", "server", fields)
 	serverLogStep(processTraceID, "shutdown_success", "server", map[string]any{"port": port})
 	return nil
+}
+
+func purgeManagedBackendTmpDirs(baseDir, traceID, phase string) managedBackendTmpPurgeSummary {
+	if strings.TrimSpace(baseDir) == "" {
+		baseDir = os.TempDir()
+	}
+	baseDir = filepath.Clean(baseDir)
+
+	summary := managedBackendTmpPurgeSummary{
+		TargetCount: len(managedBackendTmpPurgeTargets),
+	}
+	serverLogStep(traceID, "tmp_purge_start", "server", map[string]any{
+		"phase":         phase,
+		"base_dir":      baseDir,
+		"target_count":  summary.TargetCount,
+		"removed_count": summary.RemovedCount,
+		"error_count":   summary.ErrorCount,
+	})
+
+	for _, target := range managedBackendTmpPurgeTargets {
+		removedCount, err := purgeManagedBackendTmpTarget(baseDir, target)
+		summary.RemovedCount += removedCount
+		if err != nil {
+			summary.ErrorCount++
+			serverLogStep(traceID, "tmp_purge_error", "server", map[string]any{
+				"phase":         phase,
+				"base_dir":      baseDir,
+				"target":        target.name,
+				"pattern":       target.pattern,
+				"glob":          target.glob,
+				"removed_count": removedCount,
+				"error":         err,
+			})
+		}
+	}
+
+	serverLogStep(traceID, "tmp_purge_complete", "server", map[string]any{
+		"phase":         phase,
+		"base_dir":      baseDir,
+		"target_count":  summary.TargetCount,
+		"removed_count": summary.RemovedCount,
+		"error_count":   summary.ErrorCount,
+	})
+
+	return summary
+}
+
+func purgeManagedBackendTmpTarget(baseDir string, target managedBackendTmpPurgeTarget) (int, error) {
+	targetPath := filepath.Join(baseDir, target.pattern)
+	if target.glob {
+		matches, err := filepath.Glob(targetPath)
+		if err != nil {
+			return 0, err
+		}
+		if len(matches) == 0 {
+			return 0, nil
+		}
+		removedCount := 0
+		var errs []error
+		for _, match := range matches {
+			if err := os.RemoveAll(match); err != nil {
+				errs = append(errs, fmt.Errorf("%s: %w", match, err))
+				continue
+			}
+			removedCount++
+		}
+		return removedCount, errors.Join(errs...)
+	}
+
+	if _, err := os.Stat(targetPath); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return 0, nil
+		}
+		return 0, err
+	}
+	if err := os.RemoveAll(targetPath); err != nil {
+		return 0, err
+	}
+	return 1, nil
 }

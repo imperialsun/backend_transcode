@@ -18,7 +18,7 @@ import (
 	"github.com/google/uuid"
 )
 
-const demeterAudioTranscriptionOperationStatusRoute = "/api/v1/providers/demeter-sante/audio/transcriptions/backend/operations/:operationId"
+const demeterAudioTranscriptionOperationStatusRoute = "/api/v1/providers/demeter-sante/audio/transcriptions/operations/:operationId"
 
 var demeterAudioTranscriptionOperationCancels sync.Map
 
@@ -41,6 +41,37 @@ type demeterAudioTranscriptionOperationStartResponse struct {
 	demeterAudioTranscriptionOperationResponse
 }
 
+func demeterAudioTranscriptionOperationResponseFromRecord(record *store.DemeterAudioTranscriptionOperationRecord) demeterAudioTranscriptionOperationResponse {
+	response := demeterAudioTranscriptionOperationResponse{}
+	if record == nil {
+		return response
+	}
+	response.OperationID = record.OperationID
+	response.Status = record.Status
+	response.StatusCode = record.StatusCode
+	response.Stage = record.Stage
+	response.ChunkIndex = record.ChunkIndex
+	response.ChunkCount = record.ChunkCount
+	response.Progress = record.Progress
+	response.UpdatedAt = record.UpdatedAt.UTC().Format(time.RFC3339)
+	if strings.TrimSpace(record.PartialText.String) != "" {
+		response.PartialText = strings.TrimSpace(record.PartialText.String)
+	}
+	if record.LastError.Valid && strings.TrimSpace(record.LastError.String) != "" {
+		response.LastError = strings.TrimSpace(record.LastError.String)
+	}
+	if record.FinishedAt.Valid {
+		response.FinishedAt = record.FinishedAt.Time.UTC().Format(time.RFC3339)
+	}
+	if record.ResponseJSON.Valid && strings.TrimSpace(record.ResponseJSON.String) != "" {
+		var backendResponse demeterBackendTranscriptionResponse
+		if err := json.Unmarshal([]byte(record.ResponseJSON.String), &backendResponse); err == nil {
+			response.Response = &backendResponse
+		}
+	}
+	return response
+}
+
 func (a *App) startDemeterAudioTranscriptionOperation(
 	c *fiber.Ctx,
 	logCtx demeterAudioLogContext,
@@ -53,6 +84,7 @@ func (a *App) startDemeterAudioTranscriptionOperation(
 	upload *demeterBackendAudioUpload,
 	chunkPlans []demeterBackendChunkPlan,
 	startedAt time.Time,
+	operationID string,
 ) error {
 	claims := MustClaims(c)
 	if claims == nil {
@@ -66,7 +98,29 @@ func (a *App) startDemeterAudioTranscriptionOperation(
 		return c.Status(fiber.StatusUnauthorized).JSON(ErrorResponse{Error: "unauthorized", Code: "unauthorized", TraceID: requestTraceID(c), Path: route})
 	}
 
-	operationID := "demeter-audio-" + strings.ReplaceAll(uuid.NewString(), "-", "")
+	operationID = cloneDemeterRequestString(operationID)
+	var existingOwnershipErr *store.DemeterAudioTranscriptionOperationOwnershipError
+	if operationID != "" {
+		if existing, err := a.Store.GetDemeterAudioTranscriptionOperation(requestContext(c), operationID, claims.OrgID, claims.UserID); err == nil {
+			return c.Status(existing.StatusCode).JSON(demeterAudioTranscriptionOperationStartResponse{
+				demeterAudioTranscriptionOperationResponse: demeterAudioTranscriptionOperationResponseFromRecord(existing),
+			})
+		} else if errors.As(err, &existingOwnershipErr) {
+			logDemeterOwnershipStageCtx(logCtx, route, seq, "ownership_start_error", demeterAudioRequestBaseFields(routeMode, audioDurationSec, audioDurationProvided, map[string]any{
+				"operation_id":    operationID,
+				"status_code":     fiber.StatusInternalServerError,
+				"reason":          existingOwnershipErr.Reason,
+				"source":          "api_start",
+				"request_user_id": claims.UserID,
+				"request_org_id":  claims.OrgID,
+				"stored_user_id":  existingOwnershipErr.StoredUserID,
+				"stored_org_id":   existingOwnershipErr.StoredOrganizationID,
+			}))
+		}
+	}
+	if operationID == "" {
+		operationID = "demeter-audio-" + strings.ReplaceAll(uuid.NewString(), "-", "")
+	}
 	now := time.Now().UTC()
 	initialResponse := &store.DemeterAudioTranscriptionOperationRecord{
 		OperationID:    operationID,
@@ -83,6 +137,36 @@ func (a *App) startDemeterAudioTranscriptionOperation(
 		UpdatedAt:      now,
 	}
 	if err := a.Store.CreateDemeterAudioTranscriptionOperation(requestContext(c), initialResponse); err != nil {
+		if existingOwnershipErr != nil {
+			logDemeterOwnershipStageCtx(logCtx, route, seq, "ownership_start_error", demeterAudioRequestBaseFields(routeMode, audioDurationSec, audioDurationProvided, map[string]any{
+				"operation_id":      operationID,
+				"reason":            "ownership_mismatch",
+				"source":            "api_start",
+				"status_code":       fiber.StatusInternalServerError,
+				"request_user_id":   claims.UserID,
+				"request_org_id":    claims.OrgID,
+				"stored_user_id":    existingOwnershipErr.StoredUserID,
+				"stored_org_id":     existingOwnershipErr.StoredOrganizationID,
+				"message":           err.Error(),
+				"total_duration_ms": time.Since(startedAt).Milliseconds(),
+				"request_bytes":     requestBytes,
+			}))
+			logDemeterAudioStageCtx(logCtx, route, seq, "sequence_end", demeterAudioRequestBaseFields(routeMode, audioDurationSec, audioDurationProvided, map[string]any{
+				"result":            "operation_create_error",
+				"reason":            "ownership_mismatch",
+				"status_code":       fiber.StatusInternalServerError,
+				"operation_id":      operationID,
+				"total_duration_ms": time.Since(startedAt).Milliseconds(),
+				"request_bytes":     requestBytes,
+				"message":           err.Error(),
+			}))
+			return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{Error: "failed to create backend transcription operation"})
+		}
+		if existing, loadErr := a.Store.GetDemeterAudioTranscriptionOperation(requestContext(c), operationID, claims.OrgID, claims.UserID); loadErr == nil {
+			return c.Status(existing.StatusCode).JSON(demeterAudioTranscriptionOperationStartResponse{
+				demeterAudioTranscriptionOperationResponse: demeterAudioTranscriptionOperationResponseFromRecord(existing),
+			})
+		}
 		logDemeterRelayIssueCtx(logCtx, route, fiber.StatusInternalServerError, err.Error())
 		logDemeterAudioStageCtx(logCtx, route, seq, "sequence_end", demeterAudioRequestBaseFields(routeMode, audioDurationSec, audioDurationProvided, map[string]any{
 			"result":            "operation_create_error",
@@ -167,7 +251,21 @@ func (a *App) getDemeterAudioTranscriptionOperationStatus(c *fiber.Ctx) error {
 
 	record, err := a.Store.GetDemeterAudioTranscriptionOperation(requestContext(c), operationID, claims.OrgID, claims.UserID)
 	if err != nil {
-		if err == store.ErrDemeterAudioTranscriptionOperationOwnership || errors.Is(err, sql.ErrNoRows) {
+		var ownershipErr *store.DemeterAudioTranscriptionOperationOwnershipError
+		if errors.As(err, &ownershipErr) {
+			logDemeterOwnershipStageCtx(logCtx, route, 0, "ownership_status_error", map[string]any{
+				"operation_id":    operationID,
+				"status_code":     fiber.StatusNotFound,
+				"reason":          ownershipErr.Reason,
+				"source":          "api_status",
+				"request_user_id": claims.UserID,
+				"request_org_id":  claims.OrgID,
+				"stored_user_id":  ownershipErr.StoredUserID,
+				"stored_org_id":   ownershipErr.StoredOrganizationID,
+			})
+			return c.Status(fiber.StatusNotFound).JSON(ErrorResponse{Error: "operation not found"})
+		}
+		if errors.Is(err, sql.ErrNoRows) {
 			logDemeterAudioStageCtx(logCtx, route, 0, "operation_status_missing", map[string]any{
 				"operation_id": operationID,
 				"reason":       "not_found",
@@ -183,32 +281,6 @@ func (a *App) getDemeterAudioTranscriptionOperationStatus(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{Error: "failed to load transcription status", TraceID: traceID, Path: route})
 	}
 
-	response := demeterAudioTranscriptionOperationResponse{
-		OperationID: record.OperationID,
-		Status:      record.Status,
-		StatusCode:  record.StatusCode,
-		Stage:       record.Stage,
-		ChunkIndex:  record.ChunkIndex,
-		ChunkCount:  record.ChunkCount,
-		Progress:    record.Progress,
-		UpdatedAt:   record.UpdatedAt.UTC().Format(time.RFC3339),
-	}
-	if strings.TrimSpace(record.PartialText.String) != "" {
-		response.PartialText = strings.TrimSpace(record.PartialText.String)
-	}
-	if record.LastError.Valid && strings.TrimSpace(record.LastError.String) != "" {
-		response.LastError = strings.TrimSpace(record.LastError.String)
-	}
-	if record.FinishedAt.Valid {
-		response.FinishedAt = record.FinishedAt.Time.UTC().Format(time.RFC3339)
-	}
-	if record.ResponseJSON.Valid && strings.TrimSpace(record.ResponseJSON.String) != "" {
-		var backendResponse demeterBackendTranscriptionResponse
-		if err := json.Unmarshal([]byte(record.ResponseJSON.String), &backendResponse); err == nil {
-			response.Response = &backendResponse
-		}
-	}
-
 	logDemeterAudioStageCtx(logCtx, route, 0, "operation_status_ready", map[string]any{
 		"operation_id": operationID,
 		"status":       record.Status,
@@ -216,7 +288,7 @@ func (a *App) getDemeterAudioTranscriptionOperationStatus(c *fiber.Ctx) error {
 		"chunk_index":  record.ChunkIndex,
 		"chunk_count":  record.ChunkCount,
 	})
-	return c.Status(fiber.StatusOK).JSON(response)
+	return c.Status(fiber.StatusOK).JSON(demeterAudioTranscriptionOperationResponseFromRecord(record))
 }
 
 func (a *App) cancelDemeterAudioTranscriptionOperation(c *fiber.Ctx) error {
@@ -235,7 +307,21 @@ func (a *App) cancelDemeterAudioTranscriptionOperation(c *fiber.Ctx) error {
 
 	record, err := a.Store.CancelDemeterAudioTranscriptionOperation(requestContext(c), operationID, claims.OrgID, claims.UserID, time.Now().UTC())
 	if err != nil {
-		if err == store.ErrDemeterAudioTranscriptionOperationOwnership || errors.Is(err, sql.ErrNoRows) {
+		var ownershipErr *store.DemeterAudioTranscriptionOperationOwnershipError
+		if errors.As(err, &ownershipErr) {
+			logDemeterOwnershipStageCtx(logCtx, route, 0, "ownership_cancel_error", map[string]any{
+				"operation_id":    operationID,
+				"status_code":     fiber.StatusNotFound,
+				"reason":          ownershipErr.Reason,
+				"source":          "api_cancel",
+				"request_user_id": claims.UserID,
+				"request_org_id":  claims.OrgID,
+				"stored_user_id":  ownershipErr.StoredUserID,
+				"stored_org_id":   ownershipErr.StoredOrganizationID,
+			})
+			return c.Status(fiber.StatusNotFound).JSON(ErrorResponse{Error: "operation not found", TraceID: traceID, Path: requestRoutePath(c)})
+		}
+		if errors.Is(err, sql.ErrNoRows) {
 			return c.Status(fiber.StatusNotFound).JSON(ErrorResponse{Error: "operation not found", TraceID: traceID, Path: requestRoutePath(c)})
 		}
 		logDemeterAudioStageCtx(logCtx, route, 0, "operation_cancel_error", map[string]any{
@@ -329,7 +415,20 @@ func (a *App) runDemeterAudioTranscriptionOperation(
 		if raw, err := json.Marshal(response); err == nil {
 			record.ResponseJSON = sql.NullString{String: string(raw), Valid: true}
 		}
-		if err := a.Store.UpdateDemeterAudioTranscriptionOperation(ctx, record); err != nil {
+		fallbackUsed, err := a.updateDemeterAudioTranscriptionOperationStateWithFallback(ctx, record)
+		if fallbackUsed {
+			logDemeterOwnershipStageCtx(logCtx, route, seq, "ownership_fallback_used", demeterAudioRequestBaseFields(routeMode, audioDurationSec, audioDurationProvided, map[string]any{
+				"operation_id": record.OperationID,
+				"stage":        record.Stage,
+				"status":       record.Status,
+				"status_code":  record.StatusCode,
+				"chunk_index":  completedChunks,
+				"chunk_count":  chunkCount,
+				"progress":     progress,
+				"source":       "worker_update",
+			}))
+		}
+		if err != nil {
 			logDemeterAudioStageCtx(logCtx, route, seq, "operation_progress_update_error", map[string]any{
 				"operation_id": operationID,
 				"error":        err.Error(),
@@ -379,9 +478,9 @@ func (a *App) runDemeterAudioTranscriptionOperation(
 		if len(chunkPlans) > 0 {
 			progress = math.Min(1, math.Max(0, float64(len(lastResponse.Chunks))/float64(len(chunkPlans))))
 		}
-		if lastResponse.Text != "" || len(lastResponse.Segments) > 0 || len(lastResponse.Chunks) > 0 {
+		if lastResponse.Text != "" || len(lastResponse.Chunks) > 0 {
 			if raw, marshalErr := json.Marshal(lastResponse); marshalErr == nil {
-				_ = a.Store.UpdateDemeterAudioTranscriptionOperation(ctx, &store.DemeterAudioTranscriptionOperationRecord{
+				fallbackUsed, updateErr := a.updateDemeterAudioTranscriptionOperationStateWithFallback(ctx, &store.DemeterAudioTranscriptionOperationRecord{
 					OperationID:    operationID,
 					OrganizationID: baseLogCtx.orgID,
 					UserID:         baseLogCtx.userID,
@@ -397,9 +496,21 @@ func (a *App) runDemeterAudioTranscriptionOperation(
 					UpdatedAt:      now,
 					FinishedAt:     sql.NullTime{Time: now, Valid: true},
 				})
+				if fallbackUsed {
+					logDemeterOwnershipStageCtx(logCtx, route, seq, "ownership_fallback_used", demeterAudioRequestBaseFields(routeMode, audioDurationSec, audioDurationProvided, map[string]any{
+						"operation_id": operationID,
+						"stage":        "failed",
+						"status":       store.DemeterAudioTranscriptionOperationStatusFailed,
+						"status_code":  statusCode,
+						"chunk_index":  len(lastResponse.Chunks),
+						"chunk_count":  len(chunkPlans),
+						"source":       "worker_update",
+					}))
+				}
+				_ = updateErr
 			}
 		} else {
-			_ = a.Store.UpdateDemeterAudioTranscriptionOperation(ctx, &store.DemeterAudioTranscriptionOperationRecord{
+			fallbackUsed, updateErr := a.updateDemeterAudioTranscriptionOperationStateWithFallback(ctx, &store.DemeterAudioTranscriptionOperationRecord{
 				OperationID:    operationID,
 				OrganizationID: baseLogCtx.orgID,
 				UserID:         baseLogCtx.userID,
@@ -413,6 +524,18 @@ func (a *App) runDemeterAudioTranscriptionOperation(
 				UpdatedAt:      now,
 				FinishedAt:     sql.NullTime{Time: now, Valid: true},
 			})
+			if fallbackUsed {
+				logDemeterOwnershipStageCtx(logCtx, route, seq, "ownership_fallback_used", demeterAudioRequestBaseFields(routeMode, audioDurationSec, audioDurationProvided, map[string]any{
+					"operation_id": operationID,
+					"stage":        "failed",
+					"status":       store.DemeterAudioTranscriptionOperationStatusFailed,
+					"status_code":  statusCode,
+					"chunk_index":  0,
+					"chunk_count":  len(chunkPlans),
+					"source":       "worker_update",
+				}))
+			}
+			_ = updateErr
 		}
 		logDemeterAudioStageCtx(logCtx, route, seq, "operation_failed", demeterAudioRequestBaseFields(routeMode, audioDurationSec, audioDurationProvided, map[string]any{
 			"operation_id":         operationID,
@@ -426,7 +549,7 @@ func (a *App) runDemeterAudioTranscriptionOperation(
 	}
 
 	if raw, marshalErr := json.Marshal(response); marshalErr == nil {
-		_ = a.Store.UpdateDemeterAudioTranscriptionOperation(ctx, &store.DemeterAudioTranscriptionOperationRecord{
+		fallbackUsed, updateErr := a.updateDemeterAudioTranscriptionOperationStateWithFallback(ctx, &store.DemeterAudioTranscriptionOperationRecord{
 			OperationID:    operationID,
 			OrganizationID: baseLogCtx.orgID,
 			UserID:         baseLogCtx.userID,
@@ -441,6 +564,18 @@ func (a *App) runDemeterAudioTranscriptionOperation(
 			UpdatedAt:      now,
 			FinishedAt:     sql.NullTime{Time: now, Valid: true},
 		})
+		if fallbackUsed {
+			logDemeterOwnershipStageCtx(logCtx, route, seq, "ownership_fallback_used", demeterAudioRequestBaseFields(routeMode, audioDurationSec, audioDurationProvided, map[string]any{
+				"operation_id": operationID,
+				"stage":        "completed",
+				"status":       store.DemeterAudioTranscriptionOperationStatusCompleted,
+				"status_code":  fiber.StatusOK,
+				"chunk_index":  len(response.Chunks),
+				"chunk_count":  len(chunkPlans),
+				"source":       "worker_update",
+			}))
+		}
+		_ = updateErr
 	}
 
 	logDemeterAudioStageCtx(logCtx, route, seq, "operation_completed", demeterAudioRequestBaseFields(routeMode, audioDurationSec, audioDurationProvided, map[string]any{
@@ -449,7 +584,13 @@ func (a *App) runDemeterAudioTranscriptionOperation(
 		"upstream_duration_ms": upstreamDurationMs,
 		"total_duration_ms":    0,
 		"chunk_count":          len(chunkPlans),
-		"segments_count":       len(response.Segments),
+		"segments_count": func() int {
+			total := 0
+			for _, chunk := range response.Chunks {
+				total += len(chunk.Segments)
+			}
+			return total
+		}(),
 		"response_bytes":       func() int { raw, _ := json.Marshal(response); return len(raw) }(),
 	}))
 }
