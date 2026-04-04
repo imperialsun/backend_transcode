@@ -95,6 +95,17 @@ func (p fakeMeetingFinalizeOperationPurger) PurgeExpiredMeetingFinalizeOperation
 	return p.purged, p.err
 }
 
+type fakeBackendErrorEventPurger struct {
+	purged int64
+	err    error
+	calls  int
+}
+
+func (p *fakeBackendErrorEventPurger) PurgeExpiredBackendErrorEvents(context.Context, time.Time) (int64, error) {
+	p.calls++
+	return p.purged, p.err
+}
+
 func TestRunMeetingFinalizeOperationCleanupOnce_LogsTraceSteps(t *testing.T) {
 	buf := captureTestLogOutput(t)
 
@@ -111,6 +122,52 @@ func TestRunMeetingFinalizeOperationCleanupOnce_LogsTraceSteps(t *testing.T) {
 		if !strings.Contains(logged, needle) {
 			t.Fatalf("expected %q in logs, got %q", needle, logged)
 		}
+	}
+}
+
+func TestRunBackendErrorCleanupOnce_LogsTraceSteps(t *testing.T) {
+	buf := captureTestLogOutput(t)
+
+	runBackendErrorCleanupOnce(context.Background(), "server-trace", &fakeBackendErrorEventPurger{purged: 5})
+
+	logged := buf.String()
+	for _, needle := range []string{
+		"[server]",
+		"route=lifecycle",
+		"step=backend_error_cleanup_success",
+		"trace_id=server-trace",
+		"purged=5",
+	} {
+		if !strings.Contains(logged, needle) {
+			t.Fatalf("expected %q in logs, got %q", needle, logged)
+		}
+	}
+}
+
+func TestRunBackendErrorCleanupLoop_CallsPurgerOnTick(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	purger := &fakeBackendErrorEventPurger{purged: 2}
+	done := make(chan struct{})
+	go func() {
+		runBackendErrorCleanupLoop(ctx, "server-trace", purger, 10*time.Millisecond)
+		close(done)
+	}()
+
+	deadline := time.Now().Add(250 * time.Millisecond)
+	for purger.calls == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("expected backend error cleanup loop to call the purger")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	cancel()
+
+	select {
+	case <-done:
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("expected backend error cleanup loop to stop after cancellation")
 	}
 }
 

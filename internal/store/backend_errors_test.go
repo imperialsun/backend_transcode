@@ -117,6 +117,75 @@ func TestBackendErrorEvents_ListAndDelete(t *testing.T) {
 	}
 }
 
+func TestPurgeExpiredBackendErrorEventsRemovesOldRows(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "backend-errors-purge.sqlite")
+	st, err := Open(ctx, dbPath)
+	if err != nil {
+		t.Fatalf("failed to open store: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = st.Close()
+	})
+
+	org, err := st.CreateOrganization(ctx, "Org", "org", "active")
+	if err != nil {
+		t.Fatalf("failed to create organization: %v", err)
+	}
+
+	now := time.Date(2026, 4, 4, 12, 0, 0, 0, time.UTC)
+	mustInsertBackendErrorEvent(t, st, backenderrors.Event{
+		TraceID:        "trace-old",
+		OrganizationID: org.ID,
+		Component:      "admin",
+		Route:          "/admin/backend-errors",
+		Step:           "load_error",
+		Title:          "old_backend_error",
+		StatusCode:     500,
+		DurationMS:     11,
+		ErrorMessage:   "old boom",
+		PayloadJSON:    json.RawMessage(`{"error":"old boom"}`),
+		CreatedAt:      now.AddDate(0, 0, -31),
+	})
+	mustInsertBackendErrorEvent(t, st, backenderrors.Event{
+		TraceID:        "trace-new",
+		OrganizationID: org.ID,
+		Component:      "admin",
+		Route:          "/admin/backend-errors",
+		Step:           "load_error",
+		Title:          "new_backend_error",
+		StatusCode:     500,
+		DurationMS:     13,
+		ErrorMessage:   "new boom",
+		PayloadJSON:    json.RawMessage(`{"error":"new boom"}`),
+		CreatedAt:      now,
+	})
+
+	deleted, err := st.PurgeExpiredBackendErrorEvents(ctx, now)
+	if err != nil {
+		t.Fatalf("failed to purge backend errors: %v", err)
+	}
+	if deleted != 1 {
+		t.Fatalf("expected one deleted event, got %d", deleted)
+	}
+
+	result, err := st.ListBackendErrorEvents(ctx, BackendErrorEventFilters{
+		OrganizationID: org.ID,
+		From:           now.AddDate(0, 0, -40),
+		To:             now,
+		Limit:          10,
+	})
+	if err != nil {
+		t.Fatalf("failed to list backend errors after purge: %v", err)
+	}
+	if result.Total != 1 {
+		t.Fatalf("expected one remaining backend error, got %d", result.Total)
+	}
+	if len(result.Items) != 1 || result.Items[0].TraceID != "trace-new" {
+		t.Fatalf("unexpected remaining backend errors: %+v", result.Items)
+	}
+}
+
 func mustInsertBackendErrorEvent(t *testing.T, st *Store, event backenderrors.Event) {
 	t.Helper()
 	if err := st.InsertBackendErrorEvent(context.Background(), event); err != nil {

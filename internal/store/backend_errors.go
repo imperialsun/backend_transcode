@@ -225,6 +225,19 @@ func (s *Store) DeleteBackendErrorEvents(ctx context.Context, filters BackendErr
 	return count, nil
 }
 
+func (s *Store) PurgeExpiredBackendErrorEvents(ctx context.Context, now time.Time) (int64, error) {
+	cutoff := now.UTC().AddDate(0, 0, -30)
+	result, err := s.DB.ExecContext(ctx, `DELETE FROM backend_error_events WHERE created_at < ?`, cutoff)
+	if err != nil {
+		return 0, err
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+	return count, nil
+}
+
 func buildBackendErrorWhereClause(filters BackendErrorEventFilters) (string, []any) {
 	clauses := []string{"1=1"}
 	args := make([]any, 0, 8)
