@@ -14,6 +14,7 @@ import (
 
 	"demeter-backend/internal/auth"
 	"demeter-backend/internal/backenderrors"
+	"demeter-backend/internal/backendperformance"
 	"demeter-backend/internal/config"
 	"demeter-backend/internal/mailer"
 	"demeter-backend/internal/mistral"
@@ -23,6 +24,7 @@ import (
 
 const serverShutdownTimeout = 10 * time.Second
 const meetingFinalizeCleanupInterval = 15 * time.Minute
+const performanceCleanupInterval = 30 * time.Minute
 
 const (
 	managedBackendTmpAudioPattern    = "demeter-audio-*"
@@ -60,6 +62,10 @@ type meetingFinalizeOperationPurger interface {
 	PurgeExpiredMeetingFinalizeOperations(context.Context, time.Time) (int64, error)
 }
 
+type performanceEventPurger interface {
+	PurgeExpiredPerformanceEvents(context.Context, time.Time) (int64, error)
+}
+
 func serverLogStep(traceID, step, title string, fields map[string]any) {
 	log.Print(observability.FormatStepLine("server", "lifecycle", step, traceID, observability.DefaultTraceID, observability.DefaultTraceID, title, fields))
 	backenderrors.RecordLog(observability.WithTraceID(context.Background(), traceID), "server", "lifecycle", step, title, fields)
@@ -80,6 +86,7 @@ func run(ctx context.Context, cfg config.Config) error {
 		}
 	}()
 	backenderrors.RegisterSink(st)
+	backendperformance.RegisterSink(st)
 
 	bootstrapHash := ""
 	if cfg.BootstrapAdminPassword != "" {
@@ -95,6 +102,7 @@ func run(ctx context.Context, cfg config.Config) error {
 	}
 
 	runMeetingFinalizeOperationCleanup(ctx, processTraceID, st)
+	runPerformanceCleanup(ctx, processTraceID, st)
 
 	app := buildApp(cfg, st, mistral.NewClient(
 		cfg.MistralAPIBaseURL,
@@ -128,6 +136,7 @@ func run(ctx context.Context, cfg config.Config) error {
 	cleanupCtx, cleanupCancel := context.WithCancel(ctx)
 	defer cleanupCancel()
 	go runMeetingFinalizeOperationCleanupLoop(cleanupCtx, processTraceID, st, meetingFinalizeCleanupInterval)
+	go runPerformanceCleanupLoop(cleanupCtx, processTraceID, st, performanceCleanupInterval)
 
 	return runServerLifecycleWithManagedTmpCleanup(ctx, processTraceID, cfg.Port, runtime)
 }
@@ -166,6 +175,35 @@ func runMeetingFinalizeOperationCleanupOnce(ctx context.Context, traceID string,
 		return
 	}
 	serverLogStep(traceID, "meeting_finalize_cleanup_success", "server", map[string]any{"purged": purged})
+}
+
+func runPerformanceCleanup(ctx context.Context, traceID string, purger performanceEventPurger) {
+	runPerformanceCleanupOnce(ctx, traceID, purger)
+}
+
+func runPerformanceCleanupLoop(ctx context.Context, traceID string, purger performanceEventPurger, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			runPerformanceCleanupOnce(ctx, traceID, purger)
+		}
+	}
+}
+
+func runPerformanceCleanupOnce(ctx context.Context, traceID string, purger performanceEventPurger) {
+	if purger == nil {
+		return
+	}
+	purged, err := purger.PurgeExpiredPerformanceEvents(ctx, time.Now().UTC())
+	if err != nil {
+		serverLogStep(traceID, "performance_cleanup_error", "server", map[string]any{"error": err})
+		return
+	}
+	serverLogStep(traceID, "performance_cleanup_success", "server", map[string]any{"purged": purged})
 }
 
 func runServerLifecycle(ctx context.Context, processTraceID, port string, runtime serverRuntime) error {

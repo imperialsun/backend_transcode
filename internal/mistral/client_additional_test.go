@@ -3,16 +3,20 @@ package mistral
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"errors"
 	"io"
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"demeter-backend/internal/backendperformance"
 	"demeter-backend/internal/observability"
+	"demeter-backend/internal/store"
 )
 
 func TestClient_IsConfigured(t *testing.T) {
@@ -99,6 +103,60 @@ func TestDoGet_SuccessAndUnconfigured(t *testing.T) {
 	}
 }
 
+func TestDoGet_PersistsPerformanceEvent(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "mistral-performance.sqlite")
+	st, err := store.Open(context.Background(), dbPath)
+	if err != nil {
+		t.Fatalf("failed to open store: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = st.Close()
+	})
+
+	backendperformance.RegisterSink(st)
+	t.Cleanup(func() {
+		backendperformance.RegisterSink(nil)
+	})
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Fatalf("unexpected method: %s", r.Method)
+		}
+		if r.URL.Path != "/models" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		time.Sleep(10 * time.Millisecond)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"models":[]}`))
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, "key", time.Second, time.Second)
+	ctx := observability.WithTraceID(context.Background(), "mistral-upstream-trace")
+	status, body, err := client.DoGet(ctx, "/models")
+	if err != nil {
+		t.Fatalf("DoGet returned error: %v", err)
+	}
+	if status != http.StatusOK || string(body) != `{"models":[]}` {
+		t.Fatalf("unexpected DoGet response: status=%d body=%q", status, string(body))
+	}
+
+	event := waitForMistralPerformanceEvent(t, st, "mistral-upstream-trace")
+	if event == nil {
+		t.Fatal("expected upstream request to persist a performance event")
+	}
+	if event.Component != "mistral" || event.Task != "response_received" || event.Route != "/models" {
+		t.Fatalf("unexpected upstream performance event: %#v", event)
+	}
+	if event.Surface != "backend" || event.Status != "success" {
+		t.Fatalf("unexpected upstream event surface/status: %#v", event)
+	}
+	if event.DurationMS <= 0 {
+		t.Fatalf("expected upstream duration to be recorded, got %d", event.DurationMS)
+	}
+}
+
 func TestHelperFunctions_LogTimeoutPreviewAndClose(t *testing.T) {
 	var logBuf bytes.Buffer
 	originalWriter := log.Writer()
@@ -139,4 +197,49 @@ func TestHelperFunctions_LogTimeoutPreviewAndClose(t *testing.T) {
 
 	closeSilently(nil)
 	closeSilently(io.NopCloser(strings.NewReader("ok")))
+}
+
+func waitForMistralPerformanceEvent(t *testing.T, st *store.Store, traceID string) *store.PerformanceEvent {
+	t.Helper()
+
+	time.Sleep(150 * time.Millisecond)
+	for i := 0; i < 20; i++ {
+		var (
+			event               store.PerformanceEvent
+			userID, orgID, meta sql.NullString
+		)
+		err := st.DB.QueryRowContext(context.Background(), `
+			SELECT event_id, trace_id, user_id, organization_id, surface, component, task, status, duration_ms, route, meta_json, occurred_at, day, created_at
+			FROM performance_events
+			WHERE trace_id = ?
+			ORDER BY occurred_at DESC, event_id DESC
+			LIMIT 1
+		`, traceID).Scan(
+			&event.EventID,
+			&event.TraceID,
+			&userID,
+			&orgID,
+			&event.Surface,
+			&event.Component,
+			&event.Task,
+			&event.Status,
+			&event.DurationMS,
+			&event.Route,
+			&meta,
+			&event.OccurredAt,
+			&event.Day,
+			&event.CreatedAt,
+		)
+		if err == nil {
+			event.UserID = userID.String
+			event.OrganizationID = orgID.String
+			event.MetaJSON = meta.String
+			return &event
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			t.Fatalf("failed to query performance event: %v", err)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	return nil
 }

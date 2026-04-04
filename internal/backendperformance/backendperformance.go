@@ -1,4 +1,4 @@
-package backenderrors
+package backendperformance
 
 import (
 	"context"
@@ -9,9 +9,9 @@ import (
 	"sync"
 	"time"
 
-	"demeter-backend/internal/backendperformance"
 	"demeter-backend/internal/observability"
 	"demeter-backend/internal/requestmeta"
+	"github.com/google/uuid"
 )
 
 const (
@@ -22,24 +22,22 @@ const (
 )
 
 type Event struct {
+	EventID        string          `json:"eventId"`
 	TraceID        string          `json:"traceId"`
-	UserID         string          `json:"userId"`
-	OrganizationID string          `json:"organizationId"`
+	UserID         string          `json:"userId,omitempty"`
+	OrganizationID string          `json:"organizationId,omitempty"`
+	Surface        string          `json:"surface"`
 	Component      string          `json:"component"`
-	Route          string          `json:"route"`
-	Step           string          `json:"step"`
-	Title          string          `json:"title"`
-	StatusCode     int             `json:"statusCode"`
+	Task           string          `json:"task"`
+	Status         string          `json:"status"`
 	DurationMS     int64           `json:"durationMs"`
-	ErrorMessage   string          `json:"errorMessage"`
-	PayloadJSON    json.RawMessage `json:"payloadJson"`
-	AnnexJSON      json.RawMessage `json:"annexJson,omitempty"`
-	RecoveryStatus string          `json:"recoveryStatus,omitempty"`
-	CreatedAt      time.Time       `json:"createdAt"`
+	Route          string          `json:"route"`
+	MetaJSON       json.RawMessage `json:"metaJson"`
+	OccurredAt     time.Time       `json:"occurredAt"`
 }
 
 type Sink interface {
-	InsertBackendErrorEvent(context.Context, Event) error
+	InsertPerformanceEvent(context.Context, Event) error
 }
 
 var (
@@ -57,12 +55,10 @@ func RecordLog(ctx context.Context, component, route, step, title string, fields
 	if observability.ShouldSkipObservabilityCaptureRoute(route) {
 		return
 	}
-	if !shouldCapture(step, fields) {
-		backendperformance.RecordLog(ctx, component, route, step, title, fields)
+	event, ok := buildEvent(ctx, component, route, step, title, fields)
+	if !ok {
 		return
 	}
-
-	event := buildEvent(ctx, component, route, step, title, fields)
 
 	sinkMu.RLock()
 	currentSink := sink
@@ -77,25 +73,21 @@ func RecordLog(ctx context.Context, component, route, step, title string, fields
 		}()
 		insertCtx, cancel := context.WithTimeout(context.Background(), defaultCaptureTimeout)
 		defer cancel()
-		_ = currentSink.InsertBackendErrorEvent(insertCtx, event)
+		_ = currentSink.InsertPerformanceEvent(insertCtx, event)
 	}(event, currentSink)
-
-	backendperformance.RecordLog(ctx, component, route, step, title, fields)
 }
 
-func buildEvent(ctx context.Context, component, route, step, title string, fields map[string]any) Event {
+func buildEvent(ctx context.Context, component, route, step, title string, fields map[string]any) (Event, bool) {
+	durationMS, ok := extractDurationMS(fields)
+	if !ok {
+		return Event{}, false
+	}
+
 	traceID := observability.TraceIDFromContext(ctx)
 	userID, orgID := "", ""
 	if actorUserID, actorOrgID, ok := requestmeta.ActorFromContext(ctx); ok {
 		userID = actorUserID
 		orgID = actorOrgID
-	}
-
-	statusCode := extractStatusCode(fields)
-	durationMS := extractDurationMS(fields)
-	errorMessage := extractErrorMessage(fields)
-	if errorMessage == "" && statusCode >= 500 {
-		errorMessage = fmt.Sprintf("status %d", statusCode)
 	}
 
 	payload := sanitizePayload(fields)
@@ -108,51 +100,19 @@ func buildEvent(ctx context.Context, component, route, step, title string, field
 	}
 
 	return Event{
-		TraceID:        traceID,
+		EventID:        uuid.NewString(),
+		TraceID:        strings.TrimSpace(traceID),
 		UserID:         strings.TrimSpace(userID),
 		OrganizationID: strings.TrimSpace(orgID),
+		Surface:        "backend",
 		Component:      normalizeToken(component, "log"),
-		Route:          normalizeToken(route, "-"),
-		Step:           normalizeToken(step, "unknown"),
-		Title:          normalizeText(title),
-		StatusCode:     statusCode,
+		Task:           normalizeToken(title, normalizeToken(step, "unknown")),
+		Status:         extractStatus(fields, step),
 		DurationMS:     durationMS,
-		ErrorMessage:   normalizeText(errorMessage),
-		PayloadJSON:    payloadJSON,
-		AnnexJSON:      nil,
-		RecoveryStatus: "",
-		CreatedAt:      time.Now().UTC(),
-	}
-}
-
-func shouldCapture(step string, fields map[string]any) bool {
-	normalizedStep := strings.ToLower(strings.TrimSpace(step))
-	if normalizedStep == "" {
-		return false
-	}
-
-	for _, fragment := range []string{
-		"validation_error",
-		"request_validation_error",
-		"request_parse_error",
-		"parse_error",
-		"unauthorized",
-		"forbidden",
-		"missing",
-		"skipped",
-		"rejected",
-		"range_error",
-	} {
-		if strings.Contains(normalizedStep, fragment) {
-			return false
-		}
-	}
-
-	if strings.Contains(normalizedStep, "error") || strings.Contains(normalizedStep, "failed") || strings.Contains(normalizedStep, "timeout") {
-		return true
-	}
-
-	return extractStatusCode(fields) >= 500
+		Route:          normalizeToken(route, "-"),
+		MetaJSON:       payloadJSON,
+		OccurredAt:     time.Now().UTC(),
+	}, true
 }
 
 func sanitizePayload(fields map[string]any) map[string]any {
@@ -255,52 +215,68 @@ func normalizeText(value string) string {
 	return value
 }
 
-func extractStatusCode(fields map[string]any) int {
-	for _, key := range []string{"status_code", "status", "upstream_status"} {
-		if value, ok := fields[key]; ok {
-			if parsed, ok := toInt(value); ok {
-				return parsed
-			}
-		}
+func extractDurationMS(fields map[string]any) (int64, bool) {
+	if len(fields) == 0 {
+		return 0, false
 	}
-	return 0
-}
 
-func extractDurationMS(fields map[string]any) int64 {
 	for _, key := range []string{"duration_ms", "total_duration_ms", "upstream_duration_ms", "elapsed_ms"} {
-		if value, ok := fields[key]; ok {
-			if parsed, ok := toInt64(value); ok {
-				return parsed
-			}
+		value, ok := fields[key]
+		if !ok {
+			continue
+		}
+		if parsed, ok := toInt64(value); ok {
+			return parsed, true
 		}
 	}
-	return 0
+	return 0, false
 }
 
-func extractErrorMessage(fields map[string]any) string {
-	for _, key := range []string{"error", "response_error", "summary", "message", "detail"} {
-		if value, ok := fields[key]; ok {
-			switch typed := value.(type) {
-			case error:
-				if msg := normalizeText(typed.Error()); msg != "" {
-					return msg
-				}
-			case string:
-				if msg := normalizeText(typed); msg != "" {
-					return msg
-				}
-			case fmt.Stringer:
-				if msg := normalizeText(typed.String()); msg != "" {
-					return msg
-				}
-			default:
-				if msg := normalizeText(fmt.Sprint(typed)); msg != "" {
-					return msg
-				}
+func extractStatus(fields map[string]any, step string) string {
+	if len(fields) == 0 {
+		return statusFromStep(step)
+	}
+
+	for _, key := range []string{"status", "status_code", "upstream_status"} {
+		value, ok := fields[key]
+		if !ok {
+			continue
+		}
+
+		switch typed := value.(type) {
+		case string:
+			if msg := strings.ToLower(normalizeText(typed)); msg != "" {
+				return msg
+			}
+		default:
+			if code, ok := toInt(typed); ok {
+				return statusFromCode(code, step)
 			}
 		}
 	}
-	return ""
+
+	return statusFromStep(step)
+}
+
+func statusFromCode(code int, step string) string {
+	if code >= 400 {
+		return "error"
+	}
+	if code > 0 {
+		return "success"
+	}
+	return statusFromStep(step)
+}
+
+func statusFromStep(step string) string {
+	normalized := strings.ToLower(strings.TrimSpace(step))
+	if normalized == "" {
+		return "success"
+	}
+	if strings.Contains(normalized, "error") || strings.Contains(normalized, "failed") || strings.Contains(normalized, "timeout") {
+		return "error"
+	}
+	return "success"
 }
 
 func toInt(value any) (int, bool) {

@@ -74,6 +74,7 @@ func (a *App) RequestLogger() fiber.Handler {
 		}
 
 		log.Print(observability.FormatStepLine("http", route, "request_completed", traceID, userID, orgID, "request", fields))
+		backenderrors.RecordLog(requestContext(c), "http", route, "request_completed", "request", fields)
 		return nil
 	}
 }
