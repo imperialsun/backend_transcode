@@ -29,11 +29,23 @@ func TestBackendErrorEvents_ListAndDelete(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create org2: %v", err)
 	}
+	user1, err := st.CreateUser(ctx, org1.ID, "user1@example.com", "active", "password1")
+	if err != nil {
+		t.Fatalf("failed to create user1: %v", err)
+	}
+	user2, err := st.CreateUser(ctx, org1.ID, "user2@example.com", "active", "password2")
+	if err != nil {
+		t.Fatalf("failed to create user2: %v", err)
+	}
+	user3, err := st.CreateUser(ctx, org2.ID, "user3@example.com", "active", "password3")
+	if err != nil {
+		t.Fatalf("failed to create user3: %v", err)
+	}
 
 	now := time.Date(2026, 3, 30, 15, 45, 23, 0, time.UTC)
 	mustInsertBackendErrorEvent(t, st, backenderrors.Event{
 		TraceID:        "trace-1",
-		UserID:         "",
+		UserID:         user1.ID,
 		OrganizationID: org1.ID,
 		Component:      "admin",
 		Route:          "/admin/backend-errors",
@@ -47,7 +59,7 @@ func TestBackendErrorEvents_ListAndDelete(t *testing.T) {
 	})
 	mustInsertBackendErrorEvent(t, st, backenderrors.Event{
 		TraceID:        "trace-2",
-		UserID:         "",
+		UserID:         user2.ID,
 		OrganizationID: org1.ID,
 		Component:      "store",
 		Route:          "sqlite",
@@ -61,7 +73,7 @@ func TestBackendErrorEvents_ListAndDelete(t *testing.T) {
 	})
 	mustInsertBackendErrorEvent(t, st, backenderrors.Event{
 		TraceID:        "trace-3",
-		UserID:         "",
+		UserID:         user3.ID,
 		OrganizationID: org2.ID,
 		Component:      "admin",
 		Route:          "/admin/activity",
@@ -76,6 +88,7 @@ func TestBackendErrorEvents_ListAndDelete(t *testing.T) {
 
 	result, err := st.ListBackendErrorEvents(ctx, BackendErrorEventFilters{
 		OrganizationID: org1.ID,
+		UserID:         user1.ID,
 		Component:      "admin",
 		Route:          "/admin/backend-errors",
 		Query:          "alpha",
@@ -93,6 +106,7 @@ func TestBackendErrorEvents_ListAndDelete(t *testing.T) {
 
 	deleted, err := st.DeleteBackendErrorEvents(ctx, BackendErrorEventFilters{
 		OrganizationID: org1.ID,
+		UserID:         user2.ID,
 		Query:          "beta",
 	})
 	if err != nil {

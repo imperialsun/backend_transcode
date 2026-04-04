@@ -65,6 +65,7 @@ go build ./cmd/server
 - `RequestLogger` loggue chaque requete HTTP comme une ligne tracee avec le chemin de route, `step=request_completed` ou `step=request_failed`, `trace_id`, contexte user/org si disponible, et les champs de statut/duree finaux.
 - `RequestTimeout` emet `step=request_timeout`, et les refus d auth emettent `step=access_denied`, pour relier une requete de bout en bout.
 - Les handlers non triviaux ecrivent des logs d etapes courtes sur les flux auth, settings, activity, admin, demeter, meetings, mistral, mailer, lifecycle store, et generation reports.
+- Les steps de lifecycle terminant par `_success` sont des logs de routine et ne sont pas persistés dans `backend_error_events`; seules les etapes d erreur, d echec, de timeout, et les statuts HTTP 5xx sont captures.
 - Les services sortants ne logguent ni corps de mail, ni transcripts, ni mots de passe, ni tokens; seulement des compteurs, statuts, et resumes compacts d erreur.
 - Les logs restent limites aux frontieres et utilisent des routes stables plutot que des URLs brutes, afin de ne jamais exposer de query strings.
 - `GET /healthz` et `GET /readyz` servent de probes.

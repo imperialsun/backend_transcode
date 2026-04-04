@@ -130,6 +130,9 @@ func shouldCapture(step string, fields map[string]any) bool {
 	if normalizedStep == "" {
 		return false
 	}
+	if normalizedStep == "success" || strings.HasSuffix(normalizedStep, "_success") {
+		return false
+	}
 
 	for _, fragment := range []string{
 		"validation_error",

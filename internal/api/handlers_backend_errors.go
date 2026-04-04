@@ -47,6 +47,7 @@ func (a *App) listBackendErrorEvents(c *fiber.Ctx) error {
 
 	filters := store.BackendErrorEventFilters{
 		OrganizationID: strings.TrimSpace(c.Query("organizationId")),
+		UserID:         strings.TrimSpace(c.Query("userId")),
 		Component:      strings.TrimSpace(c.Query("component")),
 		Route:          strings.TrimSpace(c.Query("route")),
 		Query:          strings.TrimSpace(c.Query("q")),
@@ -58,6 +59,7 @@ func (a *App) listBackendErrorEvents(c *fiber.Ctx) error {
 
 	logAPIStep(c, "admin", route, "load_start", "list_backend_errors", map[string]any{
 		"organization_id": filters.OrganizationID,
+		"user_id":         filters.UserID,
 		"component":       filters.Component,
 		"route":           filters.Route,
 		"query":           filters.Query,
@@ -74,6 +76,7 @@ func (a *App) listBackendErrorEvents(c *fiber.Ctx) error {
 
 	logAPIStep(c, "admin", route, "response_ready", "list_backend_errors", map[string]any{
 		"organization_id": filters.OrganizationID,
+		"user_id":         filters.UserID,
 		"total":           result.Total,
 		"item_count":      len(result.Items),
 		"page":            page,
@@ -105,6 +108,7 @@ func (a *App) deleteBackendErrorEvents(c *fiber.Ctx) error {
 
 	filters := store.BackendErrorEventFilters{
 		OrganizationID: strings.TrimSpace(c.Query("organizationId")),
+		UserID:         strings.TrimSpace(c.Query("userId")),
 		Component:      strings.TrimSpace(c.Query("component")),
 		Route:          strings.TrimSpace(c.Query("route")),
 		Query:          strings.TrimSpace(c.Query("q")),
@@ -114,6 +118,7 @@ func (a *App) deleteBackendErrorEvents(c *fiber.Ctx) error {
 
 	logAPIStep(c, "admin", route, "delete_start", "purge_backend_errors", map[string]any{
 		"organization_id": filters.OrganizationID,
+		"user_id":         filters.UserID,
 		"component":       filters.Component,
 		"route":           filters.Route,
 		"query":           filters.Query,
@@ -128,6 +133,7 @@ func (a *App) deleteBackendErrorEvents(c *fiber.Ctx) error {
 
 	a.writeAdminAudit(requestContext(c), claims, "admin.backend_error.purge", "backend_error_events", "", fiber.Map{
 		"organizationId": filters.OrganizationID,
+		"userId":         filters.UserID,
 		"component":      filters.Component,
 		"route":          filters.Route,
 		"query":          filters.Query,
@@ -138,6 +144,7 @@ func (a *App) deleteBackendErrorEvents(c *fiber.Ctx) error {
 
 	logAPIStep(c, "admin", route, "response_ready", "purge_backend_errors", map[string]any{
 		"organization_id": filters.OrganizationID,
+		"user_id":         filters.UserID,
 		"deleted_count":   deletedCount,
 	})
 	return c.SendStatus(fiber.StatusNoContent)

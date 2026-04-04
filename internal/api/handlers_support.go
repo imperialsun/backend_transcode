@@ -13,6 +13,7 @@ import (
 const frontendErrorReportRoute = "/support/frontend-error-reports"
 
 type frontendErrorReportRequest struct {
+	Client           string                   `json:"client,omitempty"`
 	TraceID          string                   `json:"traceId,omitempty"`
 	Provider         string                   `json:"provider,omitempty"`
 	BackendError     frontendErrorReportError `json:"backendError"`
@@ -75,9 +76,14 @@ func (a *App) submitFrontendErrorReport(c *fiber.Ctx) error {
 	}
 
 	traceID := strings.TrimSpace(req.TraceID)
+	if traceID == "" {
+		traceID = strings.TrimSpace(req.BackendError.TraceID)
+	}
+	client := supportReportClient(req.Client)
 	recoveryStatus := frontendReportRecoveryStatus(req.Retry)
 	annexSummary := map[string]any{
-		"source":         "frontend",
+		"source":         client,
+		"client":         client,
 		"reportTraceId":  traceID,
 		"requestTraceId": requestTraceID(c),
 		"provider":       strings.TrimSpace(req.Provider),
@@ -137,27 +143,22 @@ func (a *App) submitFrontendErrorReport(c *fiber.Ctx) error {
 	fileName, fileSizeBytes, mimeType := summarizeFrontendReportFile(req)
 	statusCode := req.BackendError.Status
 	if statusCode == 0 {
-		statusCode = fiber.StatusBadRequest
-	}
-	errorMessage := strings.TrimSpace(req.BackendError.Message)
-	if errorMessage == "" {
-		if req.Retry.Attempted && req.Retry.Succeeded {
-			errorMessage = "frontend audio report recovered after raw retry"
-		} else if req.OriginalFile.SizeBytes == 0 {
-			errorMessage = "fichier audio vide"
+		if client == "android" {
+			statusCode = fiber.StatusInternalServerError
 		} else {
-			errorMessage = "frontend audio report"
+			statusCode = fiber.StatusBadRequest
 		}
 	}
+	errorMessage := supportReportErrorMessage(client, req)
 
 	event := backenderrors.Event{
 		TraceID:        reportTraceID,
 		UserID:         claims.UserID,
 		OrganizationID: claims.OrgID,
-		Component:      "frontend",
+		Component:      client,
 		Route:          route,
 		Step:           "report_received",
-		Title:          "frontend_audio_retry_report",
+		Title:          supportReportTitle(client),
 		StatusCode:     statusCode,
 		ErrorMessage:   errorMessage,
 		PayloadJSON:    payload,
@@ -212,6 +213,45 @@ func frontendReportRecoveryStatus(retry frontendErrorReportRetry) string {
 		return "raw_retry_succeeded"
 	}
 	return "raw_retry_failed"
+}
+
+func supportReportClient(raw string) string {
+	client := strings.ToLower(strings.TrimSpace(raw))
+	switch client {
+	case "android":
+		return "android"
+	case "frontend":
+		fallthrough
+	default:
+		return "frontend"
+	}
+}
+
+func supportReportTitle(client string) string {
+	if client == "android" {
+		return "android_support_report"
+	}
+	return "frontend_audio_retry_report"
+}
+
+func supportReportErrorMessage(client string, req frontendErrorReportRequest) string {
+	errorMessage := strings.TrimSpace(req.BackendError.Message)
+	if errorMessage != "" {
+		return errorMessage
+	}
+	if client == "android" {
+		if req.BackendError.Code != "" {
+			return strings.TrimSpace(req.BackendError.Code)
+		}
+		return "android support report"
+	}
+	if req.Retry.Attempted && req.Retry.Succeeded {
+		return "frontend audio report recovered after raw retry"
+	}
+	if req.OriginalFile.SizeBytes == 0 {
+		return "fichier audio vide"
+	}
+	return "frontend audio report"
 }
 
 func mustMarshalJSON(value any) []byte {

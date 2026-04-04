@@ -77,6 +77,71 @@ func TestRecordLogPersistsCapturedBackendErrors(t *testing.T) {
 	}
 }
 
+func TestRecordLogSkipsSuccessLifecycleSteps(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "backenderrors-success.sqlite")
+	st, err := store.Open(ctx, dbPath)
+	if err != nil {
+		t.Fatalf("failed to open store: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = st.Close()
+	})
+	backenderrors.RegisterSink(st)
+	t.Cleanup(func() {
+		backenderrors.RegisterSink(nil)
+	})
+
+	traceCtx := observability.WithTraceID(context.Background(), "trace-backend-error-cleanup-success")
+	backenderrors.RecordLog(traceCtx, "server", "lifecycle", "backend_error_cleanup_success", "server", map[string]any{
+		"purged": "0",
+	})
+
+	for i := 0; i < 40; i++ {
+		result, err := st.ListBackendErrorEvents(context.Background(), store.BackendErrorEventFilters{
+			Query: "trace-backend-error-cleanup-success",
+			Limit: 10,
+		})
+		if err != nil {
+			t.Fatalf("failed to list backend errors: %v", err)
+		}
+		if len(result.Items) > 0 {
+			t.Fatalf("expected success lifecycle step to be skipped, got %#v", result.Items[0])
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+}
+
+func TestRecordLogCapturesErrorLifecycleSteps(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "backenderrors-error.sqlite")
+	st, err := store.Open(ctx, dbPath)
+	if err != nil {
+		t.Fatalf("failed to open store: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = st.Close()
+	})
+	backenderrors.RegisterSink(st)
+	t.Cleanup(func() {
+		backenderrors.RegisterSink(nil)
+	})
+
+	traceCtx := observability.WithTraceID(context.Background(), "trace-backend-error-cleanup-error")
+	backenderrors.RecordLog(traceCtx, "server", "lifecycle", "backend_error_cleanup_error", "server", map[string]any{
+		"error":  context.DeadlineExceeded,
+		"purged": "0",
+	})
+
+	event := waitForBackendErrorEvent(t, st, "trace-backend-error-cleanup-error")
+	if event == nil {
+		t.Fatalf("expected error lifecycle step to be persisted")
+	}
+	if event.Step != "backend_error_cleanup_error" {
+		t.Fatalf("unexpected persisted step: %s", event.Step)
+	}
+}
+
 func waitForBackendErrorEvent(t *testing.T, st *store.Store, traceID string) *store.BackendErrorEvent {
 	t.Helper()
 

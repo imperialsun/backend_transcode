@@ -65,6 +65,7 @@ go build ./cmd/server
 - `RequestLogger` logs every HTTP request as a trace-shaped step line with the route path, `step=request_completed` or `step=request_failed`, `trace_id`, user/org context when available, and final status/duration fields.
 - `RequestTimeout` emits `step=request_timeout`, and auth denials emit `step=access_denied`, so one request can be followed end to end.
 - Non-trivial handlers emit short step logs for auth, settings, activity, admin, demeter, meetings, mistral, mailer, store lifecycle, and reports generation flows.
+- Lifecycle steps ending in `_success` are routine logs and are not persisted in `backend_error_events`; only error, failed, timeout, and HTTP 5xx steps are captured.
 - Outgoing services never log mail bodies, transcripts, passwords, or tokens; they only log counters, statuses, and compact error summaries.
 - Logs stay boundary-only and use stable route paths instead of raw URLs, so query strings never leak into runtime logs.
 - `GET /healthz` and `GET /readyz` serve as probes.

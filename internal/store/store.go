@@ -416,6 +416,7 @@ func (s *Store) Migrate(ctx context.Context) error {
 		`CREATE INDEX IF NOT EXISTS idx_activity_provider_org_day ON activity_usage_events(provider, organization_id, day);`,
 		`CREATE INDEX IF NOT EXISTS idx_backend_error_created_at ON backend_error_events(created_at);`,
 		`CREATE INDEX IF NOT EXISTS idx_backend_error_org_created_at ON backend_error_events(organization_id, created_at);`,
+		`CREATE INDEX IF NOT EXISTS idx_backend_error_user_created_at ON backend_error_events(user_id, created_at);`,
 		`CREATE INDEX IF NOT EXISTS idx_backend_error_component_created_at ON backend_error_events(component, created_at);`,
 		`CREATE INDEX IF NOT EXISTS idx_backend_error_route_created_at ON backend_error_events(route, created_at);`,
 		`CREATE INDEX IF NOT EXISTS idx_backend_error_trace_id ON backend_error_events(trace_id);`,

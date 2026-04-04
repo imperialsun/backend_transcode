@@ -31,6 +31,7 @@ type BackendErrorEvent struct {
 
 type BackendErrorEventFilters struct {
 	OrganizationID string
+	UserID         string
 	Component      string
 	Route          string
 	Query          string
@@ -245,6 +246,10 @@ func buildBackendErrorWhereClause(filters BackendErrorEventFilters) (string, []a
 	if organizationID := strings.TrimSpace(filters.OrganizationID); organizationID != "" {
 		clauses = append(clauses, "organization_id = ?")
 		args = append(args, organizationID)
+	}
+	if userID := strings.TrimSpace(filters.UserID); userID != "" {
+		clauses = append(clauses, "user_id = ?")
+		args = append(args, userID)
 	}
 	if !filters.From.IsZero() {
 		clauses = append(clauses, "created_at >= ?")

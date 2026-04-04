@@ -217,6 +217,93 @@ func TestSubmitFrontendErrorReport_CreatesStandaloneRowWithoutTraceMatch(t *test
 	}
 }
 
+func TestSubmitAndroidErrorReport_StoresAndroidClientMetadata(t *testing.T) {
+	app, _, st, user := setupSupportRoutesTest(t)
+	if err := st.SetUserGlobalRoles(context.Background(), user.ID, []string{"user"}); err != nil {
+		t.Fatalf("failed to set user roles: %v", err)
+	}
+
+	loginResp := performLoginRequest(t, app, "/api/v1/auth/login", map[string]string{
+		"email":    user.Email,
+		"password": "ChangeMe123!",
+	})
+	if loginResp.StatusCode != fiber.StatusOK {
+		t.Fatalf("expected 200 for login, got %d", loginResp.StatusCode)
+	}
+	accessCookie := findCookie(t, loginResp, auth.AppAccessCookieName)
+
+	traceID := "trace-android-support"
+	report := map[string]any{
+		"client":   "android",
+		"provider": "android",
+		"backendError": map[string]any{
+			"status":  500,
+			"code":    "uncaught_exception",
+			"message": "NullPointerException",
+			"path":    "android://uncaught-exception",
+			"method":  "PROCESS",
+			"traceId": traceID,
+		},
+		"originalFile": map[string]any{
+			"name":      "",
+			"sizeBytes": 0,
+			"mimeType":  "",
+			"source":    "android",
+		},
+		"processedFile": map[string]any{
+			"name":      "",
+			"sizeBytes": 0,
+			"mimeType":  "",
+			"source":    "android",
+		},
+		"retry": map[string]any{
+			"attempted":   false,
+			"succeeded":   false,
+			"usedRawFile": false,
+		},
+		"diagnosticBundle": map[string]any{
+			"schemaVersion": 1,
+			"client":        "android",
+			"session":       map[string]any{"route": "android://uncaught-exception"},
+			"settings":      map[string]any{"lastEmail": user.Email},
+			"telemetry":     map[string]any{"threadName": "main"},
+		},
+	}
+
+	resp := performJSONRequestWithHeaders(
+		t,
+		app,
+		http.MethodPost,
+		"/api/v1/support/frontend-error-reports",
+		report,
+		[]*http.Cookie{accessCookie},
+		nil,
+	)
+	if resp.StatusCode != fiber.StatusNoContent {
+		t.Fatalf("expected 204 from android report, got %d", resp.StatusCode)
+	}
+
+	var component, errorMessage, payloadJSON string
+	if err := st.DB.QueryRowContext(context.Background(), `
+		SELECT component, error_message, payload_json
+		FROM backend_error_events
+		WHERE trace_id = ? AND component = 'android'
+		ORDER BY created_at DESC
+		LIMIT 1
+	`, traceID).Scan(&component, &errorMessage, &payloadJSON); err != nil {
+		t.Fatalf("failed to load android report row: %v", err)
+	}
+	if component != "android" {
+		t.Fatalf("expected android component, got %q", component)
+	}
+	if errorMessage != "NullPointerException" {
+		t.Fatalf("expected android error message to be stored, got %q", errorMessage)
+	}
+	if !strings.Contains(payloadJSON, `"client":"android"`) {
+		t.Fatalf("expected payload json to contain android client, got %s", payloadJSON)
+	}
+}
+
 func setupSupportRoutesTest(t *testing.T) (*fiber.App, *App, *store.Store, *store.User) {
 	t.Helper()
 

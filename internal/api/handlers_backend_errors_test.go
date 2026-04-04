@@ -92,6 +92,32 @@ func TestListBackendErrorEvents_RespectsScopeAndFilters(t *testing.T) {
 		}
 	}
 
+	var userPayload backendErrorEventsResponse
+	userScopeResp := performPasswordResetRequest(
+		t,
+		fixture.app,
+		http.MethodGet,
+		"/api/v1/admin/backend-errors?organizationId="+fixture.org.ID+"&userId="+fixture.orgAdminUser.ID+"&page=1&pageSize=10",
+		nil,
+		nil,
+		adminHeaders(t, fixture.superAdminUser, fixture.appCtx.Config.JWTSecret),
+	)
+	if userScopeResp.StatusCode != fiber.StatusOK {
+		t.Fatalf("expected 200 for user-scoped list, got %d", userScopeResp.StatusCode)
+	}
+	if err := json.NewDecoder(userScopeResp.Body).Decode(&userPayload); err != nil {
+		t.Fatalf("failed to decode user payload: %v", err)
+	}
+	if userPayload.Total != 1 {
+		t.Fatalf("expected 1 user-scoped event, got %d", userPayload.Total)
+	}
+	if len(userPayload.Items) != 1 {
+		t.Fatalf("expected 1 user-scoped item, got %d", len(userPayload.Items))
+	}
+	if userPayload.Items[0].UserID != fixture.orgAdminUser.ID {
+		t.Fatalf("expected user scope to stay on %s, got %#v", fixture.orgAdminUser.ID, userPayload.Items[0])
+	}
+
 	superResp := performPasswordResetRequest(
 		t,
 		fixture.app,
@@ -177,7 +203,7 @@ func TestDeleteBackendErrorEvents_PurgesFilteredHistoryAndWritesAudit(t *testing
 		t,
 		fixture.app,
 		http.MethodDelete,
-		"/api/v1/admin/backend-errors?component=admin&q=purge",
+		"/api/v1/admin/backend-errors?component=admin&q=purge&userId="+fixture.orgAdminUser.ID,
 		nil,
 		nil,
 		adminHeaders(t, fixture.superAdminUser, fixture.appCtx.Config.JWTSecret),
