@@ -18,9 +18,9 @@ var removedLegacySettingsKeys = map[string]struct{}{
 }
 
 func (a *App) RegisterSettingsRoutes(router fiber.Router) {
-	router.Get("/settings", a.AppAuthRequired(), RequirePermissions("feature.settings"), a.getSettings)
-	router.Put("/settings", a.AppAuthRequired(), RequirePermissions("feature.settings"), a.putSettings)
-	router.Post("/settings/reset", a.AppAuthRequired(), RequirePermissions("feature.settings"), a.resetSettings)
+	router.Get("/settings", a.AppAuthRequired(), a.getSettings)
+	router.Put("/settings", a.AppAuthRequired(), a.putSettings)
+	router.Post("/settings/reset", a.AppAuthRequired(), a.resetSettings)
 }
 
 func (a *App) getSettings(c *fiber.Ctx) error {
