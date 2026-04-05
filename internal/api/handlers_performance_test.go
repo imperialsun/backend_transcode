@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/url"
 	"testing"
 	"time"
 
+	"demeter-backend/internal/auth"
 	"demeter-backend/internal/backendperformance"
 	"demeter-backend/internal/store"
 
@@ -20,6 +22,14 @@ func TestAdminPerformanceSummary_RespectsTaskFilterAndTaskOptions(t *testing.T) 
 	}
 
 	now := time.Date(2026, 4, 4, 12, 0, 0, 0, time.UTC)
+	passwordHash, err := auth.HashPassword("ChangeMe123!")
+	if err != nil {
+		t.Fatalf("failed to hash password: %v", err)
+	}
+	peer, err := fixture.store.CreateUser(context.Background(), fixture.org.ID, "peer@example.com", passwordHash, "active")
+	if err != nil {
+		t.Fatalf("failed to create peer user: %v", err)
+	}
 	if _, err := fixture.store.IngestPerformanceEvents(context.Background(), fixture.org.ID, fixture.actor.ID, []backendperformance.Event{
 		{
 			EventID:        "perf-1",
@@ -28,7 +38,7 @@ func TestAdminPerformanceSummary_RespectsTaskFilterAndTaskOptions(t *testing.T) 
 			OrganizationID: fixture.org.ID,
 			Surface:        "backend",
 			Component:      "http",
-			Task:           "request",
+			Task:           "http_request",
 			Status:         "success",
 			DurationMS:     125,
 			Route:          "/api/v1/ping",
@@ -42,7 +52,7 @@ func TestAdminPerformanceSummary_RespectsTaskFilterAndTaskOptions(t *testing.T) 
 			OrganizationID: fixture.org.ID,
 			Surface:        "backend",
 			Component:      "mistral",
-			Task:           "response_received",
+			Task:           "mistral_models",
 			Status:         "success",
 			DurationMS:     375,
 			Route:          "/v1/models",
@@ -56,22 +66,38 @@ func TestAdminPerformanceSummary_RespectsTaskFilterAndTaskOptions(t *testing.T) 
 			OrganizationID: fixture.org.ID,
 			Surface:        "frontend",
 			Component:      "cloud",
-			Task:           "cloud_total",
+			Task:           "frontend_cloud_total",
 			Status:         "success",
 			DurationMS:     1200,
 			Route:          "/cloudupload",
 			MetaJSON:       json.RawMessage(`{"provider":"whisper"}`),
 			OccurredAt:     now.Add(-2 * time.Hour),
 		},
+		{
+			EventID:        "perf-4",
+			TraceID:        "trace-4",
+			UserID:         peer.ID,
+			OrganizationID: fixture.org.ID,
+			Surface:        "frontend",
+			Component:      "cloud",
+			Task:           "frontend_cloud_total",
+			Status:         "success",
+			DurationMS:     800,
+			Route:          "/cloudupload",
+			MetaJSON:       json.RawMessage(`{"provider":"whisper"}`),
+			OccurredAt:     now.Add(-3 * time.Hour),
+		},
 	}); err != nil {
 		t.Fatalf("failed to seed performance events: %v", err)
 	}
 
+	from := url.QueryEscape(now.Add(-24 * time.Hour).Format(time.RFC3339))
+	to := url.QueryEscape(now.Format(time.RFC3339))
 	resp := performJSONRequestWithHeaders(
 		t,
 		fixture.app,
 		http.MethodGet,
-		"/api/v1/admin/performance/summary?organizationId="+fixture.org.ID+"&from=2026-04-03&to=2026-04-04&task=request",
+		"/api/v1/admin/performance/summary?organizationId="+fixture.org.ID+"&from="+from+"&to="+to+"&userId="+fixture.actor.ID+"&task=http_request",
 		nil,
 		nil,
 		adminHeaders(t, fixture.superAdminUser, fixture.appCtx.Config.JWTSecret),
@@ -87,13 +113,16 @@ func TestAdminPerformanceSummary_RespectsTaskFilterAndTaskOptions(t *testing.T) 
 	if summary.OrganizationID != fixture.org.ID {
 		t.Fatalf("unexpected organization id: %s", summary.OrganizationID)
 	}
+	if summary.UserID != fixture.actor.ID {
+		t.Fatalf("unexpected user id: %s", summary.UserID)
+	}
 	if summary.Totals.Events != 1 || summary.Totals.TotalDurationMS != 125 {
 		t.Fatalf("unexpected filtered totals: %#v", summary.Totals)
 	}
 	if len(summary.TaskOptions) != 3 {
 		t.Fatalf("expected 3 task options, got %#v", summary.TaskOptions)
 	}
-	if len(summary.TopTasks) != 1 || summary.TopTasks[0].Task != "request" || summary.TopTasks[0].Route != "/api/v1/ping" {
+	if len(summary.TopTasks) != 1 || summary.TopTasks[0].Task != "http_request" || summary.TopTasks[0].Route != "/api/v1/ping" {
 		t.Fatalf("unexpected filtered top tasks: %#v", summary.TopTasks)
 	}
 	if len(summary.RecentEvents) != 1 || summary.RecentEvents[0].TraceID != "trace-1" {
@@ -108,6 +137,14 @@ func TestDeletePerformanceEvents_RespectsFiltersAndWritesAudit(t *testing.T) {
 	}
 
 	now := time.Date(2026, 4, 4, 12, 0, 0, 0, time.UTC)
+	passwordHash, err := auth.HashPassword("ChangeMe123!")
+	if err != nil {
+		t.Fatalf("failed to hash password: %v", err)
+	}
+	peer, err := fixture.store.CreateUser(context.Background(), fixture.org.ID, "peer@example.com", passwordHash, "active")
+	if err != nil {
+		t.Fatalf("failed to create peer user: %v", err)
+	}
 	if _, err := fixture.store.IngestPerformanceEvents(context.Background(), fixture.org.ID, fixture.actor.ID, []backendperformance.Event{
 		{
 			EventID:        "perf-keep",
@@ -116,7 +153,7 @@ func TestDeletePerformanceEvents_RespectsFiltersAndWritesAudit(t *testing.T) {
 			OrganizationID: fixture.org.ID,
 			Surface:        "backend",
 			Component:      "http",
-			Task:           "request",
+			Task:           "http_request",
 			Status:         "success",
 			DurationMS:     125,
 			Route:          "/api/v1/ping",
@@ -124,13 +161,13 @@ func TestDeletePerformanceEvents_RespectsFiltersAndWritesAudit(t *testing.T) {
 			OccurredAt:     now,
 		},
 		{
-			EventID:        "perf-delete",
-			TraceID:        "trace-delete",
-			UserID:         fixture.actor.ID,
+			EventID:        "perf-peer",
+			TraceID:        "trace-peer",
+			UserID:         peer.ID,
 			OrganizationID: fixture.org.ID,
 			Surface:        "backend",
 			Component:      "mistral",
-			Task:           "response_received",
+			Task:           "mistral_models",
 			Status:         "success",
 			DurationMS:     375,
 			Route:          "/v1/models",
@@ -141,11 +178,13 @@ func TestDeletePerformanceEvents_RespectsFiltersAndWritesAudit(t *testing.T) {
 		t.Fatalf("failed to seed performance events: %v", err)
 	}
 
+	from := url.QueryEscape(now.Add(-24 * time.Hour).Format(time.RFC3339))
+	to := url.QueryEscape(now.Format(time.RFC3339))
 	resp := performJSONRequestWithHeaders(
 		t,
 		fixture.app,
 		http.MethodDelete,
-		"/api/v1/admin/performance?organizationId="+fixture.org.ID+"&from=2026-04-03&to=2026-04-04&task=response_received",
+		"/api/v1/admin/performance?organizationId="+fixture.org.ID+"&from="+from+"&to="+to+"&userId="+fixture.actor.ID+"&task=mistral_models",
 		nil,
 		nil,
 		adminHeaders(t, fixture.superAdminUser, fixture.appCtx.Config.JWTSecret),
@@ -157,13 +196,17 @@ func TestDeletePerformanceEvents_RespectsFiltersAndWritesAudit(t *testing.T) {
 
 	summary, err := fixture.store.GetPerformanceSummary(context.Background(), store.PerformanceSummaryFilters{
 		OrganizationID: fixture.org.ID,
-		From:           "2026-04-03",
-		To:             "2026-04-04",
+		UserID:         fixture.actor.ID,
+		From:           now.Add(-24 * time.Hour),
+		To:             now,
 		TopLimit:       10,
 		RecentLimit:    10,
 	})
 	if err != nil {
 		t.Fatalf("failed to reload performance summary: %v", err)
+	}
+	if summary.UserID != fixture.actor.ID {
+		t.Fatalf("unexpected summary user id: %#v", summary.UserID)
 	}
 	if summary.Totals.Events != 1 || len(summary.RecentEvents) != 1 || summary.RecentEvents[0].TraceID != "trace-keep" {
 		t.Fatalf("unexpected remaining performance data: %#v", summary)

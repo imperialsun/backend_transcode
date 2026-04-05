@@ -171,19 +171,16 @@ func logUpstreamStep(ctx context.Context, route, step string, fields map[string]
 }
 
 func performanceTaskForRoute(route, step string) string {
-	family := "mistral"
 	normalizedRoute := strings.TrimSpace(route)
-	normalizedStep := strings.TrimSpace(step)
-	if normalizedStep == "" {
-		normalizedStep = "unknown"
-	}
 	switch {
+	case strings.HasPrefix(normalizedRoute, "/v1/models"), strings.HasPrefix(normalizedRoute, "/models"):
+		return "mistral_models"
 	case strings.HasPrefix(normalizedRoute, "/v1/audio/transcriptions"):
-		family = "transcription"
+		return "mistral_audio_transcription"
 	case strings.HasPrefix(normalizedRoute, "/v1/chat/completions"):
-		family = "cr_generation"
+		return "mistral_report_generation"
 	}
-	return family + "_" + normalizedStep
+	return "mistral_request"
 }
 
 func logUpstreamTransportError(ctx context.Context, method, route string, duration time.Duration, err error) {

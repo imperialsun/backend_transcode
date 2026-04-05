@@ -68,13 +68,13 @@ func (a *App) RequestLogger() fiber.Handler {
 			} else {
 				fields["error"] = http.StatusText(status)
 			}
-			log.Print(observability.FormatStepLine("http", route, "request_failed", traceID, userID, orgID, "request", fields))
-			backenderrors.RecordLog(requestContext(c), "http", route, "request_failed", "request", fields)
+			log.Print(observability.FormatStepLine("http", route, "request_failed", traceID, userID, orgID, "http_request", fields))
+			backenderrors.RecordLog(requestContext(c), "http", route, "request_failed", "http_request", fields)
 			return err
 		}
 
-		log.Print(observability.FormatStepLine("http", route, "request_completed", traceID, userID, orgID, "request", fields))
-		backenderrors.RecordLog(requestContext(c), "http", route, "request_completed", "request", fields)
+		log.Print(observability.FormatStepLine("http", route, "request_completed", traceID, userID, orgID, "http_request", fields))
+		backenderrors.RecordLog(requestContext(c), "http", route, "request_completed", "http_request", fields)
 		return nil
 	}
 }

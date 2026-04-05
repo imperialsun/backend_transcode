@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"demeter-backend/internal/auth"
+	"demeter-backend/internal/backenderrors"
 	"demeter-backend/internal/config"
 	"demeter-backend/internal/store"
 
@@ -452,6 +453,66 @@ func TestLoginRejectsInvalidPayloadCredentialsAndAdminScope(t *testing.T) {
 	})
 	if adminResp.StatusCode != fiber.StatusForbidden {
 		t.Fatalf("expected 403 for admin login without admin scope, got %d", adminResp.StatusCode)
+	}
+}
+
+func TestAdminLoginFailureEvents_ArePersistedInBackendErrors(t *testing.T) {
+	app, _, st, user := setupLoginRoutesTest(t)
+	backenderrors.RegisterSink(st)
+	t.Cleanup(func() {
+		backenderrors.RegisterSink(nil)
+	})
+
+	credTraceID := "trace-admin-login-bad-credentials"
+	credResp := performJSONRequestWithHeaders(
+		t,
+		app,
+		http.MethodPost,
+		"/api/v1/admin/auth/login",
+		map[string]string{
+			"email":    user.Email,
+			"password": "WrongPass123!",
+		},
+		nil,
+		map[string]string{"X-Trace-Id": credTraceID},
+	)
+	if credResp.StatusCode != fiber.StatusUnauthorized {
+		t.Fatalf("expected 401 for invalid admin credentials, got %d", credResp.StatusCode)
+	}
+
+	credEvent := waitForAuthBackendErrorEventByTraceAndStep(t, st, credTraceID, "login_failed")
+	if credEvent == nil {
+		t.Fatal("expected invalid credentials to be persisted in backend errors")
+	}
+	if credEvent.Component != "auth" || credEvent.Route != "/api/v1/admin/auth/login" {
+		t.Fatalf("unexpected invalid-credentials event: %#v", credEvent)
+	}
+	if credEvent.StatusCode != fiber.StatusUnauthorized {
+		t.Fatalf("expected invalid credentials status 401, got %d", credEvent.StatusCode)
+	}
+
+	malformedTraceID := "trace-admin-login-malformed"
+	malformedResp := performRawJSONRequestWithHeaders(
+		t,
+		app,
+		http.MethodPost,
+		"/api/v1/admin/auth/login",
+		`{"email":`,
+		map[string]string{"X-Trace-Id": malformedTraceID},
+	)
+	if malformedResp.StatusCode != fiber.StatusBadRequest {
+		t.Fatalf("expected 400 for malformed admin login payload, got %d", malformedResp.StatusCode)
+	}
+
+	malformedEvent := waitForAuthBackendErrorEventByTraceAndStep(t, st, malformedTraceID, "login_request_failed")
+	if malformedEvent == nil {
+		t.Fatal("expected malformed admin login payload to be persisted in backend errors")
+	}
+	if malformedEvent.Component != "auth" || malformedEvent.Route != "/api/v1/admin/auth/login" {
+		t.Fatalf("unexpected malformed-payload event: %#v", malformedEvent)
+	}
+	if malformedEvent.StatusCode != fiber.StatusBadRequest {
+		t.Fatalf("expected malformed payload status 400, got %d", malformedEvent.StatusCode)
 	}
 }
 
@@ -902,4 +963,83 @@ func setupLoginRoutesTest(t *testing.T) (*fiber.App, *App, *store.Store, *store.
 	appCtx.RegisterAdminAuthRoutes(api.Group("/admin/auth"))
 
 	return app, appCtx, st, user
+}
+
+func performRawJSONRequestWithHeaders(t *testing.T, app *fiber.App, method, path, rawBody string, headers map[string]string) *http.Response {
+	t.Helper()
+	req := httptest.NewRequest(method, path, strings.NewReader(rawBody))
+	req.Header.Set(fiber.HeaderContentType, fiber.MIMEApplicationJSON)
+	for key, value := range headers {
+		req.Header.Set(key, value)
+	}
+	resp, err := app.Test(req, 5_000)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	t.Cleanup(func() {
+		closeHTTPResponse(t, resp)
+	})
+	return resp
+}
+
+func waitForAuthBackendErrorEventByTraceAndStep(t *testing.T, st *store.Store, traceID, step string) *store.BackendErrorEvent {
+	t.Helper()
+
+	for i := 0; i < 40; i++ {
+		var (
+			event          store.BackendErrorEvent
+			userID         sql.NullString
+			orgID          sql.NullString
+			statusCode     sql.NullInt64
+			durationMs     sql.NullInt64
+			errorMessage   sql.NullString
+			payloadJSON    sql.NullString
+			annexJSON      sql.NullString
+			recoveryStatus sql.NullString
+		)
+		err := st.DB.QueryRowContext(context.Background(), `
+			SELECT id, trace_id, user_id, organization_id, component, route, step, title, status_code, duration_ms, error_message, payload_json, annex_json, recovery_status, created_at
+			FROM backend_error_events
+			WHERE trace_id = ? AND step = ?
+			ORDER BY created_at DESC, id DESC
+			LIMIT 1
+		`, traceID, step).Scan(
+			&event.ID,
+			&event.TraceID,
+			&userID,
+			&orgID,
+			&event.Component,
+			&event.Route,
+			&event.Step,
+			&event.Title,
+			&statusCode,
+			&durationMs,
+			&errorMessage,
+			&payloadJSON,
+			&annexJSON,
+			&recoveryStatus,
+			&event.CreatedAt,
+		)
+		if err == nil {
+			event.UserID = strings.TrimSpace(userID.String)
+			event.OrganizationID = strings.TrimSpace(orgID.String)
+			if statusCode.Valid {
+				event.StatusCode = int(statusCode.Int64)
+			}
+			if durationMs.Valid {
+				event.DurationMS = durationMs.Int64
+			}
+			event.ErrorMessage = strings.TrimSpace(errorMessage.String)
+			event.PayloadJSON = strings.TrimSpace(payloadJSON.String)
+			event.AnnexJSON = strings.TrimSpace(annexJSON.String)
+			event.RecoveryStatus = strings.TrimSpace(recoveryStatus.String)
+			return &event
+		}
+		if err != sql.ErrNoRows {
+			t.Fatalf("failed to query backend error event: %v", err)
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+
+	return nil
 }

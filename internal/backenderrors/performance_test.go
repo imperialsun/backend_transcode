@@ -50,7 +50,7 @@ func TestRecordLogPersistsBackendPerformanceEvents(t *testing.T) {
 	traceCtx := observability.WithTraceID(context.Background(), "trace-performance-log")
 	traceCtx = requestmeta.WithActor(traceCtx, user.ID, org.ID)
 
-	backenderrors.RecordLog(traceCtx, "http", "/ping", "request_completed", "request", map[string]any{
+	backenderrors.RecordLog(traceCtx, "http", "/ping", "request_completed", "http_request", map[string]any{
 		"duration_ms": 12,
 		"status":      200,
 		"method":      "GET",
@@ -60,7 +60,7 @@ func TestRecordLogPersistsBackendPerformanceEvents(t *testing.T) {
 	if event == nil {
 		t.Fatal("expected performance event to be persisted")
 	}
-	if event.Surface != "backend" || event.Component != "http" || event.Task != "request" {
+	if event.Surface != "backend" || event.Component != "http" || event.Task != "http_request" {
 		t.Fatalf("unexpected performance event: %#v", event)
 	}
 	if event.Status != "success" {
@@ -105,7 +105,7 @@ func TestRecordLogSkipsRefreshRoutes(t *testing.T) {
 
 	refreshTraceCtx := observability.WithTraceID(context.Background(), "trace-refresh-skip")
 	refreshTraceCtx = requestmeta.WithActor(refreshTraceCtx, user.ID, org.ID)
-	backendperformance.RecordLog(refreshTraceCtx, "http", "/api/v1/auth/refresh", "request_completed", "request", map[string]any{
+	backendperformance.RecordLog(refreshTraceCtx, "http", "/api/v1/auth/refresh", "request_completed", "http_request", map[string]any{
 		"duration_ms": 12,
 		"status":      200,
 	})
@@ -116,7 +116,7 @@ func TestRecordLogSkipsRefreshRoutes(t *testing.T) {
 
 	normalTraceCtx := observability.WithTraceID(context.Background(), "trace-normal-skip-check")
 	normalTraceCtx = requestmeta.WithActor(normalTraceCtx, user.ID, org.ID)
-	backendperformance.RecordLog(normalTraceCtx, "http", "/api/v1/ping", "request_completed", "request", map[string]any{
+	backendperformance.RecordLog(normalTraceCtx, "http", "/api/v1/ping", "request_completed", "http_request", map[string]any{
 		"duration_ms": 18,
 		"status":      200,
 	})
@@ -125,7 +125,7 @@ func TestRecordLogSkipsRefreshRoutes(t *testing.T) {
 	if event == nil {
 		t.Fatal("expected non-refresh route to persist a performance event")
 	}
-	if event.Route != "/api/v1/ping" || event.Task != "request" {
+	if event.Route != "/api/v1/ping" || event.Task != "http_request" {
 		t.Fatalf("unexpected persisted performance event: %#v", event)
 	}
 }
@@ -138,8 +138,8 @@ func waitForPerformanceEvent(t *testing.T, st *store.Store, organizationID, trac
 			OrganizationID: organizationID,
 			RecentLimit:    10,
 			TopLimit:       10,
-			From:           time.Now().UTC().AddDate(0, 0, -1).Format(time.DateOnly),
-			To:             time.Now().UTC().Format(time.DateOnly),
+			From:           time.Now().UTC().Add(-24 * time.Hour),
+			To:             time.Now().UTC(),
 		})
 		if err != nil {
 			t.Fatalf("failed to load performance summary: %v", err)

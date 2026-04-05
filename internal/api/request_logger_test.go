@@ -70,7 +70,7 @@ func TestRequestLogger_LogsSuccessfulRequest(t *testing.T) {
 	if event == nil {
 		t.Fatal("expected request logger to persist a performance event")
 	}
-	if event.Component != "http" || event.Task != "request" || event.Route != "/ping" {
+	if event.Component != "http" || event.Task != "http_request" || event.Route != "/ping" {
 		t.Fatalf("unexpected performance event: %#v", event)
 	}
 	if event.Surface != "backend" || event.Status != "success" {

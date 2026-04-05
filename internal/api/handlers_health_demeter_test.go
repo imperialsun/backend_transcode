@@ -549,7 +549,7 @@ func TestDemeterAudioTranscriptions_BackendRouteChunksServerSideAndLogsDurationA
 		"chunk_duration_sec=61",
 		"normalized_format=\"audio/wav\"",
 		"file_name=\"sample.wav\"",
-		"title=\"audio_transcription\"",
+		"title=\"demeter_audio_transcription\"",
 	} {
 		if !strings.Contains(logged, needle) {
 			t.Fatalf("expected %q in backend direct logs, got %q", needle, logged)
@@ -673,7 +673,7 @@ func TestDemeterAudioTranscriptions_RelayRouteUsesSourceAudioWithoutBackendTrans
 		"route_mode=\"relay\"",
 		"chunk_count=1",
 		"normalized_format=\"application/octet-stream\"",
-		"title=\"audio_transcription\"",
+		"title=\"demeter_audio_transcription\"",
 	} {
 		if !strings.Contains(logged, needle) {
 			t.Fatalf("expected %q in relay logs, got %q", needle, logged)

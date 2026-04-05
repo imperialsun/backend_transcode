@@ -7,9 +7,11 @@ import (
 	"time"
 
 	"demeter-backend/internal/auth"
+	"demeter-backend/internal/backenderrors"
 	"demeter-backend/internal/config"
 	"demeter-backend/internal/rbac"
 	"demeter-backend/internal/store"
+
 	"github.com/gofiber/fiber/v2"
 	"github.com/golang-jwt/jwt/v5"
 )
@@ -194,6 +196,11 @@ func (a *App) loginForSession(c *fiber.Ctx, sessionType auth.SessionType) error 
 	var req loginRequest
 	if err := c.BodyParser(&req); err != nil {
 		logAPIStep(c, "auth", route, "request_parse_error", sessionType.String(), map[string]any{"error": err})
+		backenderrors.RecordLog(requestContext(c), "auth", route, "login_request_failed", sessionType.String(), map[string]any{
+			"status_code":  fiber.StatusBadRequest,
+			"error":        err,
+			"session_type": sessionType.String(),
+		})
 		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{Error: "invalid payload"})
 	}
 	email := strings.ToLower(strings.TrimSpace(req.Email))
@@ -201,6 +208,13 @@ func (a *App) loginForSession(c *fiber.Ctx, sessionType auth.SessionType) error 
 		logAPIStep(c, "auth", route, "request_validation_error", sessionType.String(), map[string]any{
 			"email_present":    email != "",
 			"password_present": strings.TrimSpace(req.Password) != "",
+		})
+		backenderrors.RecordLog(requestContext(c), "auth", route, "login_request_failed", sessionType.String(), map[string]any{
+			"status_code":      fiber.StatusBadRequest,
+			"error":            "email and password are required",
+			"email_present":    email != "",
+			"password_present": strings.TrimSpace(req.Password) != "",
+			"session_type":     sessionType.String(),
 		})
 		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{Error: "email and password are required"})
 	}
@@ -213,6 +227,12 @@ func (a *App) loginForSession(c *fiber.Ctx, sessionType auth.SessionType) error 
 	}
 	if user == nil || !auth.VerifyPassword(user.PasswordHash, req.Password) {
 		logAPIStep(c, "auth", route, "credentials_rejected", sessionType.String(), nil)
+		backenderrors.RecordLog(requestContext(c), "auth", route, "login_failed", sessionType.String(), map[string]any{
+			"status_code":  fiber.StatusUnauthorized,
+			"error":        "invalid credentials",
+			"email":        email,
+			"session_type": sessionType.String(),
+		})
 		return c.Status(fiber.StatusUnauthorized).JSON(ErrorResponse{Error: "invalid credentials"})
 	}
 	if user.Status != "active" {

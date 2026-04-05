@@ -35,6 +35,10 @@ func TestPerformanceSummaryIncludesBackendAndFrontendEvents(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create user: %v", err)
 	}
+	peer, err := st.CreateUser(ctx, org.ID, "peer@example.com", passwordHash, "active")
+	if err != nil {
+		t.Fatalf("failed to create peer user: %v", err)
+	}
 
 	now := time.Date(2026, 4, 4, 12, 0, 0, 0, time.UTC)
 	events := []backendperformance.Event{
@@ -45,7 +49,7 @@ func TestPerformanceSummaryIncludesBackendAndFrontendEvents(t *testing.T) {
 			OrganizationID: org.ID,
 			Surface:        "frontend",
 			Component:      "cloud",
-			Task:           "cloud_total",
+			Task:           "frontend_cloud_total",
 			Status:         "success",
 			DurationMS:     4_200,
 			Route:          "/cloudupload",
@@ -59,7 +63,7 @@ func TestPerformanceSummaryIncludesBackendAndFrontendEvents(t *testing.T) {
 			OrganizationID: org.ID,
 			Surface:        "backend",
 			Component:      "http",
-			Task:           "request",
+			Task:           "http_request",
 			Status:         "error",
 			DurationMS:     500,
 			Route:          "/api/v1/performance/events",
@@ -73,12 +77,26 @@ func TestPerformanceSummaryIncludesBackendAndFrontendEvents(t *testing.T) {
 			OrganizationID: org.ID,
 			Surface:        "backend",
 			Component:      "mistral",
-			Task:           "response_received",
+			Task:           "mistral_models",
 			Status:         "success",
 			DurationMS:     900,
 			Route:          "/v1/models",
 			MetaJSON:       json.RawMessage(`{"status":200}`),
 			OccurredAt:     now.Add(-2 * time.Hour),
+		},
+		{
+			EventID:        "perf-4",
+			TraceID:        "trace-4",
+			UserID:         peer.ID,
+			OrganizationID: org.ID,
+			Surface:        "frontend",
+			Component:      "cloud",
+			Task:           "frontend_cloud_total",
+			Status:         "success",
+			DurationMS:     1_100,
+			Route:          "/cloudupload",
+			MetaJSON:       json.RawMessage(`{"provider":"whisper"}`),
+			OccurredAt:     now.Add(-3 * time.Hour),
 		},
 	}
 
@@ -86,14 +104,14 @@ func TestPerformanceSummaryIncludesBackendAndFrontendEvents(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to ingest performance events: %v", err)
 	}
-	if result.Accepted != 3 || result.Duplicates != 0 {
+	if result.Accepted != 4 || result.Duplicates != 0 {
 		t.Fatalf("unexpected ingest result: %#v", result)
 	}
 
 	summary, err := st.GetPerformanceSummary(ctx, store.PerformanceSummaryFilters{
 		OrganizationID: org.ID,
-		From:           now.AddDate(0, 0, -1).Format(time.DateOnly),
-		To:             now.Format(time.DateOnly),
+		From:           now.Add(-24 * time.Hour),
+		To:             now,
 		TopLimit:       10,
 		RecentLimit:    10,
 	})
@@ -104,26 +122,23 @@ func TestPerformanceSummaryIncludesBackendAndFrontendEvents(t *testing.T) {
 	if summary.OrganizationID != org.ID {
 		t.Fatalf("unexpected organization id: %s", summary.OrganizationID)
 	}
-	if summary.Totals.Events != 3 || summary.Totals.Successes != 2 || summary.Totals.Failures != 1 {
+	if summary.Totals.Events != 4 || summary.Totals.Successes != 3 || summary.Totals.Failures != 1 {
 		t.Fatalf("unexpected totals: %#v", summary.Totals)
 	}
-	if summary.Totals.TotalDurationMS != 5_600 || summary.Totals.AverageDurationMS != 1_867 || summary.Totals.MaxDurationMS != 4_200 {
+	if summary.Totals.TotalDurationMS != 6_700 || summary.Totals.AverageDurationMS != 1_675 || summary.Totals.MaxDurationMS != 4_200 {
 		t.Fatalf("unexpected duration totals: %#v", summary.Totals)
 	}
-	if len(summary.TaskOptions) != 3 || summary.TaskOptions[0] != "cloud_total" || summary.TaskOptions[1] != "request" || summary.TaskOptions[2] != "response_received" {
+	if len(summary.TaskOptions) != 3 || summary.TaskOptions[0] != "frontend_cloud_total" || summary.TaskOptions[1] != "http_request" || summary.TaskOptions[2] != "mistral_models" {
 		t.Fatalf("unexpected task options: %#v", summary.TaskOptions)
-	}
-	if len(summary.ByDay) != 2 {
-		t.Fatalf("expected 2 day buckets, got %d", len(summary.ByDay))
 	}
 	if len(summary.TopTasks) != 3 {
 		t.Fatalf("expected 3 grouped tasks, got %d", len(summary.TopTasks))
 	}
-	if summary.TopTasks[0].Task != "cloud_total" || summary.TopTasks[0].Surface != "frontend" {
+	if summary.TopTasks[0].Task != "frontend_cloud_total" || summary.TopTasks[0].Surface != "frontend" {
 		t.Fatalf("unexpected top task ordering: %#v", summary.TopTasks[0])
 	}
-	if len(summary.RecentEvents) != 3 {
-		t.Fatalf("expected 3 recent events, got %d", len(summary.RecentEvents))
+	if len(summary.RecentEvents) != 4 {
+		t.Fatalf("expected 4 recent events, got %d", len(summary.RecentEvents))
 	}
 	if summary.RecentEvents[0].TraceID != "trace-2" {
 		t.Fatalf("expected most recent event first, got %#v", summary.RecentEvents[0])
@@ -131,22 +146,26 @@ func TestPerformanceSummaryIncludesBackendAndFrontendEvents(t *testing.T) {
 
 	filtered, err := st.GetPerformanceSummary(ctx, store.PerformanceSummaryFilters{
 		OrganizationID: org.ID,
-		From:           now.AddDate(0, 0, -1).Format(time.DateOnly),
-		To:             now.Format(time.DateOnly),
-		Task:           "request",
+		UserID:         user.ID,
+		From:           now.Add(-24 * time.Hour),
+		To:             now,
+		Task:           "http_request",
 		TopLimit:       10,
 		RecentLimit:    10,
 	})
 	if err != nil {
 		t.Fatalf("failed to load filtered performance summary: %v", err)
 	}
+	if filtered.UserID != user.ID {
+		t.Fatalf("unexpected filtered user id: %#v", filtered.UserID)
+	}
 	if filtered.Totals.Events != 1 || filtered.Totals.TotalDurationMS != 500 {
 		t.Fatalf("unexpected filtered totals: %#v", filtered.Totals)
 	}
-	if len(filtered.TopTasks) != 1 || filtered.TopTasks[0].Task != "request" {
+	if len(filtered.TopTasks) != 1 || filtered.TopTasks[0].Task != "http_request" {
 		t.Fatalf("unexpected filtered top tasks: %#v", filtered.TopTasks)
 	}
-	if len(filtered.RecentEvents) != 1 || filtered.RecentEvents[0].Task != "request" {
+	if len(filtered.RecentEvents) != 1 || filtered.RecentEvents[0].Task != "http_request" {
 		t.Fatalf("unexpected filtered recent events: %#v", filtered.RecentEvents)
 	}
 	if len(filtered.TaskOptions) != 3 {
@@ -177,6 +196,10 @@ func TestPurgeExpiredPerformanceEventsRemovesOldRows(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create user: %v", err)
 	}
+	peer, err := st.CreateUser(ctx, org.ID, "peer@example.com", passwordHash, "active")
+	if err != nil {
+		t.Fatalf("failed to create peer user: %v", err)
+	}
 
 	now := time.Date(2026, 4, 4, 12, 0, 0, 0, time.UTC)
 	_, err = st.IngestPerformanceEvents(ctx, org.ID, user.ID, []backendperformance.Event{
@@ -187,7 +210,7 @@ func TestPurgeExpiredPerformanceEventsRemovesOldRows(t *testing.T) {
 			OrganizationID: org.ID,
 			Surface:        "frontend",
 			Component:      "cloud",
-			Task:           "cloud_total",
+			Task:           "frontend_cloud_total",
 			Status:         "success",
 			DurationMS:     1_100,
 			Route:          "/cloudupload",
@@ -195,15 +218,29 @@ func TestPurgeExpiredPerformanceEventsRemovesOldRows(t *testing.T) {
 			OccurredAt:     now.AddDate(0, 0, -31),
 		},
 		{
-			EventID:        "perf-new",
-			TraceID:        "trace-new",
+			EventID:        "perf-user",
+			TraceID:        "trace-user",
 			UserID:         user.ID,
 			OrganizationID: org.ID,
 			Surface:        "frontend",
 			Component:      "cloud",
-			Task:           "cloud_total",
+			Task:           "frontend_cloud_total",
 			Status:         "success",
 			DurationMS:     1_300,
+			Route:          "/cloudupload",
+			MetaJSON:       json.RawMessage(`{}`),
+			OccurredAt:     now,
+		},
+		{
+			EventID:        "perf-peer",
+			TraceID:        "trace-peer",
+			UserID:         peer.ID,
+			OrganizationID: org.ID,
+			Surface:        "frontend",
+			Component:      "cloud",
+			Task:           "frontend_cloud_total",
+			Status:         "success",
+			DurationMS:     1_500,
 			Route:          "/cloudupload",
 			MetaJSON:       json.RawMessage(`{}`),
 			OccurredAt:     now,
@@ -223,8 +260,9 @@ func TestPurgeExpiredPerformanceEventsRemovesOldRows(t *testing.T) {
 
 	summary, err := st.GetPerformanceSummary(ctx, store.PerformanceSummaryFilters{
 		OrganizationID: org.ID,
-		From:           now.AddDate(0, 0, -40).Format(time.DateOnly),
-		To:             now.Format(time.DateOnly),
+		UserID:         user.ID,
+		From:           now.Add(-40 * 24 * time.Hour),
+		To:             now,
 		TopLimit:       10,
 		RecentLimit:    10,
 	})
@@ -234,7 +272,10 @@ func TestPurgeExpiredPerformanceEventsRemovesOldRows(t *testing.T) {
 	if summary.Totals.Events != 1 {
 		t.Fatalf("expected one remaining event, got %d", summary.Totals.Events)
 	}
-	if len(summary.RecentEvents) != 1 || summary.RecentEvents[0].TraceID != "trace-new" {
+	if summary.UserID != user.ID {
+		t.Fatalf("unexpected summary user id: %#v", summary.UserID)
+	}
+	if len(summary.RecentEvents) != 1 || summary.RecentEvents[0].TraceID != "trace-user" {
 		t.Fatalf("unexpected remaining events: %#v", summary.RecentEvents)
 	}
 }
@@ -262,6 +303,10 @@ func TestDeletePerformanceEventsRespectsTaskAndOrganizationFilters(t *testing.T)
 	if err != nil {
 		t.Fatalf("failed to create user: %v", err)
 	}
+	peer, err := st.CreateUser(ctx, org.ID, "peer@example.com", passwordHash, "active")
+	if err != nil {
+		t.Fatalf("failed to create peer user: %v", err)
+	}
 
 	now := time.Date(2026, 4, 4, 12, 0, 0, 0, time.UTC)
 	_, err = st.IngestPerformanceEvents(ctx, org.ID, user.ID, []backendperformance.Event{
@@ -272,7 +317,7 @@ func TestDeletePerformanceEventsRespectsTaskAndOrganizationFilters(t *testing.T)
 			OrganizationID: org.ID,
 			Surface:        "backend",
 			Component:      "http",
-			Task:           "request",
+			Task:           "http_request",
 			Status:         "success",
 			DurationMS:     500,
 			Route:          "/api/v1/ping",
@@ -280,18 +325,18 @@ func TestDeletePerformanceEventsRespectsTaskAndOrganizationFilters(t *testing.T)
 			OccurredAt:     now,
 		},
 		{
-			EventID:        "perf-response",
-			TraceID:        "trace-response",
-			UserID:         user.ID,
+			EventID:        "perf-peer",
+			TraceID:        "trace-peer",
+			UserID:         peer.ID,
 			OrganizationID: org.ID,
-			Surface:        "backend",
-			Component:      "mistral",
-			Task:           "response_received",
+			Surface:        "frontend",
+			Component:      "cloud",
+			Task:           "frontend_cloud_total",
 			Status:         "success",
-			DurationMS:     900,
-			Route:          "/v1/models",
+			DurationMS:     1_100,
+			Route:          "/cloudupload",
 			MetaJSON:       json.RawMessage(`{}`),
-			OccurredAt:     now.Add(-time.Hour),
+			OccurredAt:     now.Add(-2 * time.Hour),
 		},
 	})
 	if err != nil {
@@ -300,9 +345,10 @@ func TestDeletePerformanceEventsRespectsTaskAndOrganizationFilters(t *testing.T)
 
 	deleted, err := st.DeletePerformanceEvents(ctx, store.PerformanceSummaryFilters{
 		OrganizationID: org.ID,
-		From:           now.AddDate(0, 0, -1).Format(time.DateOnly),
-		To:             now.Format(time.DateOnly),
-		Task:           "response_received",
+		UserID:         user.ID,
+		From:           now.Add(-24 * time.Hour),
+		To:             now,
+		Task:           "http_request",
 	})
 	if err != nil {
 		t.Fatalf("failed to delete performance events: %v", err)
@@ -313,15 +359,19 @@ func TestDeletePerformanceEventsRespectsTaskAndOrganizationFilters(t *testing.T)
 
 	summary, err := st.GetPerformanceSummary(ctx, store.PerformanceSummaryFilters{
 		OrganizationID: org.ID,
-		From:           now.AddDate(0, 0, -1).Format(time.DateOnly),
-		To:             now.Format(time.DateOnly),
+		UserID:         user.ID,
+		From:           now.Add(-24 * time.Hour),
+		To:             now,
 		TopLimit:       10,
 		RecentLimit:    10,
 	})
 	if err != nil {
 		t.Fatalf("failed to reload performance summary: %v", err)
 	}
-	if summary.Totals.Events != 1 || len(summary.RecentEvents) != 1 || summary.RecentEvents[0].Task != "request" {
+	if summary.UserID != user.ID {
+		t.Fatalf("unexpected summary user id: %#v", summary.UserID)
+	}
+	if summary.Totals.Events != 0 || len(summary.RecentEvents) != 0 || len(summary.TopTasks) != 0 {
 		t.Fatalf("unexpected remaining summary: %#v", summary)
 	}
 }

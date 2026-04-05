@@ -146,7 +146,7 @@ func TestDoGet_PersistsPerformanceEvent(t *testing.T) {
 	if event == nil {
 		t.Fatal("expected upstream request to persist a performance event")
 	}
-	if event.Component != "mistral" || event.Task != "mistral_response_received" || event.Route != "/models" {
+	if event.Component != "mistral" || event.Task != "mistral_models" || event.Route != "/models" {
 		t.Fatalf("unexpected upstream performance event: %#v", event)
 	}
 	if event.Surface != "backend" || event.Status != "success" {
@@ -154,6 +154,60 @@ func TestDoGet_PersistsPerformanceEvent(t *testing.T) {
 	}
 	if event.DurationMS <= 0 {
 		t.Fatalf("expected upstream duration to be recorded, got %d", event.DurationMS)
+	}
+}
+
+func TestDoGet_PersistsPerformanceEventWithGenericFallbackTask(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "mistral-fallback-performance.sqlite")
+	st, err := store.Open(context.Background(), dbPath)
+	if err != nil {
+		t.Fatalf("failed to open store: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = st.Close()
+	})
+
+	backendperformance.RegisterSink(st)
+	t.Cleanup(func() {
+		backendperformance.RegisterSink(nil)
+	})
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Fatalf("unexpected method: %s", r.Method)
+		}
+		if r.URL.Path != "/v1/embeddings" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		time.Sleep(10 * time.Millisecond)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"data":[]}`))
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, "key", time.Second, time.Second)
+	ctx := observability.WithTraceID(context.Background(), "mistral-fallback-trace")
+	status, body, err := client.DoGet(ctx, "/v1/embeddings")
+	if err != nil {
+		t.Fatalf("DoGet returned error: %v", err)
+	}
+	if status != http.StatusOK || string(body) != `{"data":[]}` {
+		t.Fatalf("unexpected DoGet response: status=%d body=%q", status, string(body))
+	}
+
+	event := waitForMistralPerformanceEvent(t, st, "mistral-fallback-trace")
+	if event == nil {
+		t.Fatal("expected fallback request to persist a performance event")
+	}
+	if event.Component != "mistral" || event.Task != "mistral_request" || event.Route != "/v1/embeddings" {
+		t.Fatalf("unexpected fallback performance event: %#v", event)
+	}
+	if event.Surface != "backend" || event.Status != "success" {
+		t.Fatalf("unexpected fallback event surface/status: %#v", event)
+	}
+	if event.DurationMS <= 0 {
+		t.Fatalf("expected fallback duration to be recorded, got %d", event.DurationMS)
 	}
 }
 
@@ -199,7 +253,7 @@ func TestDoJSON_PersistsPerformanceEventWithFamilyTaskPrefix(t *testing.T) {
 	if event == nil {
 		t.Fatal("expected chat completion request to persist a performance event")
 	}
-	if event.Task != "cr_generation_response_received" || event.Route != "/v1/chat/completions" {
+	if event.Task != "mistral_report_generation" || event.Route != "/v1/chat/completions" {
 		t.Fatalf("unexpected chat completion performance event: %#v", event)
 	}
 	if event.Component != "mistral" || event.Status != "success" {
@@ -249,7 +303,7 @@ func TestDoMultipart_PersistsPerformanceEventWithFamilyTaskPrefix(t *testing.T) 
 	if event == nil {
 		t.Fatal("expected transcription request to persist a performance event")
 	}
-	if event.Task != "transcription_response_received" || event.Route != "/v1/audio/transcriptions" {
+	if event.Task != "mistral_audio_transcription" || event.Route != "/v1/audio/transcriptions" {
 		t.Fatalf("unexpected transcription performance event: %#v", event)
 	}
 	if event.Component != "mistral" || event.Status != "success" {

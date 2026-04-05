@@ -49,16 +49,6 @@ type PerformanceTotals struct {
 	MaxDurationMS     int64 `json:"maxDurationMs"`
 }
 
-type PerformanceByDayItem struct {
-	Day               string `json:"day"`
-	Events            int    `json:"events"`
-	Successes         int    `json:"successes"`
-	Failures          int    `json:"failures"`
-	TotalDurationMS   int64  `json:"totalDurationMs"`
-	AverageDurationMS int64  `json:"averageDurationMs"`
-	MaxDurationMS     int64  `json:"maxDurationMs"`
-}
-
 type PerformanceTaskItem struct {
 	Surface           string    `json:"surface"`
 	Component         string    `json:"component"`
@@ -74,19 +64,20 @@ type PerformanceTaskItem struct {
 }
 
 type PerformanceSummary struct {
-	OrganizationID string                 `json:"organizationId"`
-	Range          PerformanceRange       `json:"range"`
-	Totals         PerformanceTotals      `json:"totals"`
-	TaskOptions    []string               `json:"taskOptions"`
-	ByDay          []PerformanceByDayItem `json:"byDay"`
-	TopTasks       []PerformanceTaskItem  `json:"topTasks"`
-	RecentEvents   []PerformanceEvent     `json:"recentEvents"`
+	OrganizationID string                `json:"organizationId"`
+	UserID         string                `json:"userId,omitempty"`
+	Range          PerformanceRange      `json:"range"`
+	Totals         PerformanceTotals     `json:"totals"`
+	TaskOptions    []string              `json:"taskOptions"`
+	TopTasks       []PerformanceTaskItem `json:"topTasks"`
+	RecentEvents   []PerformanceEvent    `json:"recentEvents"`
 }
 
 type PerformanceSummaryFilters struct {
 	OrganizationID string
-	From           string
-	To             string
+	UserID         string
+	From           time.Time
+	To             time.Time
 	Task           string
 	TopLimit       int
 	RecentLimit    int
@@ -268,20 +259,20 @@ func (s *Store) IngestPerformanceEvents(
 }
 
 func (s *Store) GetPerformanceSummary(ctx context.Context, filters PerformanceSummaryFilters) (*PerformanceSummary, error) {
-	fromDay, toDay := normalizePerformanceRange(filters.From, filters.To)
-	whereSQL, args := buildPerformanceWhereClause(filters.OrganizationID, fromDay, toDay, filters.Task)
-	scopeWhereSQL, scopeArgs := buildPerformanceScopeWhereClause(filters.OrganizationID, fromDay, toDay)
+	fromTime, toTime := normalizePerformanceWindow(filters.From, filters.To)
+	whereSQL, args := buildPerformanceWhereClause(filters.OrganizationID, filters.UserID, fromTime, toTime, filters.Task)
+	scopeWhereSQL, scopeArgs := buildPerformanceScopeWhereClause(filters.OrganizationID, filters.UserID, fromTime, toTime)
 	topLimit := clampPositiveInt(filters.TopLimit, 10, 50)
 	recentLimit := clampPositiveInt(filters.RecentLimit, 20, 100)
 
 	summary := &PerformanceSummary{
 		OrganizationID: strings.TrimSpace(filters.OrganizationID),
+		UserID:         strings.TrimSpace(filters.UserID),
 		Range: PerformanceRange{
-			From: fromDay,
-			To:   toDay,
+			From: fromTime.UTC().Format(time.RFC3339),
+			To:   toTime.UTC().Format(time.RFC3339),
 		},
 		TaskOptions:  []string{},
-		ByDay:        []PerformanceByDayItem{},
 		TopTasks:     []PerformanceTaskItem{},
 		RecentEvents: []PerformanceEvent{},
 	}
@@ -322,43 +313,6 @@ func (s *Store) GetPerformanceSummary(ctx context.Context, filters PerformanceSu
 		}
 	}
 	if err := taskRows.Err(); err != nil {
-		return nil, err
-	}
-
-	dayRows, err := s.DB.QueryContext(ctx, `
-		SELECT
-			day,
-			COALESCE(COUNT(*), 0) AS events,
-			COALESCE(SUM(CASE WHEN `+performanceSuccessCaseExpr(`status`)+` THEN 1 ELSE 0 END), 0) AS successes,
-			COALESCE(SUM(CASE WHEN `+performanceSuccessCaseExpr(`status`)+` THEN 0 ELSE 1 END), 0) AS failures,
-			COALESCE(SUM(duration_ms), 0) AS total_duration_ms,
-			COALESCE(CAST(ROUND(AVG(duration_ms)) AS INTEGER), 0) AS average_duration_ms,
-			COALESCE(MAX(duration_ms), 0) AS max_duration_ms
-		FROM performance_events
-		WHERE `+whereSQL+`
-		GROUP BY day
-		ORDER BY day ASC
-	`, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer closeRows(dayRows)
-	for dayRows.Next() {
-		var item PerformanceByDayItem
-		if err := dayRows.Scan(
-			&item.Day,
-			&item.Events,
-			&item.Successes,
-			&item.Failures,
-			&item.TotalDurationMS,
-			&item.AverageDurationMS,
-			&item.MaxDurationMS,
-		); err != nil {
-			return nil, err
-		}
-		summary.ByDay = append(summary.ByDay, item)
-	}
-	if err := dayRows.Err(); err != nil {
 		return nil, err
 	}
 
@@ -482,29 +436,30 @@ func (s *Store) GetPerformanceSummary(ctx context.Context, filters PerformanceSu
 }
 
 func (s *Store) PurgeExpiredPerformanceEvents(ctx context.Context, now time.Time) (int64, error) {
-	cutoff := now.UTC().AddDate(0, 0, -30).Format(time.DateOnly)
-	logStoreStep(ctx, "purge_start", "performance", map[string]any{"cutoff_day": cutoff})
-	result, err := s.DB.ExecContext(ctx, `DELETE FROM performance_events WHERE day < ?`, cutoff)
+	cutoff := now.UTC().Add(-performanceRetention)
+	logStoreStep(ctx, "purge_start", "performance", map[string]any{"cutoff_at": cutoff})
+	result, err := s.DB.ExecContext(ctx, `DELETE FROM performance_events WHERE occurred_at < ?`, cutoff)
 	if err != nil {
-		logStoreStep(ctx, "purge_error", "performance", map[string]any{"error": err, "cutoff_day": cutoff})
+		logStoreStep(ctx, "purge_error", "performance", map[string]any{"error": err, "cutoff_at": cutoff})
 		return 0, err
 	}
 	count, err := result.RowsAffected()
 	if err != nil {
-		logStoreStep(ctx, "purge_error", "performance", map[string]any{"error": err, "cutoff_day": cutoff})
+		logStoreStep(ctx, "purge_error", "performance", map[string]any{"error": err, "cutoff_at": cutoff})
 		return 0, err
 	}
-	logStoreStep(ctx, "purge_success", "performance", map[string]any{"cutoff_day": cutoff, "deleted_count": count})
+	logStoreStep(ctx, "purge_success", "performance", map[string]any{"cutoff_at": cutoff, "deleted_count": count})
 	return count, nil
 }
 
 func (s *Store) DeletePerformanceEvents(ctx context.Context, filters PerformanceSummaryFilters) (int64, error) {
-	fromDay, toDay := normalizePerformanceRange(filters.From, filters.To)
-	whereSQL, args := buildPerformanceWhereClause(filters.OrganizationID, fromDay, toDay, filters.Task)
+	fromTime, toTime := normalizePerformanceWindow(filters.From, filters.To)
+	whereSQL, args := buildPerformanceWhereClause(filters.OrganizationID, filters.UserID, fromTime, toTime, filters.Task)
 	logStoreStep(ctx, "delete_start", "performance", map[string]any{
 		"organization_id": strings.TrimSpace(filters.OrganizationID),
-		"from":            fromDay,
-		"to":              toDay,
+		"user_id":         strings.TrimSpace(filters.UserID),
+		"from":            fromTime,
+		"to":              toTime,
 		"task":            strings.TrimSpace(filters.Task),
 	})
 	result, err := s.DB.ExecContext(ctx, `DELETE FROM performance_events WHERE `+whereSQL, args...)
@@ -512,8 +467,9 @@ func (s *Store) DeletePerformanceEvents(ctx context.Context, filters Performance
 		logStoreStep(ctx, "delete_error", "performance", map[string]any{
 			"error":           err,
 			"organization_id": strings.TrimSpace(filters.OrganizationID),
-			"from":            fromDay,
-			"to":              toDay,
+			"user_id":         strings.TrimSpace(filters.UserID),
+			"from":            fromTime,
+			"to":              toTime,
 			"task":            strings.TrimSpace(filters.Task),
 		})
 		return 0, err
@@ -523,16 +479,18 @@ func (s *Store) DeletePerformanceEvents(ctx context.Context, filters Performance
 		logStoreStep(ctx, "delete_error", "performance", map[string]any{
 			"error":           err,
 			"organization_id": strings.TrimSpace(filters.OrganizationID),
-			"from":            fromDay,
-			"to":              toDay,
+			"user_id":         strings.TrimSpace(filters.UserID),
+			"from":            fromTime,
+			"to":              toTime,
 			"task":            strings.TrimSpace(filters.Task),
 		})
 		return 0, err
 	}
 	logStoreStep(ctx, "delete_success", "performance", map[string]any{
 		"organization_id": strings.TrimSpace(filters.OrganizationID),
-		"from":            fromDay,
-		"to":              toDay,
+		"user_id":         strings.TrimSpace(filters.UserID),
+		"from":            fromTime,
+		"to":              toTime,
 		"task":            strings.TrimSpace(filters.Task),
 		"deleted_count":   count,
 	})
@@ -570,7 +528,7 @@ func normalizePerformanceEventInput(input backendperformance.Event, organization
 	return input
 }
 
-func buildPerformanceWhereClause(organizationID, fromDay, toDay, task string) (string, []any) {
+func buildPerformanceWhereClause(organizationID, userID string, fromTime, toTime time.Time, task string) (string, []any) {
 	clauses := []string{"1=1"}
 	args := make([]any, 0, 4)
 
@@ -578,13 +536,17 @@ func buildPerformanceWhereClause(organizationID, fromDay, toDay, task string) (s
 		clauses = append(clauses, "organization_id = ?")
 		args = append(args, organizationID)
 	}
-	if fromDay = strings.TrimSpace(fromDay); fromDay != "" {
-		clauses = append(clauses, "day >= ?")
-		args = append(args, fromDay)
+	if userID = strings.TrimSpace(userID); userID != "" {
+		clauses = append(clauses, "user_id = ?")
+		args = append(args, userID)
 	}
-	if toDay = strings.TrimSpace(toDay); toDay != "" {
-		clauses = append(clauses, "day <= ?")
-		args = append(args, toDay)
+	if !fromTime.IsZero() {
+		clauses = append(clauses, "occurred_at >= ?")
+		args = append(args, fromTime.UTC())
+	}
+	if !toTime.IsZero() {
+		clauses = append(clauses, "occurred_at <= ?")
+		args = append(args, toTime.UTC())
 	}
 	if task = strings.TrimSpace(task); task != "" {
 		clauses = append(clauses, "task = ?")
@@ -594,7 +556,7 @@ func buildPerformanceWhereClause(organizationID, fromDay, toDay, task string) (s
 	return strings.Join(clauses, " AND "), args
 }
 
-func buildPerformanceScopeWhereClause(organizationID, fromDay, toDay string) (string, []any) {
+func buildPerformanceScopeWhereClause(organizationID, userID string, fromTime, toTime time.Time) (string, []any) {
 	clauses := []string{"1=1"}
 	args := make([]any, 0, 4)
 
@@ -602,40 +564,42 @@ func buildPerformanceScopeWhereClause(organizationID, fromDay, toDay string) (st
 		clauses = append(clauses, "organization_id = ?")
 		args = append(args, organizationID)
 	}
-	if fromDay = strings.TrimSpace(fromDay); fromDay != "" {
-		clauses = append(clauses, "day >= ?")
-		args = append(args, fromDay)
+	if userID = strings.TrimSpace(userID); userID != "" {
+		clauses = append(clauses, "user_id = ?")
+		args = append(args, userID)
 	}
-	if toDay = strings.TrimSpace(toDay); toDay != "" {
-		clauses = append(clauses, "day <= ?")
-		args = append(args, toDay)
+	if !fromTime.IsZero() {
+		clauses = append(clauses, "occurred_at >= ?")
+		args = append(args, fromTime.UTC())
+	}
+	if !toTime.IsZero() {
+		clauses = append(clauses, "occurred_at <= ?")
+		args = append(args, toTime.UTC())
 	}
 
 	return strings.Join(clauses, " AND "), args
 }
 
-func normalizePerformanceRange(fromRaw, toRaw string) (string, string) {
-	fromRaw = strings.TrimSpace(fromRaw)
-	toRaw = strings.TrimSpace(toRaw)
-	if fromRaw == "" && toRaw == "" {
-		toDay := time.Now().UTC().Format(time.DateOnly)
-		fromDay := time.Now().UTC().AddDate(0, 0, -29).Format(time.DateOnly)
-		return fromDay, toDay
-	}
+const performanceRetention = 24 * time.Hour
 
-	now := time.Now().UTC()
-	fromDay := fromRaw
-	toDay := toRaw
-	if fromDay == "" {
-		fromDay = now.AddDate(0, 0, -29).Format(time.DateOnly)
+func normalizePerformanceWindow(fromTime, toTime time.Time) (time.Time, time.Time) {
+	fromTime = fromTime.UTC()
+	toTime = toTime.UTC()
+	if fromTime.IsZero() && toTime.IsZero() {
+		toTime = time.Now().UTC()
+		fromTime = toTime.Add(-performanceRetention)
+		return fromTime, toTime
 	}
-	if toDay == "" {
-		toDay = now.Format(time.DateOnly)
+	if fromTime.IsZero() {
+		fromTime = toTime.Add(-performanceRetention)
 	}
-	if toDay < fromDay {
-		fromDay, toDay = toDay, fromDay
+	if toTime.IsZero() {
+		toTime = fromTime.Add(performanceRetention)
 	}
-	return fromDay, toDay
+	if toTime.Before(fromTime) {
+		fromTime, toTime = toTime, fromTime
+	}
+	return fromTime.UTC(), toTime.UTC()
 }
 
 func performanceSuccessCaseExpr(column string) string {

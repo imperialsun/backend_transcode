@@ -119,17 +119,26 @@ func (a *App) adminPerformanceSummary(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusUnauthorized).JSON(ErrorResponse{Error: "unauthorized"})
 	}
 
-	from, to, err := resolvePerformanceRange(c.Query("from"), c.Query("to"))
+	from, to, err := resolvePerformanceWindow(c.Query("from"), c.Query("to"))
 	if err != nil {
 		logAPIStep(c, "admin", route, "range_error", "performance_summary", map[string]any{"error": err})
 		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{Error: err.Error()})
 	}
 
 	organizationID := strings.TrimSpace(c.Query("organizationId"))
+	userID := strings.TrimSpace(c.Query("userId"))
 	task := strings.TrimSpace(c.Query("task"))
+	if userID != "" && organizationID == "" {
+		logAPIStep(c, "admin", route, "range_error", "performance_summary", map[string]any{
+			"reason":  "user_id_requires_organization_id",
+			"user_id": userID,
+		})
+		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{Error: "userId requires organizationId"})
+	}
 	if organizationID != "" {
 		logAPIStep(c, "admin", route, "load_start", "performance_summary", map[string]any{
 			"organization_id": organizationID,
+			"user_id":         userID,
 			"from":            from,
 			"to":              to,
 			"task":            task,
@@ -145,15 +154,32 @@ func (a *App) adminPerformanceSummary(c *fiber.Ctx) error {
 		}
 	} else {
 		logAPIStep(c, "admin", route, "load_start", "performance_summary", map[string]any{
-			"scope": "global",
-			"from":  from,
-			"to":    to,
-			"task":  task,
+			"scope":   "global",
+			"user_id": userID,
+			"from":    from,
+			"to":      to,
+			"task":    task,
 		})
+	}
+
+	if userID != "" {
+		user, err := a.Store.GetUserByID(requestContext(c), userID)
+		if err != nil {
+			logAPIStep(c, "admin", route, "load_error", "performance_summary", map[string]any{"error": err})
+			return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{Error: "failed to load user"})
+		}
+		if user == nil || user.OrganizationID != organizationID {
+			logAPIStep(c, "admin", route, "load_missing", "performance_summary", map[string]any{
+				"organization_id": organizationID,
+				"user_id":         userID,
+			})
+			return c.Status(fiber.StatusNotFound).JSON(ErrorResponse{Error: "user not found"})
+		}
 	}
 
 	summary, err := a.Store.GetPerformanceSummary(requestContext(c), store.PerformanceSummaryFilters{
 		OrganizationID: organizationID,
+		UserID:         userID,
 		From:           from,
 		To:             to,
 		Task:           task,
@@ -167,6 +193,7 @@ func (a *App) adminPerformanceSummary(c *fiber.Ctx) error {
 
 	logAPIStep(c, "admin", route, "response_ready", "performance_summary", map[string]any{
 		"organization_id": organizationID,
+		"user_id":         userID,
 		"task":            task,
 		"total":           summary.Totals.Events,
 		"task_options":    len(summary.TaskOptions),
@@ -186,7 +213,7 @@ func (a *App) deletePerformanceEvents(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusUnauthorized).JSON(ErrorResponse{Error: "unauthorized"})
 	}
 
-	from, to, err := resolvePerformanceRange(c.Query("from"), c.Query("to"))
+	from, to, err := resolvePerformanceWindow(c.Query("from"), c.Query("to"))
 	if err != nil {
 		logAPIStep(c, "admin", route, "range_error", "purge_performance", map[string]any{"error": err})
 		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{Error: err.Error()})
@@ -194,6 +221,7 @@ func (a *App) deletePerformanceEvents(c *fiber.Ctx) error {
 
 	filters := store.PerformanceSummaryFilters{
 		OrganizationID: strings.TrimSpace(c.Query("organizationId")),
+		UserID:         strings.TrimSpace(c.Query("userId")),
 		From:           from,
 		To:             to,
 		Task:           strings.TrimSpace(c.Query("task")),
@@ -201,6 +229,7 @@ func (a *App) deletePerformanceEvents(c *fiber.Ctx) error {
 
 	logAPIStep(c, "admin", route, "delete_start", "purge_performance", map[string]any{
 		"organization_id": filters.OrganizationID,
+		"user_id":         filters.UserID,
 		"from":            filters.From,
 		"to":              filters.To,
 		"task":            filters.Task,
@@ -213,6 +242,7 @@ func (a *App) deletePerformanceEvents(c *fiber.Ctx) error {
 
 	a.writeAdminAudit(requestContext(c), claims, "admin.performance.purge", "performance_events", "", fiber.Map{
 		"organizationId": filters.OrganizationID,
+		"userId":         filters.UserID,
 		"from":           filters.From,
 		"to":             filters.To,
 		"task":           filters.Task,
@@ -307,39 +337,58 @@ func normalizePerformanceToken(value string) string {
 	return strings.ToLower(strings.TrimSpace(value))
 }
 
-func resolvePerformanceRange(fromRaw string, toRaw string) (string, string, error) {
+func resolvePerformanceWindow(fromRaw string, toRaw string) (time.Time, time.Time, error) {
 	fromRaw = strings.TrimSpace(fromRaw)
 	toRaw = strings.TrimSpace(toRaw)
 	if fromRaw == "" && toRaw == "" {
 		now := time.Now().UTC()
-		return now.AddDate(0, 0, -29).Format(time.DateOnly), now.Format(time.DateOnly), nil
+		return now.Add(-24 * time.Hour), now, nil
 	}
 
 	var from time.Time
 	var to time.Time
 	var err error
 	if fromRaw != "" {
-		from, err = time.Parse(time.DateOnly, fromRaw)
+		from, err = parsePerformanceTimeValue(fromRaw, false)
 		if err != nil {
-			return "", "", fmt.Errorf("invalid from date")
+			return time.Time{}, time.Time{}, fmt.Errorf("invalid from value")
 		}
-		from = time.Date(from.Year(), from.Month(), from.Day(), 0, 0, 0, 0, time.UTC)
 	}
 	if toRaw != "" {
-		to, err = time.Parse(time.DateOnly, toRaw)
+		to, err = parsePerformanceTimeValue(toRaw, true)
 		if err != nil {
-			return "", "", fmt.Errorf("invalid to date")
+			return time.Time{}, time.Time{}, fmt.Errorf("invalid to value")
 		}
-		to = time.Date(to.Year(), to.Month(), to.Day(), 23, 59, 59, 999999999, time.UTC)
 	}
 	if !from.IsZero() && !to.IsZero() && to.Before(from) {
-		return "", "", fmt.Errorf("from date must be before or equal to to date")
+		return time.Time{}, time.Time{}, fmt.Errorf("from value must be before or equal to to value")
 	}
 	if from.IsZero() {
-		from = time.Now().UTC().AddDate(0, 0, -29)
+		from = to.Add(-24 * time.Hour)
 	}
 	if to.IsZero() {
-		to = time.Now().UTC()
+		to = from.Add(24 * time.Hour)
 	}
-	return from.Format(time.DateOnly), to.Format(time.DateOnly), nil
+	return from.UTC(), to.UTC(), nil
+}
+
+func parsePerformanceTimeValue(raw string, endOfDay bool) (time.Time, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return time.Time{}, nil
+	}
+	for _, layout := range []string{time.RFC3339Nano, time.RFC3339, time.DateTime, time.DateOnly} {
+		parsed, err := time.Parse(layout, trimmed)
+		if err != nil {
+			continue
+		}
+		if layout == time.DateOnly {
+			if endOfDay {
+				return time.Date(parsed.Year(), parsed.Month(), parsed.Day(), 23, 59, 59, 999999999, time.UTC), nil
+			}
+			return time.Date(parsed.Year(), parsed.Month(), parsed.Day(), 0, 0, 0, 0, time.UTC), nil
+		}
+		return parsed.UTC(), nil
+	}
+	return time.Time{}, fmt.Errorf("unsupported time format")
 }

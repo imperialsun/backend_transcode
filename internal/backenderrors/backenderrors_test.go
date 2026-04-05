@@ -45,11 +45,11 @@ func TestRecordLogPersistsCapturedBackendErrors(t *testing.T) {
 	traceCtx := observability.WithTraceID(context.Background(), "trace-backend-error")
 	traceCtx = requestmeta.WithActor(traceCtx, user.ID, org.ID)
 
-	backenderrors.RecordLog(traceCtx, "http", "/admin/backend-errors", "request_completed", "request", map[string]any{
+	backenderrors.RecordLog(traceCtx, "http", "/admin/backend-errors", "request_completed", "http_request", map[string]any{
 		"status_code": 200,
 		"duration_ms": 12,
 	})
-	backenderrors.RecordLog(traceCtx, "http", "/admin/backend-errors", "request_failed", "request", map[string]any{
+	backenderrors.RecordLog(traceCtx, "http", "/admin/backend-errors", "request_failed", "http_request", map[string]any{
 		"status_code":      500,
 		"duration_ms":      31,
 		"error":            errors.New("boom"),

@@ -420,12 +420,14 @@ func (s *Store) Migrate(ctx context.Context) error {
 		`CREATE INDEX IF NOT EXISTS idx_backend_error_component_created_at ON backend_error_events(component, created_at);`,
 		`CREATE INDEX IF NOT EXISTS idx_backend_error_route_created_at ON backend_error_events(route, created_at);`,
 		`CREATE INDEX IF NOT EXISTS idx_backend_error_trace_id ON backend_error_events(trace_id);`,
-		`CREATE INDEX IF NOT EXISTS idx_performance_day ON performance_events(day);`,
-		`CREATE INDEX IF NOT EXISTS idx_performance_org_day ON performance_events(organization_id, day);`,
-		`CREATE INDEX IF NOT EXISTS idx_performance_surface_day ON performance_events(surface, day);`,
-		`CREATE INDEX IF NOT EXISTS idx_performance_component_day ON performance_events(component, day);`,
-		`CREATE INDEX IF NOT EXISTS idx_performance_task_day ON performance_events(task, day);`,
-		`CREATE INDEX IF NOT EXISTS idx_performance_route_day ON performance_events(route, day);`,
+		`CREATE INDEX IF NOT EXISTS idx_performance_occurred_at ON performance_events(occurred_at);`,
+		`CREATE INDEX IF NOT EXISTS idx_performance_user_occurred_at ON performance_events(user_id, occurred_at);`,
+		`CREATE INDEX IF NOT EXISTS idx_performance_org_occurred_at ON performance_events(organization_id, occurred_at);`,
+		`CREATE INDEX IF NOT EXISTS idx_performance_org_user_occurred_at ON performance_events(organization_id, user_id, occurred_at);`,
+		`CREATE INDEX IF NOT EXISTS idx_performance_surface_occurred_at ON performance_events(surface, occurred_at);`,
+		`CREATE INDEX IF NOT EXISTS idx_performance_component_occurred_at ON performance_events(component, occurred_at);`,
+		`CREATE INDEX IF NOT EXISTS idx_performance_task_occurred_at ON performance_events(task, occurred_at);`,
+		`CREATE INDEX IF NOT EXISTS idx_performance_route_occurred_at ON performance_events(route, occurred_at);`,
 		`CREATE INDEX IF NOT EXISTS idx_performance_trace_id ON performance_events(trace_id);`,
 		`CREATE INDEX IF NOT EXISTS idx_meeting_finalize_operations_owner ON meeting_finalize_operations(organization_id, user_id);`,
 		`CREATE INDEX IF NOT EXISTS idx_meeting_finalize_operations_pending_created ON meeting_finalize_operations(status, created_at);`,
@@ -442,6 +444,20 @@ func (s *Store) Migrate(ctx context.Context) error {
 	defer rollbackTx(tx)
 
 	for _, stmt := range stmts {
+		if _, err := tx.ExecContext(ctx, stmt); err != nil {
+			logStoreStep(ctx, "migrate_error", "schema", map[string]any{"error": err})
+			return err
+		}
+	}
+
+	for _, stmt := range []string{
+		`DROP INDEX IF EXISTS idx_performance_day;`,
+		`DROP INDEX IF EXISTS idx_performance_org_day;`,
+		`DROP INDEX IF EXISTS idx_performance_surface_day;`,
+		`DROP INDEX IF EXISTS idx_performance_component_day;`,
+		`DROP INDEX IF EXISTS idx_performance_task_day;`,
+		`DROP INDEX IF EXISTS idx_performance_route_day;`,
+	} {
 		if _, err := tx.ExecContext(ctx, stmt); err != nil {
 			logStoreStep(ctx, "migrate_error", "schema", map[string]any{"error": err})
 			return err

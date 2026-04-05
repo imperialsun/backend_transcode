@@ -70,7 +70,7 @@ func (g *Generator) GenerateReports(ctx context.Context, meetingTitle string, pa
 		selectedFormats = AllReportFormats()
 	}
 
-	logReportStep(ctx, "generate_start", "reports", map[string]any{
+	logReportStep(ctx, "generate_start", "mistral_report_generation", map[string]any{
 		"meeting_title_present": strings.TrimSpace(meetingTitle) != "",
 		"participants_count":    len(participants),
 		"source_bytes":          len(sourceText),
@@ -126,14 +126,14 @@ func (g *Generator) GenerateReports(ctx context.Context, meetingTitle string, pa
 	}
 
 	if firstErr != nil {
-		logReportStep(ctx, "generate_error", "reports", map[string]any{
+		logReportStep(ctx, "generate_error", "mistral_report_generation", map[string]any{
 			"format_count": len(selectedFormats),
 			"completed":    len(results),
 			"error":        firstErr,
 		})
 		return nil, firstErr
 	}
-	logReportStep(ctx, "generate_success", "reports", map[string]any{
+	logReportStep(ctx, "generate_success", "mistral_report_generation", map[string]any{
 		"format_count": len(results),
 	})
 	return results, nil
@@ -151,6 +151,7 @@ func (g *Generator) generateReportForFormat(
 	maxAttempts int,
 ) (GeneratedReport, error) {
 	formatName := ReportFormatDisplayName(format)
+	formatTask := "mistral_report_" + strings.ToLower(string(format))
 	var lastErr error
 	var lastStatusCode int
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
@@ -158,7 +159,7 @@ func (g *Generator) generateReportForFormat(
 			return GeneratedReport{}, err
 		}
 
-		logReportStep(ctx, "generate_format_start", formatName, map[string]any{
+		logReportStep(ctx, "generate_format_start", formatTask, map[string]any{
 			"format":       formatName,
 			"attempt":      attempt,
 			"max_attempts": maxAttempts,
@@ -166,7 +167,7 @@ func (g *Generator) generateReportForFormat(
 
 		report, raw, statusCode, err := g.generateOne(ctx, modelID, meetingTitle, participants, sourceText, format, maxTokens, temperature)
 		if err == nil {
-			logReportStep(ctx, "generate_format_success", formatName, map[string]any{
+			logReportStep(ctx, "generate_format_success", formatTask, map[string]any{
 				"format":       formatName,
 				"attempt":      attempt,
 				"max_attempts": maxAttempts,
@@ -192,12 +193,12 @@ func (g *Generator) generateReportForFormat(
 			"status_code":  statusCode,
 			"error":        err,
 		}
-		logReportStep(ctx, "generate_format_error", formatName, logFields)
+		logReportStep(ctx, "generate_format_error", formatTask, logFields)
 
 		if attempt < maxAttempts {
 			nextAttempt := attempt + 1
 			delay := reportGenerationRetryDelay(attempt)
-			logReportStep(ctx, "generate_format_retry", formatName, map[string]any{
+			logReportStep(ctx, "generate_format_retry", formatTask, map[string]any{
 				"format":       formatName,
 				"attempt":      attempt,
 				"next_attempt": nextAttempt,

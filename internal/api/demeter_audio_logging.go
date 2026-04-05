@@ -57,8 +57,8 @@ func logDemeterAudioStageCtx(logCtx demeterAudioLogContext, route string, seq ui
 		fields = map[string]any{}
 	}
 	fields["seq"] = seq
-	log.Print(observability.FormatStepLine("demeter", route, stage, logCtx.traceID, logCtx.userID, logCtx.orgID, "audio_transcription", fields))
-	backenderrors.RecordLog(logCtx.ctx, "demeter", route, stage, "audio_transcription", fields)
+	log.Print(observability.FormatStepLine("demeter", route, stage, logCtx.traceID, logCtx.userID, logCtx.orgID, "demeter_audio_transcription", fields))
+	backenderrors.RecordLog(logCtx.ctx, "demeter", route, stage, "demeter_audio_transcription", fields)
 }
 
 func logDemeterRelayIssueCtx(logCtx demeterAudioLogContext, route string, status int, message string) {
