@@ -126,7 +126,6 @@ Exemple ingestion:
 | Methode | Route | Auth | Permissions | Notes |
 | --- | --- | --- | --- | --- |
 | `GET` | `/api/v1/providers/demeter-sante/models` | session app | `provider.cloud.demeter_sante` ou `provider.llm.demeter_sante` | proxy `GET /v1/models` |
-| `POST` | `/api/v1/providers/demeter-sante/audio/transcriptions` | session app | `feature.cloudupload` + `provider.cloud.demeter_sante` | exige `multipart/form-data` |
 | `POST` | `/api/v1/providers/demeter-sante/audio/transcriptions/backend` | session app | `feature.cloudupload` + `provider.cloud.demeter_sante` | transport `slice-v1` reserve aux morceaux de 5 Mo; le backend reconstitue l audio cote serveur puis expose le resultat via polling |
 | `POST` | `/api/v1/providers/demeter-sante/chat/completions` | session app | `feature.llmapi` + `provider.llm.demeter_sante` | proxy JSON vers Mistral |
 

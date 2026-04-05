@@ -276,17 +276,18 @@ func (a *App) transcribeDemeterBackendChunk(
 	plan demeterBackendChunkPlan,
 ) (demeterChunkTranscriptionResult, error) {
 	ctx := logCtx.ctx
-	chunkDir, err := os.MkdirTemp("", "demeter-chunk-*")
-	if err != nil {
-		return demeterChunkTranscriptionResult{statusCode: fiber.StatusInternalServerError}, err
-	}
-	defer func() {
-		_ = os.RemoveAll(chunkDir)
-	}()
-
-	chunkPath := filepath.Join(chunkDir, fmt.Sprintf("chunk_%03d%s", plan.Index+1, demeterAudioChunkFileExt))
-	if err := transcodeDemeterAudioChunk(ctx, upload.SourcePath, chunkPath, plan.StartSec, plan.Duration); err != nil {
-		if errors.Is(err, errDemeterAudioChunkEmpty) {
+	var (
+		chunkBytes     []byte
+		chunkFileName  string
+		normalizedMime string
+	)
+	if routeMode == "relay" {
+		var readErr error
+		chunkBytes, readErr = os.ReadFile(upload.SourcePath)
+		if readErr != nil {
+			return demeterChunkTranscriptionResult{statusCode: fiber.StatusBadGateway}, readErr
+		}
+		if len(chunkBytes) == 0 {
 			return demeterChunkTranscriptionResult{statusCode: fiber.StatusBadRequest}, &demeterAudioValidationError{
 				code:    "invalid_audio_file",
 				message: "fichier audio illisible",
@@ -297,44 +298,75 @@ func (a *App) transcribeDemeterBackendChunk(
 				},
 			}
 		}
-		var validationErr *demeterAudioValidationError
-		if errors.As(err, &validationErr) {
-			validationErr.file = demeterAudioFileInfo{
-				FileName:  upload.FileName,
-				MimeType:  upload.MimeType,
-				SizeBytes: upload.SizeBytes,
-			}
-			return demeterChunkTranscriptionResult{statusCode: fiber.StatusServiceUnavailable}, validationErr
+		chunkFileName = filepath.Base(upload.FileName)
+		normalizedMime = strings.TrimSpace(upload.MimeType)
+		if normalizedMime == "" {
+			normalizedMime = "audio/wav"
 		}
-		logDemeterAudioStageCtx(logCtx, route, seq, "chunk_transcode_error", demeterAudioRequestBaseFields(routeMode, audioDurationSec, audioDurationProvided, map[string]any{
-			"chunk_index":     plan.Index,
-			"chunk_id":        plan.ChunkID,
-			"start_sec":       plan.StartSec,
-			"end_sec":         plan.EndSec,
-			"duration_sec":    plan.Duration,
-			"file_name":       upload.FileName,
-			"mime_type":       upload.MimeType,
-			"source_format":   upload.SourceFormat,
-			"normalized_file": chunkPath,
-			"message":         err.Error(),
-		}))
-		return demeterChunkTranscriptionResult{statusCode: fiber.StatusBadGateway}, err
-	}
+	} else {
+		chunkDir, err := os.MkdirTemp("", "demeter-chunk-*")
+		if err != nil {
+			return demeterChunkTranscriptionResult{statusCode: fiber.StatusInternalServerError}, err
+		}
+		defer func() {
+			_ = os.RemoveAll(chunkDir)
+		}()
 
-	chunkBytes, err := os.ReadFile(chunkPath)
-	if err != nil {
-		return demeterChunkTranscriptionResult{statusCode: fiber.StatusBadGateway}, err
-	}
-	if len(chunkBytes) == 0 {
-		return demeterChunkTranscriptionResult{statusCode: fiber.StatusBadRequest}, &demeterAudioValidationError{
-			code:    "invalid_audio_file",
-			message: "fichier audio illisible",
-			file: demeterAudioFileInfo{
-				FileName:  upload.FileName,
-				MimeType:  upload.MimeType,
-				SizeBytes: upload.SizeBytes,
-			},
+		chunkPath := filepath.Join(chunkDir, fmt.Sprintf("chunk_%03d%s", plan.Index+1, demeterAudioChunkFileExt))
+		if err := transcodeDemeterAudioChunk(ctx, upload.SourcePath, chunkPath, plan.StartSec, plan.Duration); err != nil {
+			if errors.Is(err, errDemeterAudioChunkEmpty) {
+				return demeterChunkTranscriptionResult{statusCode: fiber.StatusBadRequest}, &demeterAudioValidationError{
+					code:    "invalid_audio_file",
+					message: "fichier audio illisible",
+					file: demeterAudioFileInfo{
+						FileName:  upload.FileName,
+						MimeType:  upload.MimeType,
+						SizeBytes: upload.SizeBytes,
+					},
+				}
+			}
+			var validationErr *demeterAudioValidationError
+			if errors.As(err, &validationErr) {
+				validationErr.file = demeterAudioFileInfo{
+					FileName:  upload.FileName,
+					MimeType:  upload.MimeType,
+					SizeBytes: upload.SizeBytes,
+				}
+				return demeterChunkTranscriptionResult{statusCode: fiber.StatusServiceUnavailable}, validationErr
+			}
+			logDemeterAudioStageCtx(logCtx, route, seq, "chunk_transcode_error", demeterAudioRequestBaseFields(routeMode, audioDurationSec, audioDurationProvided, map[string]any{
+				"chunk_index":     plan.Index,
+				"chunk_id":        plan.ChunkID,
+				"start_sec":       plan.StartSec,
+				"end_sec":         plan.EndSec,
+				"duration_sec":    plan.Duration,
+				"file_name":       upload.FileName,
+				"mime_type":       upload.MimeType,
+				"source_format":   upload.SourceFormat,
+				"normalized_file": chunkPath,
+				"message":         err.Error(),
+			}))
+			return demeterChunkTranscriptionResult{statusCode: fiber.StatusBadGateway}, err
 		}
+
+		var readErr error
+		chunkBytes, readErr = os.ReadFile(chunkPath)
+		if readErr != nil {
+			return demeterChunkTranscriptionResult{statusCode: fiber.StatusBadGateway}, readErr
+		}
+		if len(chunkBytes) == 0 {
+			return demeterChunkTranscriptionResult{statusCode: fiber.StatusBadRequest}, &demeterAudioValidationError{
+				code:    "invalid_audio_file",
+				message: "fichier audio illisible",
+				file: demeterAudioFileInfo{
+					FileName:  upload.FileName,
+					MimeType:  upload.MimeType,
+					SizeBytes: upload.SizeBytes,
+				},
+			}
+		}
+		chunkFileName = fmt.Sprintf("chunk_%03d%s", plan.Index+1, demeterAudioChunkFileExt)
+		normalizedMime = "audio/wav"
 	}
 
 	logDemeterAudioStageCtx(logCtx, route, seq, "upstream_send_start", demeterAudioRequestBaseFields(routeMode, audioDurationSec, audioDurationProvided, map[string]any{
@@ -345,13 +377,13 @@ func (a *App) transcribeDemeterBackendChunk(
 		"chunk_duration_sec": plan.Duration,
 		"file_name":          upload.FileName,
 		"chunk_bytes":        len(chunkBytes),
-		"mime_type":          "audio/wav",
+		"mime_type":          normalizedMime,
 		"model":              upload.Model,
 		"diarize":            upload.Diarize,
-		"normalized_format":  "audio/wav",
+		"normalized_format":  normalizedMime,
 	}))
 
-	body, contentType, err := buildDemeterAudioMultipart(chunkBytes, fmt.Sprintf("chunk_%03d%s", plan.Index+1, demeterAudioChunkFileExt), upload.Model, upload.Diarize)
+	body, contentType, err := buildDemeterAudioMultipart(chunkBytes, chunkFileName, upload.Model, upload.Diarize)
 	if err != nil {
 		return demeterChunkTranscriptionResult{statusCode: fiber.StatusInternalServerError}, err
 	}

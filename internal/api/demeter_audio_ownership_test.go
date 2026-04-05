@@ -276,7 +276,7 @@ func performDemeterTransportSliceRequest(t *testing.T, app *fiber.App, token, up
 		t.Fatalf("failed to close multipart writer: %v", err)
 	}
 
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/providers/demeter-sante/audio/transcriptions", &body)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/providers/demeter-sante/audio/transcriptions/backend", &body)
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 	req.Header.Set(fiber.HeaderAuthorization, "Bearer "+token)
 	req.Header.Set(demeterAudioTransportHeader, demeterAudioTransportModeSliceV1)

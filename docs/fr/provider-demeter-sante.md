@@ -9,14 +9,13 @@ Le backend expose un provider nomme `Demeter Sante`, mais le transport reel pass
 - `MISTRAL_API_KEY` doit etre renseigne.
 - `MISTRAL_API_BASE_URL` pointe par defaut vers `https://api.mistral.ai`.
 - `readyz` retourne `503` tant que le client Mistral n est pas configure.
-- L image runtime backend doit fournir `ffmpeg` et `ffprobe` pour `/audio/transcriptions/backend`, qui accepte un transport `slice-v1` en morceaux de 5 Mo, reconstitue l audio cote serveur, puis decoupe les longs fichiers avant l appel a Mistral.
+- L image runtime backend doit fournir `ffmpeg` et `ffprobe` pour `/audio/transcriptions/backend`, qui accepte un transport `slice-v1` en morceaux de 5 Mo, reconstitue l audio cote serveur, puis traite l audio avant l appel a Mistral.
 
 ## Endpoints relay
 
 | Route backend | Upstream | Permission |
 | --- | --- | --- |
 | `GET /api/v1/providers/demeter-sante/models` | `GET /v1/models` | `provider.cloud.demeter_sante` ou `provider.llm.demeter_sante` |
-| `POST /api/v1/providers/demeter-sante/audio/transcriptions` | `POST /v1/audio/transcriptions` | `feature.cloudupload` + `provider.cloud.demeter_sante` |
 | `POST /api/v1/providers/demeter-sante/audio/transcriptions/backend` | `POST /v1/audio/transcriptions` | `feature.cloudupload` + `provider.cloud.demeter_sante` |
 | `POST /api/v1/providers/demeter-sante/chat/completions` | `POST /v1/chat/completions` | `feature.llmapi` + `provider.llm.demeter_sante` |
 

@@ -3,7 +3,6 @@ package api
 import (
 	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -23,6 +22,7 @@ const (
 	demeterModelsUpstreamPath               = "/v1/models"
 	demeterChatCompletionsUpstreamPath      = "/v1/chat/completions"
 	demeterAudioTranscriptionsUpstreamPath  = "/v1/audio/transcriptions"
+	demeterAudioTransportMaxRequestBytes    = 6 * 1024 * 1024
 	defaultDemeterAudioTranscriptionModelID = "voxtral-mini-latest"
 	demeterAudioTranscriptionMaxAttempts    = 10
 	demeterAudioTranscriptionBaseDelay      = 2 * time.Second
@@ -163,104 +163,22 @@ func (a *App) demeterAudioTranscriptions(c *fiber.Ctx) error {
 		return a.demeterAudioTranscriptionsTransportSlice(c, route, seq, startedAt, routeMode, audioDurationSec, audioDurationProvided, requestBytes, contentType)
 	}
 
-	if routeMode == "backend_direct" {
-		return a.demeterAudioTranscriptionsBackendDirect(c, route, seq, startedAt, routeMode, audioDurationSec, audioDurationProvided, requestBytes, contentType)
-	}
-
-	requestBody := c.Body()
-	requestBytes = len(requestBody)
-
-	normalizedBody, normalizedContentType, fileInfo, err := normalizeDemeterAudioTranscriptionRequest(requestBody, contentType)
-	if err != nil {
-		var validationErr *demeterAudioValidationError
-		if errors.As(err, &validationErr) {
-			return a.demeterAudioValidationFailure(c, route, seq, startedAt, requestBytes, contentType, routeMode, audioDurationSec, audioDurationProvided, validationErr)
-		}
-		logDemeterRelayIssue(c, route, fiber.StatusBadRequest, err.Error())
-		logDemeterAudioStage(c, route, seq, "request_failed", demeterAudioRequestBaseFields(routeMode, audioDurationSec, audioDurationProvided, map[string]any{
-			"result":            "invalid_multipart",
-			"status_code":       fiber.StatusBadRequest,
-			"total_duration_ms": time.Since(startedAt).Milliseconds(),
-			"request_bytes":     requestBytes,
-			"content_type":      contentType,
-			"message":           err.Error(),
-		}))
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-			Error:   "invalid multipart form",
-			Code:    "invalid_multipart",
-			TraceID: requestTraceID(c),
-			Path:    route,
-		})
-	}
-	requestBody = normalizedBody
-	contentType = normalizedContentType
-	requestBytes = len(requestBody)
-
-	logDemeterAudioStage(c, route, seq, "upstream_send_start", demeterAudioRequestBaseFields(routeMode, audioDurationSec, audioDurationProvided, map[string]any{
-		"upstream":      demeterAudioTranscriptionsUpstreamPath,
-		"request_bytes": requestBytes,
-		"file_name":     fileInfo.FileName,
-		"file_size":     fileInfo.SizeBytes,
-		"mime_type":     fileInfo.MimeType,
+	message := "X-Demeter-Transport: slice-v1 is required for Demeter audio transcription routes"
+	logDemeterRelayIssue(c, route, fiber.StatusBadRequest, message)
+	logDemeterAudioStage(c, route, seq, "request_failed", demeterAudioRequestBaseFields(routeMode, audioDurationSec, audioDurationProvided, map[string]any{
+		"result":            "invalid_transport",
+		"status_code":       fiber.StatusBadRequest,
+		"total_duration_ms": time.Since(startedAt).Milliseconds(),
+		"request_bytes":     requestBytes,
+		"content_type":      contentType,
+		"message":           message,
 	}))
-
-	relayResult, err := a.demeterAudioTranscriptionWithRetry(newDemeterAudioLogContextFromFiber(c), route, seq, routeMode, audioDurationSec, audioDurationProvided, requestBody, contentType, requestBytes)
-	if err != nil {
-		logDemeterRelayIssue(c, route, fiber.StatusBadGateway, err.Error())
-		logDemeterAudioStage(c, route, seq, "sequence_end", demeterAudioRequestBaseFields(routeMode, audioDurationSec, audioDurationProvided, map[string]any{
-			"result":               "upstream_transport_error",
-			"upstream":             demeterAudioTranscriptionsUpstreamPath,
-			"upstream_duration_ms": 0,
-			"total_duration_ms":    time.Since(startedAt).Milliseconds(),
-			"request_bytes":        requestBytes,
-			"message":              err.Error(),
-		}))
-		return c.Status(fiber.StatusBadGateway).JSON(ErrorResponse{Error: "failed to reach mistral"})
-	}
-
-	statusCode := relayResult.statusCode
-	responseBody := relayResult.responseBody
-	upstreamDurationMs := relayResult.upstreamDurationMs
-
-	logDemeterAudioStage(c, route, seq, "upstream_response_received", demeterAudioRequestBaseFields(routeMode, audioDurationSec, audioDurationProvided, map[string]any{
-		"upstream":             demeterAudioTranscriptionsUpstreamPath,
-		"upstream_status":      statusCode,
-		"upstream_duration_ms": upstreamDurationMs,
-		"request_bytes":        requestBytes,
-		"response_bytes":       len(responseBody),
-		"attempts":             relayResult.attempts,
-	}))
-
-	logDemeterAudioStage(c, route, seq, "return_to_front", demeterAudioRequestBaseFields(routeMode, audioDurationSec, audioDurationProvided, map[string]any{
-		"upstream":             demeterAudioTranscriptionsUpstreamPath,
-		"upstream_status":      statusCode,
-		"upstream_duration_ms": upstreamDurationMs,
-		"request_bytes":        requestBytes,
-		"response_bytes":       len(responseBody),
-		"attempts":             relayResult.attempts,
-	}))
-
-	logDemeterUpstreamStatus(c, route, statusCode)
-	c.Status(statusCode)
-	c.Type("json")
-	sendErr := c.Send(responseBody)
-	result := "ok"
-	if sendErr != nil {
-		result = "front_send_error"
-	} else if statusCode >= fiber.StatusBadRequest {
-		result = "upstream_status_error"
-	}
-	logDemeterAudioStage(c, route, seq, "sequence_end", demeterAudioRequestBaseFields(routeMode, audioDurationSec, audioDurationProvided, map[string]any{
-		"result":               result,
-		"upstream":             demeterAudioTranscriptionsUpstreamPath,
-		"upstream_status":      statusCode,
-		"upstream_duration_ms": upstreamDurationMs,
-		"total_duration_ms":    time.Since(startedAt).Milliseconds(),
-		"request_bytes":        requestBytes,
-		"response_bytes":       len(responseBody),
-		"attempts":             relayResult.attempts,
-	}))
-	return sendErr
+	return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
+		Error:   message,
+		Code:    "invalid_transport",
+		TraceID: requestTraceID(c),
+		Path:    route,
+	})
 }
 
 type demeterAudioTranscriptionRelayResult struct {

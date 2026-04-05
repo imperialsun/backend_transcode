@@ -868,7 +868,8 @@ func (a *App) runDemeterAudioTransportTranscriptionOperation(
 			return
 		}
 		chunking := resolveDemeterBackendChunkingConfig(settings, upload.Model)
-		chunkPlans = buildDemeterBackendChunkPlans(upload.DurationSec, chunking.EffectiveDurationSec, chunking.EffectiveOverlapSec)
+		chunkIDPrefix := fmt.Sprintf("demeter-backend-%s", sanitizeDemeterAudioTransportUploadID(session.uploadID))
+		chunkPlans = buildDemeterBackendChunkPlansWithPrefix(upload.DurationSec, chunking.EffectiveDurationSec, chunking.EffectiveOverlapSec, chunkIDPrefix)
 		if len(chunkPlans) == 0 {
 			fallbackUsed, updateErr := a.updateDemeterAudioTranscriptionOperationStateWithFallback(ctx, &store.DemeterAudioTranscriptionOperationRecord{
 				OperationID:    session.uploadID,
@@ -991,6 +992,26 @@ func (a *App) demeterAudioTranscriptionsTransportSlice(
 			"request_bytes":     requestBytes,
 		}))
 		return c.Status(fiber.StatusServiceUnavailable).JSON(ErrorResponse{Error: "mistral is not configured"})
+	}
+
+	if requestBytes > demeterAudioTransportMaxRequestBytes {
+		message := "multipart payload too large"
+		logDemeterRelayIssueCtx(logCtx, route, fiber.StatusRequestEntityTooLarge, message)
+		logDemeterAudioStageCtx(logCtx, route, seq, "request_failed", demeterAudioRequestBaseFields(routeMode, audioDurationSec, audioDurationProvided, map[string]any{
+			"result":            "payload_too_large",
+			"status_code":       fiber.StatusRequestEntityTooLarge,
+			"total_duration_ms": time.Since(startedAt).Milliseconds(),
+			"request_bytes":     requestBytes,
+			"max_request_bytes": demeterAudioTransportMaxRequestBytes,
+			"content_type":      contentType,
+			"message":           message,
+		}))
+		return c.Status(fiber.StatusRequestEntityTooLarge).JSON(ErrorResponse{
+			Error:   message,
+			Code:    "payload_too_large",
+			TraceID: requestTraceID(c),
+			Path:    route,
+		})
 	}
 
 	req, err := parseDemeterAudioTransportSliceRequest(c)
