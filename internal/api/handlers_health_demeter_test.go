@@ -19,6 +19,8 @@ import (
 	"time"
 
 	"demeter-backend/internal/auth"
+	"demeter-backend/internal/backenderrors"
+	"demeter-backend/internal/backendperformance"
 	"demeter-backend/internal/config"
 	"demeter-backend/internal/mistral"
 	"demeter-backend/internal/store"
@@ -374,6 +376,10 @@ func TestDemeterAudioTranscriptions_BackendRouteChunksServerSideAndLogsDurationA
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(response))
 	}))
+	backendperformance.RegisterSink(appCtx.Store)
+	t.Cleanup(func() {
+		backendperformance.RegisterSink(nil)
+	})
 
 	claims, err := auth.ParseAccessToken(appCtx.Config.JWTSecret, token)
 	if err != nil {
@@ -538,6 +544,12 @@ func TestDemeterAudioTranscriptions_BackendRouteChunksServerSideAndLogsDurationA
 	if finalPayload.Response.Chunks[1].Segments[0].ChunkID != finalPayload.Response.Chunks[1].ChunkID {
 		t.Fatalf("expected nested segment chunk id to match parent chunk, got %+v", finalPayload.Response.Chunks[1])
 	}
+	waitForPerformanceTaskCountAtLeast(t, appCtx.Store, "reception_de_slice", 2)
+	waitForPerformanceTaskCountAtLeast(t, appCtx.Store, "reconstruction_fichier", 1)
+	waitForPerformanceTaskCountAtLeast(t, appCtx.Store, "validation_ffprobe", 1)
+	waitForPerformanceTaskCountAtLeast(t, appCtx.Store, "backend_audio_transcription", 1)
+	waitForPerformanceTaskCountAtLeast(t, appCtx.Store, "preparation_des_chunks", 1)
+	waitForPerformanceTaskCountAtLeast(t, appCtx.Store, "transcodage_ffmpeg", 2)
 
 	logged := buffer.String()
 	for _, needle := range []string{
@@ -940,13 +952,69 @@ func waitForDemeterAudioTranscriptionOperationResponse(
 	}
 }
 
+func waitForPerformanceTaskCountAtLeast(t *testing.T, st *store.Store, task string, minCount int) int {
+	t.Helper()
+	if minCount <= 0 {
+		minCount = 1
+	}
+
+	for i := 0; i < 80; i++ {
+		var count int
+		if err := st.DB.QueryRowContext(context.Background(), `
+			SELECT COUNT(*)
+			FROM performance_events
+			WHERE task = ?
+		`, task).Scan(&count); err != nil {
+			t.Fatalf("failed to count performance events for %q: %v", task, err)
+		}
+		if count >= minCount {
+			return count
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for at least %d performance events with task %q", minCount, task)
+	return 0
+}
+
+func waitForBackendErrorTitleCountAtLeast(t *testing.T, st *store.Store, title string, minCount int) int {
+	t.Helper()
+	if minCount <= 0 {
+		minCount = 1
+	}
+
+	for i := 0; i < 80; i++ {
+		var count int
+		if err := st.DB.QueryRowContext(context.Background(), `
+			SELECT COUNT(*)
+			FROM backend_error_events
+			WHERE title = ?
+		`, title).Scan(&count); err != nil {
+			t.Fatalf("failed to count backend error events for %q: %v", title, err)
+		}
+		if count >= minCount {
+			return count
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for at least %d backend error events with title %q", minCount, title)
+	return 0
+}
+
 func TestDemeterAudioTranscriptions_RejectsEmptyAudioFile(t *testing.T) {
-	app, token, _ := setupDemeterRoutesApp(t, []store.UserPermissionOverrideInput{
+	app, token, appCtx := setupDemeterRoutesApp(t, []store.UserPermissionOverrideInput{
 		{PermissionCode: "feature.cloudupload", Effect: "allow"},
 		{PermissionCode: "provider.cloud.demeter_sante", Effect: "allow"},
 	}, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Fatalf("upstream should not be reached for empty audio")
 	}))
+	backenderrors.RegisterSink(appCtx.Store)
+	t.Cleanup(func() {
+		backenderrors.RegisterSink(nil)
+	})
+	backendperformance.RegisterSink(appCtx.Store)
+	t.Cleanup(func() {
+		backendperformance.RegisterSink(nil)
+	})
 
 	resp := sendDemeterAudioSliceRequest(t, app, token, fmt.Sprintf("backend-empty-%d", time.Now().UnixNano()), 0, 1, true, "empty.wav", nil, 0, defaultDemeterAudioTranscriptionModelID, false)
 	defer closeHTTPResponse(t, resp)
@@ -961,6 +1029,8 @@ func TestDemeterAudioTranscriptions_RejectsEmptyAudioFile(t *testing.T) {
 	if payload["code"] != "empty_audio_file" {
 		t.Fatalf("expected empty_audio_file code, got %+v", payload)
 	}
+	waitForPerformanceTaskCountAtLeast(t, appCtx.Store, "erreur_backend", 1)
+	waitForBackendErrorTitleCountAtLeast(t, appCtx.Store, "erreur_backend", 1)
 }
 
 func TestDemeterAudioTranscriptions_BackendRouteRejectsNonSliceTransport(t *testing.T) {

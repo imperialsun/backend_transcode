@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"demeter-backend/internal/backenderrors"
+	"demeter-backend/internal/backendperformance"
 	"demeter-backend/internal/observability"
 	"demeter-backend/internal/requestmeta"
 
@@ -59,6 +60,24 @@ func logDemeterAudioStageCtx(logCtx demeterAudioLogContext, route string, seq ui
 	fields["seq"] = seq
 	log.Print(observability.FormatStepLine("demeter", route, stage, logCtx.traceID, logCtx.userID, logCtx.orgID, "demeter_audio_transcription", fields))
 	backenderrors.RecordLog(logCtx.ctx, "demeter", route, stage, "demeter_audio_transcription", fields)
+}
+
+func logDemeterAudioPerformanceTaskCtx(logCtx demeterAudioLogContext, route string, seq uint64, stage, task string, fields map[string]any) {
+	if fields == nil {
+		fields = map[string]any{}
+	}
+	fields["seq"] = seq
+	log.Print(observability.FormatStepLine("demeter", route, stage, logCtx.traceID, logCtx.userID, logCtx.orgID, task, fields))
+	backendperformance.RecordLog(logCtx.ctx, "demeter", route, stage, task, fields)
+}
+
+func logDemeterAudioBackendErrorTaskCtx(logCtx demeterAudioLogContext, route string, seq uint64, stage string, fields map[string]any) {
+	if fields == nil {
+		fields = map[string]any{}
+	}
+	fields["seq"] = seq
+	log.Print(observability.FormatStepLine("demeter", route, stage, logCtx.traceID, logCtx.userID, logCtx.orgID, "erreur_backend", fields))
+	backenderrors.RecordLog(logCtx.ctx, "demeter", route, stage, "erreur_backend", fields)
 }
 
 func logDemeterRelayIssueCtx(logCtx demeterAudioLogContext, route string, status int, message string) {

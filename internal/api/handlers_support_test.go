@@ -39,7 +39,7 @@ func TestSubmitFrontendErrorReport_AttachesAnnexAndStoresReport(t *testing.T) {
 		Component:      "http",
 		Route:          "/api/v1/providers/demeter-sante/audio/transcriptions/backend",
 		Step:           "request_failed",
-		Title:          "demeter_audio_transcription",
+		Title:          "erreur_backend",
 		StatusCode:     400,
 		ErrorMessage:   "fichier audio vide",
 		PayloadJSON:    json.RawMessage(`{"error":"fichier audio vide"}`),

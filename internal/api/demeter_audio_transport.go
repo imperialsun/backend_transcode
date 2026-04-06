@@ -490,10 +490,19 @@ func demeterAudioSourceFileExt(fileName, mimeType string) string {
 	}
 }
 
-func buildDemeterBackendAudioUploadFromTransportSession(ctx context.Context, session *demeterAudioTransportSession) (*demeterBackendAudioUpload, error) {
+func buildDemeterBackendAudioUploadFromTransportSession(
+	logCtx demeterAudioLogContext,
+	route string,
+	seq uint64,
+	routeMode string,
+	audioDurationSec float64,
+	audioDurationProvided bool,
+	session *demeterAudioTransportSession,
+) (*demeterBackendAudioUpload, error) {
 	if session == nil {
 		return nil, fmt.Errorf("missing transport session")
 	}
+	ctx := logCtx.ctx
 
 	paths, err := demeterTransportSessionSlicePaths(session)
 	if err != nil {
@@ -512,30 +521,101 @@ func buildDemeterBackendAudioUploadFromTransportSession(ctx context.Context, ses
 
 	sourceExt := demeterAudioSourceFileExt(fileName, mimeType)
 	sourcePath := filepath.Join(tempDir, "source"+sourceExt)
+	reconstructionStartedAt := time.Now()
 	output, err := os.Create(sourcePath)
 	if err != nil {
+		logDemeterAudioBackendErrorTaskCtx(logCtx, route, seq, "reconstruction_failed", demeterAudioRequestBaseFields(routeMode, audioDurationSec, audioDurationProvided, map[string]any{
+			"operation_id":    session.uploadID,
+			"file_name":       fileName,
+			"mime_type":       mimeType,
+			"file_size_bytes": totalBytes,
+			"slice_count":     len(paths),
+			"duration_ms":     time.Since(reconstructionStartedAt).Milliseconds(),
+			"message":         err.Error(),
+			"status_code":     fiber.StatusInternalServerError,
+		}))
 		return nil, fmt.Errorf("failed to create reconstructed audio file: %w", err)
 	}
 	for _, path := range paths {
 		input, openErr := os.Open(path)
 		if openErr != nil {
 			_ = output.Close()
+			logDemeterAudioBackendErrorTaskCtx(logCtx, route, seq, "reconstruction_failed", demeterAudioRequestBaseFields(routeMode, audioDurationSec, audioDurationProvided, map[string]any{
+				"operation_id":    session.uploadID,
+				"file_name":       fileName,
+				"mime_type":       mimeType,
+				"file_size_bytes": totalBytes,
+				"slice_count":     len(paths),
+				"duration_ms":     time.Since(reconstructionStartedAt).Milliseconds(),
+				"message":         openErr.Error(),
+				"status_code":     fiber.StatusInternalServerError,
+			}))
 			return nil, fmt.Errorf("failed to open transport slice: %w", openErr)
 		}
 		if _, copyErr := io.Copy(output, input); copyErr != nil {
 			_ = input.Close()
 			_ = output.Close()
+			logDemeterAudioBackendErrorTaskCtx(logCtx, route, seq, "reconstruction_failed", demeterAudioRequestBaseFields(routeMode, audioDurationSec, audioDurationProvided, map[string]any{
+				"operation_id":    session.uploadID,
+				"file_name":       fileName,
+				"mime_type":       mimeType,
+				"file_size_bytes": totalBytes,
+				"slice_count":     len(paths),
+				"duration_ms":     time.Since(reconstructionStartedAt).Milliseconds(),
+				"message":         copyErr.Error(),
+				"status_code":     fiber.StatusInternalServerError,
+			}))
 			return nil, fmt.Errorf("failed to reassemble transport slices: %w", copyErr)
 		}
 		_ = input.Close()
 	}
 	if err := output.Close(); err != nil {
+		logDemeterAudioBackendErrorTaskCtx(logCtx, route, seq, "reconstruction_failed", demeterAudioRequestBaseFields(routeMode, audioDurationSec, audioDurationProvided, map[string]any{
+			"operation_id":    session.uploadID,
+			"file_name":       fileName,
+			"mime_type":       mimeType,
+			"file_size_bytes": totalBytes,
+			"slice_count":     len(paths),
+			"duration_ms":     time.Since(reconstructionStartedAt).Milliseconds(),
+			"message":         err.Error(),
+			"status_code":     fiber.StatusInternalServerError,
+		}))
 		return nil, fmt.Errorf("failed to finalize reconstructed audio file: %w", err)
 	}
-	loggedUpload, err := buildDemeterBackendAudioUploadFromSource(ctx, tempDir, sourcePath, fileName, mimeType, model, diarize, sourceFormat)
+	logDemeterAudioPerformanceTaskCtx(logCtx, route, seq, "reconstruction_completed", "reconstruction_fichier", demeterAudioRequestBaseFields(routeMode, audioDurationSec, audioDurationProvided, map[string]any{
+		"operation_id":    session.uploadID,
+		"file_name":       fileName,
+		"mime_type":       mimeType,
+		"file_size_bytes": totalBytes,
+		"slice_count":     len(paths),
+		"duration_ms":     time.Since(reconstructionStartedAt).Milliseconds(),
+	}))
+
+	audioProcessingStartedAt := time.Now()
+	loggedUpload, err := buildDemeterBackendAudioUploadFromSource(ctx, logCtx, route, seq, tempDir, sourcePath, fileName, mimeType, model, diarize, sourceFormat)
 	if err != nil {
+		logDemeterAudioBackendErrorTaskCtx(logCtx, route, seq, "audio_processing_failed", demeterAudioRequestBaseFields(routeMode, audioDurationSec, audioDurationProvided, map[string]any{
+			"operation_id":    session.uploadID,
+			"file_name":       fileName,
+			"mime_type":       mimeType,
+			"source_format":   sourceFormat,
+			"file_size_bytes": totalBytes,
+			"duration_ms":     time.Since(audioProcessingStartedAt).Milliseconds(),
+			"message":         err.Error(),
+			"status_code":     fiber.StatusInternalServerError,
+		}))
 		return nil, err
 	}
+	logDemeterAudioPerformanceTaskCtx(logCtx, route, seq, "audio_processing_completed", "backend_audio_transcription", demeterAudioRequestBaseFields(routeMode, audioDurationSec, audioDurationProvided, map[string]any{
+		"operation_id":    session.uploadID,
+		"file_name":       loggedUpload.FileName,
+		"mime_type":       loggedUpload.MimeType,
+		"source_format":   loggedUpload.SourceFormat,
+		"probed_format":   loggedUpload.ProbedFormat,
+		"duration_sec":    loggedUpload.DurationSec,
+		"file_size_bytes": loggedUpload.SizeBytes,
+		"duration_ms":     time.Since(audioProcessingStartedAt).Milliseconds(),
+	}))
 	if loggedUpload != nil && totalBytes > 0 {
 		loggedUpload.SizeBytes = totalBytes
 	}
@@ -692,7 +772,7 @@ func (a *App) runDemeterAudioTransportTranscriptionOperation(
 		"total_duration_ms": time.Since(startedAt).Milliseconds(),
 	}))
 
-	upload, err := buildDemeterBackendAudioUploadFromTransportSession(ctx, session)
+	upload, err := buildDemeterBackendAudioUploadFromTransportSession(logCtx, route, seq, routeMode, audioDurationSec, audioDurationProvided, session)
 	if err != nil {
 		statusCode := fiber.StatusBadGateway
 		lastError := err.Error()
@@ -738,6 +818,14 @@ func (a *App) runDemeterAudioTransportTranscriptionOperation(
 	}
 
 	if upload == nil {
+		logDemeterAudioBackendErrorTaskCtx(logCtx, route, seq, "backend_operation_failed", demeterAudioRequestBaseFields(routeMode, audioDurationSec, audioDurationProvided, map[string]any{
+			"operation_id":    session.uploadID,
+			"status_code":     fiber.StatusBadGateway,
+			"duration_ms":     time.Since(startedAt).Milliseconds(),
+			"request_bytes":   requestBytes,
+			"transport_bytes": session.totalBytes,
+			"message":         "missing reconstructed upload",
+		}))
 		fallbackUsed, updateErr := a.updateDemeterAudioTranscriptionOperationStateWithFallback(ctx, &store.DemeterAudioTranscriptionOperationRecord{
 			OperationID:    session.uploadID,
 			OrganizationID: baseLogCtx.orgID,
@@ -775,6 +863,7 @@ func (a *App) runDemeterAudioTransportTranscriptionOperation(
 		return
 	}
 
+	chunkPreparationStartedAt := time.Now()
 	var chunkPlans []demeterBackendChunkPlan
 	if routeMode == "relay" {
 		wholeDuration := maxInt(1, int(math.Ceil(upload.DurationSec)))
@@ -793,6 +882,13 @@ func (a *App) runDemeterAudioTransportTranscriptionOperation(
 		}
 	} else {
 		if !a.MistralClient.IsConfigured() {
+			logDemeterAudioBackendErrorTaskCtx(logCtx, route, seq, "chunk_preparation_failed", demeterAudioRequestBaseFields(routeMode, audioDurationSec, audioDurationProvided, map[string]any{
+				"operation_id":    session.uploadID,
+				"status_code":     fiber.StatusServiceUnavailable,
+				"duration_ms":     time.Since(chunkPreparationStartedAt).Milliseconds(),
+				"message":         "mistral client is not configured",
+				"transport_bytes": session.totalBytes,
+			}))
 			fallbackUsed, updateErr := a.updateDemeterAudioTranscriptionOperationStateWithFallback(ctx, &store.DemeterAudioTranscriptionOperationRecord{
 				OperationID:    session.uploadID,
 				OrganizationID: baseLogCtx.orgID,
@@ -831,6 +927,13 @@ func (a *App) runDemeterAudioTransportTranscriptionOperation(
 		}
 		settings, loadErr := a.loadDemeterBackendAudioChunkSettings(ctx, baseLogCtx.userID)
 		if loadErr != nil {
+			logDemeterAudioBackendErrorTaskCtx(logCtx, route, seq, "chunk_preparation_failed", demeterAudioRequestBaseFields(routeMode, audioDurationSec, audioDurationProvided, map[string]any{
+				"operation_id":    session.uploadID,
+				"status_code":     fiber.StatusInternalServerError,
+				"duration_ms":     time.Since(chunkPreparationStartedAt).Milliseconds(),
+				"message":         loadErr.Error(),
+				"transport_bytes": session.totalBytes,
+			}))
 			fallbackUsed, updateErr := a.updateDemeterAudioTranscriptionOperationStateWithFallback(ctx, &store.DemeterAudioTranscriptionOperationRecord{
 				OperationID:    session.uploadID,
 				OrganizationID: baseLogCtx.orgID,
@@ -871,6 +974,13 @@ func (a *App) runDemeterAudioTransportTranscriptionOperation(
 		chunkIDPrefix := fmt.Sprintf("demeter-backend-%s", sanitizeDemeterAudioTransportUploadID(session.uploadID))
 		chunkPlans = buildDemeterBackendChunkPlansWithPrefix(upload.DurationSec, chunking.EffectiveDurationSec, chunking.EffectiveOverlapSec, chunkIDPrefix)
 		if len(chunkPlans) == 0 {
+			logDemeterAudioBackendErrorTaskCtx(logCtx, route, seq, "chunk_preparation_failed", demeterAudioRequestBaseFields(routeMode, audioDurationSec, audioDurationProvided, map[string]any{
+				"operation_id":    session.uploadID,
+				"status_code":     fiber.StatusBadRequest,
+				"duration_ms":     time.Since(chunkPreparationStartedAt).Milliseconds(),
+				"message":         "fichier audio illisible",
+				"transport_bytes": session.totalBytes,
+			}))
 			fallbackUsed, updateErr := a.updateDemeterAudioTranscriptionOperationStateWithFallback(ctx, &store.DemeterAudioTranscriptionOperationRecord{
 				OperationID:    session.uploadID,
 				OrganizationID: baseLogCtx.orgID,
@@ -907,6 +1017,24 @@ func (a *App) runDemeterAudioTransportTranscriptionOperation(
 			}))
 			return
 		}
+	}
+
+	if len(chunkPlans) > 0 {
+		logDemeterAudioPerformanceTaskCtx(logCtx, route, seq, "chunk_preparation_completed", "preparation_des_chunks", demeterAudioRequestBaseFields(routeMode, audioDurationSec, audioDurationProvided, map[string]any{
+			"operation_id":    session.uploadID,
+			"chunk_count":     len(chunkPlans),
+			"duration_ms":     time.Since(chunkPreparationStartedAt).Milliseconds(),
+			"transport_bytes": session.totalBytes,
+			"chunk_duration_sec": func() int {
+				if routeMode == "relay" {
+					return maxInt(1, int(math.Ceil(upload.DurationSec)))
+				}
+				if len(chunkPlans) == 0 {
+					return 0
+				}
+				return int(math.Round(chunkPlans[0].Duration))
+			}(),
+		}))
 	}
 
 	fallbackUsed, updateErr := a.updateDemeterAudioTranscriptionOperationStateWithFallback(ctx, &store.DemeterAudioTranscriptionOperationRecord{
@@ -1167,6 +1295,19 @@ func (a *App) demeterAudioTranscriptionsTransportSlice(
 		"diarize":           req.Diarize,
 		"total_duration_ms": time.Since(startedAt).Milliseconds(),
 		"request_bytes":     requestBytes,
+	}))
+	logDemeterAudioPerformanceTaskCtx(logCtx, route, seq, "slice_received", "reception_de_slice", demeterAudioRequestBaseFields(routeMode, audioDurationSec, audioDurationProvided, map[string]any{
+		"operation_id":  req.UploadID,
+		"slice_index":   req.SliceIndex,
+		"slice_count":   req.SliceCount,
+		"slice_final":   req.Final,
+		"slice_bytes":   storedBytes,
+		"file_name":     req.FileName,
+		"mime_type":     req.MimeType,
+		"model":         req.Model,
+		"diarize":       req.Diarize,
+		"duration_ms":   time.Since(startedAt).Milliseconds(),
+		"request_bytes": requestBytes,
 	}))
 	logDemeterAudioStageCtx(logCtx, route, seq, "transport_slice_stored", demeterAudioRequestBaseFields(routeMode, audioDurationSec, audioDurationProvided, map[string]any{
 		"operation_id":      req.UploadID,

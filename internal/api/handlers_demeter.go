@@ -343,6 +343,7 @@ func (a *App) demeterAudioValidationFailure(
 ) error {
 	fileInfo := validationErr.file
 	statusCode := demeterAudioValidationStatusCode(validationErr.code)
+	logCtx := newDemeterAudioLogContextFromFiber(c)
 	fields := demeterAudioRequestBaseFields(routeMode, audioDurationSec, audioDurationProvided, map[string]any{
 		"result":            validationErr.code,
 		"status_code":       statusCode,
@@ -354,6 +355,7 @@ func (a *App) demeterAudioValidationFailure(
 		"mime_type":         fileInfo.MimeType,
 		"message":           validationErr.message,
 	})
+	logDemeterAudioBackendErrorTaskCtx(logCtx, route, seq, "backend_validation_failed", fields)
 	logDemeterAudioStage(c, route, seq, "request_failed", fields)
 	logDemeterAudioStage(c, route, seq, "sequence_end", demeterAudioRequestBaseFields(routeMode, audioDurationSec, audioDurationProvided, map[string]any{
 		"result":            validationErr.code,
