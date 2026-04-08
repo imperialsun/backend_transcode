@@ -606,6 +606,12 @@ func buildDemeterBackendAudioUploadFromTransportSession(
 		}))
 		return nil, err
 	}
+	if loggedUpload == nil {
+		return nil, fmt.Errorf("backend audio upload metadata unexpectedly nil")
+	}
+	if totalBytes > 0 {
+		loggedUpload.SizeBytes = totalBytes
+	}
 	logDemeterAudioPerformanceTaskCtx(logCtx, route, seq, "audio_processing_completed", "backend_audio_transcription", demeterAudioRequestBaseFields(routeMode, audioDurationSec, audioDurationProvided, map[string]any{
 		"operation_id":    session.uploadID,
 		"file_name":       loggedUpload.FileName,
@@ -616,9 +622,6 @@ func buildDemeterBackendAudioUploadFromTransportSession(
 		"file_size_bytes": loggedUpload.SizeBytes,
 		"duration_ms":     time.Since(audioProcessingStartedAt).Milliseconds(),
 	}))
-	if loggedUpload != nil && totalBytes > 0 {
-		loggedUpload.SizeBytes = totalBytes
-	}
 	return loggedUpload, nil
 }
 
