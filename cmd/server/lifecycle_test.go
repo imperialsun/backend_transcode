@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -98,11 +99,11 @@ func (p fakeMeetingFinalizeOperationPurger) PurgeExpiredMeetingFinalizeOperation
 type fakeBackendErrorEventPurger struct {
 	purged int64
 	err    error
-	calls  int
+	calls  int64
 }
 
 func (p *fakeBackendErrorEventPurger) PurgeExpiredBackendErrorEvents(context.Context, time.Time) (int64, error) {
-	p.calls++
+	atomic.AddInt64(&p.calls, 1)
 	return p.purged, p.err
 }
 
@@ -156,7 +157,7 @@ func TestRunBackendErrorCleanupLoop_CallsPurgerOnTick(t *testing.T) {
 	}()
 
 	deadline := time.Now().Add(250 * time.Millisecond)
-	for purger.calls == 0 {
+	for atomic.LoadInt64(&purger.calls) == 0 {
 		if time.Now().After(deadline) {
 			t.Fatal("expected backend error cleanup loop to call the purger")
 		}

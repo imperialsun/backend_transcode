@@ -1224,7 +1224,7 @@ func setupDemeterRoutesApp(t *testing.T, overrides []store.UserPermissionOverrid
 	if handler != nil {
 		upstream := httptest.NewServer(handler)
 		t.Cleanup(upstream.Close)
-		client = mistral.NewClient(upstream.URL, "key", time.Second, time.Second)
+		client = mistral.NewClient(upstream.URL, "key", 10*time.Second, 10*time.Second)
 	}
 
 	appCtx := &App{
