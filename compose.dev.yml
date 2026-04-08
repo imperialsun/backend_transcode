@@ -1,6 +1,6 @@
 services:
   backend:
-    image: golang:1.25.9
+    image: golang:1.26.0
     working_dir: /workspace
     command: ["bash", "./scripts/run-local-backend.sh"]
     ports:
