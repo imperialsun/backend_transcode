@@ -591,6 +591,6 @@ func (a *App) runDemeterAudioTranscriptionOperation(
 			}
 			return total
 		}(),
-		"response_bytes":       func() int { raw, _ := json.Marshal(response); return len(raw) }(),
+		"response_bytes": func() int { raw, _ := json.Marshal(response); return len(raw) }(),
 	}))
 }
