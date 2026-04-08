@@ -17,10 +17,14 @@ const DefaultTraceID = "-"
 
 const MaxTraceIDLength = 128
 
+// NewTraceID generates a fresh trace identifier for requests or background
+// jobs that do not already carry one.
 func NewTraceID() string {
 	return uuid.NewString()
 }
 
+// NormalizeTraceID strips unsupported characters and truncates values so trace
+// IDs remain safe to log and propagate in headers.
 func NormalizeTraceID(value string) string {
 	value = strings.TrimSpace(value)
 	if value == "" {
@@ -50,6 +54,8 @@ func NormalizeTraceID(value string) string {
 	return normalized
 }
 
+// WithTraceID stores a normalized trace ID in the context, generating one when
+// the caller passes an empty or invalid value.
 func WithTraceID(ctx context.Context, traceID string) context.Context {
 	if ctx == nil {
 		ctx = context.Background()
@@ -62,6 +68,8 @@ func WithTraceID(ctx context.Context, traceID string) context.Context {
 	return context.WithValue(ctx, traceIDKey{}, normalized)
 }
 
+// TraceIDFromContext extracts the trace ID used by the current request or
+// falls back to the default marker.
 func TraceIDFromContext(ctx context.Context) string {
 	if ctx == nil {
 		return DefaultTraceID
@@ -75,6 +83,8 @@ func TraceIDFromContext(ctx context.Context) string {
 	return DefaultTraceID
 }
 
+// FormatStepLine renders a structured log line that includes the component,
+// route, step, trace metadata, and sanitized key/value fields.
 func FormatStepLine(component, route, step, traceID, userID, orgID, title string, fields map[string]any) string {
 	component = strings.TrimSpace(component)
 	if component == "" {
@@ -129,6 +139,7 @@ func FormatStepLine(component, route, step, traceID, userID, orgID, title string
 	return builder.String()
 }
 
+// sanitizeLogText removes line breaks so log fields remain one line each.
 func sanitizeLogText(value string) string {
 	value = strings.TrimSpace(value)
 	value = strings.ReplaceAll(value, "\r", " ")
@@ -136,6 +147,7 @@ func sanitizeLogText(value string) string {
 	return value
 }
 
+// normalizeToken converts empty identifiers into the default trace marker.
 func normalizeToken(value string) string {
 	value = strings.TrimSpace(value)
 	if value == "" {
@@ -144,6 +156,7 @@ func normalizeToken(value string) string {
 	return sanitizeLogText(value)
 }
 
+// formatFieldValue renders values in a stable log-friendly form.
 func formatFieldValue(value any) string {
 	switch v := value.(type) {
 	case string:

@@ -5,6 +5,8 @@ import (
 	"time"
 )
 
+// These tests verify the environment parsing helpers and the top-level config
+// loader defaults.
 func TestGetEnvHelpers(t *testing.T) {
 	t.Setenv("TEST_ENV_STR", "  spaced ")
 	if got := getEnv("TEST_ENV_STR", "fallback"); got != "spaced" {

@@ -12,8 +12,12 @@ import (
 	"github.com/google/uuid"
 )
 
+// errUnsupportedTableInfoTarget is returned when a caller asks for schema
+// metadata that the helper does not know how to inspect.
 var errUnsupportedTableInfoTarget = errors.New("unsupported sqlite table info target")
 
+// resolveTableInfoQuery returns the PRAGMA query used to inspect a supported
+// table.
 func resolveTableInfoQuery(tableName string) (string, error) {
 	switch strings.TrimSpace(tableName) {
 	case "refresh_sessions":
@@ -25,6 +29,8 @@ func resolveTableInfoQuery(tableName string) (string, error) {
 	}
 }
 
+// ensureColumnExists adds a missing column when the current database version is
+// behind the code's expected schema.
 func ensureColumnExists(ctx context.Context, tx *sql.Tx, tableName string, columnName string, alterStmt string) error {
 	query, err := resolveTableInfoQuery(tableName)
 	if err != nil {
@@ -60,6 +66,8 @@ func ensureColumnExists(ctx context.Context, tx *sql.Tx, tableName string, colum
 	return err
 }
 
+// GetUserPermissionOverrides returns the explicit allow/deny overrides assigned
+// to one user.
 func (s *Store) GetUserPermissionOverrides(ctx context.Context, userID string) ([]UserPermissionOverrideInput, error) {
 	rows, err := s.DB.QueryContext(ctx, `
 		SELECT p.code, upo.effect
@@ -84,6 +92,8 @@ func (s *Store) GetUserPermissionOverrides(ctx context.Context, userID string) (
 	return out, rows.Err()
 }
 
+// CountActiveUsersByGlobalRole counts active users that currently hold the
+// specified global role.
 func (s *Store) CountActiveUsersByGlobalRole(ctx context.Context, roleCode string) (int, error) {
 	var count int
 	err := s.DB.QueryRowContext(ctx, `
@@ -96,6 +106,8 @@ func (s *Store) CountActiveUsersByGlobalRole(ctx context.Context, roleCode strin
 	return count, err
 }
 
+// CountActiveUsersByOrganizationRole counts active users that currently hold
+// the specified organization role within one tenant.
 func (s *Store) CountActiveUsersByOrganizationRole(ctx context.Context, organizationID string, roleCode string) (int, error) {
 	var count int
 	err := s.DB.QueryRowContext(ctx, `
@@ -108,6 +120,7 @@ func (s *Store) CountActiveUsersByOrganizationRole(ctx context.Context, organiza
 	return count, err
 }
 
+// DeleteUser removes the user and detaches references from dependent tables.
 func (s *Store) DeleteUser(ctx context.Context, userID string) (bool, error) {
 	logStoreStep(ctx, "delete_start", "user", map[string]any{"user_id": strings.TrimSpace(userID)})
 	tx, err := s.DB.BeginTx(ctx, nil)
@@ -157,6 +170,7 @@ func (s *Store) DeleteUser(ctx context.Context, userID string) (bool, error) {
 	return true, nil
 }
 
+// DeleteUserActivity removes every activity row owned by the user.
 func (s *Store) DeleteUserActivity(ctx context.Context, userID string) (int64, error) {
 	logStoreStep(ctx, "delete_start", "activity", map[string]any{"user_id": strings.TrimSpace(userID)})
 	result, err := s.DB.ExecContext(ctx, `
@@ -177,6 +191,7 @@ func (s *Store) DeleteUserActivity(ctx context.Context, userID string) (int64, e
 	return affected, nil
 }
 
+// InsertAuditLog persists one admin or system audit event.
 func (s *Store) InsertAuditLog(ctx context.Context, input AuditLogInput) error {
 	payload := input.PayloadJSON
 	if len(strings.TrimSpace(string(payload))) == 0 && input.Payload != nil {
@@ -197,6 +212,7 @@ func (s *Store) InsertAuditLog(ctx context.Context, input AuditLogInput) error {
 	return err
 }
 
+// GetGlobalActivitySummary returns the all-organization activity aggregate.
 func (s *Store) GetGlobalActivitySummary(ctx context.Context, fromDay string, toDay string) (*ActivitySummary, error) {
 	summary := &ActivitySummary{
 		OrganizationID: "",
@@ -313,6 +329,7 @@ func (s *Store) GetGlobalActivitySummary(ctx context.Context, fromDay string, to
 	return summary, nil
 }
 
+// nullableString converts blank strings to NULL for SQL writes.
 func nullableString(value string) any {
 	if strings.TrimSpace(value) == "" {
 		return nil
@@ -320,6 +337,8 @@ func nullableString(value string) any {
 	return value
 }
 
+// hasColumn reports whether the target table already contains the requested
+// column.
 func hasColumn(ctx context.Context, db *sql.DB, tableName string, columnName string) (bool, error) {
 	query, err := resolveTableInfoQuery(tableName)
 	if err != nil {
@@ -349,10 +368,13 @@ func hasColumn(ctx context.Context, db *sql.DB, tableName string, columnName str
 	return false, rows.Err()
 }
 
+// RefreshSessionHasTypeColumn reports whether the refresh_sessions schema has
+// the session_type column expected by newer code.
 func (s *Store) RefreshSessionHasTypeColumn(ctx context.Context) (bool, error) {
 	return hasColumn(ctx, s.DB, "refresh_sessions", "session_type")
 }
 
+// isNoRows wraps the common sql.ErrNoRows check used by schema helpers.
 func isNoRows(err error) bool {
 	return errors.Is(err, sql.ErrNoRows)
 }

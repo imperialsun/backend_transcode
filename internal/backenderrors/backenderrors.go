@@ -21,6 +21,7 @@ const (
 	defaultCaptureTimeout = 2 * time.Second
 )
 
+// Event represents the sanitized backend error record that gets persisted.
 type Event struct {
 	TraceID        string          `json:"traceId"`
 	UserID         string          `json:"userId"`
@@ -38,6 +39,7 @@ type Event struct {
 	CreatedAt      time.Time       `json:"createdAt"`
 }
 
+// Sink is the persistence boundary used by the backend-error capture path.
 type Sink interface {
 	InsertBackendErrorEvent(context.Context, Event) error
 }
@@ -47,12 +49,15 @@ var (
 	sink   Sink
 )
 
+// RegisterSink installs the storage backend used by backend-error capture.
 func RegisterSink(next Sink) {
 	sinkMu.Lock()
 	defer sinkMu.Unlock()
 	sink = next
 }
 
+// RecordLog decides whether a runtime log is important enough to persist as a
+// backend error and forwards the same event to performance logging.
 func RecordLog(ctx context.Context, component, route, step, title string, fields map[string]any) {
 	if observability.ShouldSkipObservabilityCaptureRoute(route) {
 		return
@@ -83,6 +88,8 @@ func RecordLog(ctx context.Context, component, route, step, title string, fields
 	backendperformance.RecordLog(ctx, component, route, step, title, fields)
 }
 
+// buildEvent normalizes the log payload into a backend-error record and keeps
+// the stored JSON bounded and sanitized.
 func buildEvent(ctx context.Context, component, route, step, title string, fields map[string]any) Event {
 	traceID := observability.TraceIDFromContext(ctx)
 	userID, orgID := "", ""
@@ -125,6 +132,8 @@ func buildEvent(ctx context.Context, component, route, step, title string, field
 	}
 }
 
+// shouldCapture keeps routine success and validation noise out of the error
+// table while still capturing real failures.
 func shouldCapture(step string, fields map[string]any) bool {
 	normalizedStep := strings.ToLower(strings.TrimSpace(step))
 	if normalizedStep == "" {
@@ -158,6 +167,8 @@ func shouldCapture(step string, fields map[string]any) bool {
 	return extractStatusCode(fields) >= 500
 }
 
+// sanitizePayload sorts keys and truncates values so persisted metadata remains
+// stable and bounded.
 func sanitizePayload(fields map[string]any) map[string]any {
 	if len(fields) == 0 {
 		return map[string]any{}
@@ -176,6 +187,8 @@ func sanitizePayload(fields map[string]any) map[string]any {
 	return out
 }
 
+// sanitizeValue walks nested values up to a fixed depth and strips oversized
+// payload fragments.
 func sanitizeValue(value any, depth int) any {
 	if depth >= maxSanitizeDepth {
 		return "<truncated>"
@@ -235,6 +248,7 @@ func sanitizeValue(value any, depth int) any {
 	}
 }
 
+// truncateText keeps persisted text fields inside a predictable size budget.
 func truncateText(value string) string {
 	value = normalizeText(value)
 	if len(value) <= maxStoredTextLength {
@@ -243,6 +257,7 @@ func truncateText(value string) string {
 	return value[:maxStoredTextLength]
 }
 
+// normalizeToken ensures persisted labels never collapse to an empty string.
 func normalizeToken(value string, fallback string) string {
 	value = strings.TrimSpace(value)
 	if value == "" {
@@ -251,6 +266,7 @@ func normalizeToken(value string, fallback string) string {
 	return normalizeText(value)
 }
 
+// normalizeText removes line breaks so captured values stay one-line friendly.
 func normalizeText(value string) string {
 	value = strings.TrimSpace(value)
 	value = strings.ReplaceAll(value, "\r", " ")
@@ -258,6 +274,8 @@ func normalizeText(value string) string {
 	return value
 }
 
+// extractStatusCode pulls the first usable status code from the structured
+// fields payload.
 func extractStatusCode(fields map[string]any) int {
 	for _, key := range []string{"status_code", "status", "upstream_status"} {
 		if value, ok := fields[key]; ok {
@@ -269,6 +287,8 @@ func extractStatusCode(fields map[string]any) int {
 	return 0
 }
 
+// extractDurationMS pulls the first usable duration from the structured fields
+// payload.
 func extractDurationMS(fields map[string]any) int64 {
 	for _, key := range []string{"duration_ms", "total_duration_ms", "upstream_duration_ms", "elapsed_ms"} {
 		if value, ok := fields[key]; ok {
@@ -280,6 +300,8 @@ func extractDurationMS(fields map[string]any) int64 {
 	return 0
 }
 
+// extractErrorMessage prefers explicit error text and falls back to generic
+// error-like fields.
 func extractErrorMessage(fields map[string]any) string {
 	for _, key := range []string{"error", "response_error", "summary", "message", "detail"} {
 		if value, ok := fields[key]; ok {
@@ -306,6 +328,7 @@ func extractErrorMessage(fields map[string]any) string {
 	return ""
 }
 
+// toInt converts the common numeric shapes accepted by JSON and log payloads.
 func toInt(value any) (int, bool) {
 	switch typed := value.(type) {
 	case int:
@@ -337,6 +360,7 @@ func toInt(value any) (int, bool) {
 	}
 }
 
+// toInt64 converts the common numeric shapes accepted by JSON and log payloads.
 func toInt64(value any) (int64, bool) {
 	switch typed := value.(type) {
 	case int:

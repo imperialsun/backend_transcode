@@ -11,10 +11,13 @@ import (
 
 const activityDayLayout = "2006-01-02"
 
+// activityEventsRequest carries a batch of usage events to ingest.
 type activityEventsRequest struct {
 	Events []activityEventPayload `json:"events"`
 }
 
+// activityEventPayload is the wire format accepted by the activity ingestion
+// endpoint.
 type activityEventPayload struct {
 	EventID    string          `json:"eventId"`
 	EventKind  string          `json:"eventKind"`
@@ -25,11 +28,14 @@ type activityEventPayload struct {
 	Meta       json.RawMessage `json:"meta"`
 }
 
+// activityRejectedEvent describes one rejected item in a mixed ingest batch.
 type activityRejectedEvent struct {
 	EventID string `json:"eventId"`
 	Reason  string `json:"reason"`
 }
 
+// activityEventsResponse reports how many events were accepted, deduplicated,
+// or rejected.
 type activityEventsResponse struct {
 	Accepted   int                     `json:"accepted"`
 	Duplicates int                     `json:"duplicates"`
@@ -64,15 +70,19 @@ var allowedProvidersByKindAndMode = map[string]map[string]map[string]struct{}{
 	},
 }
 
+// RegisterActivityRoutes installs the app-facing activity ingestion endpoint.
 func (a *App) RegisterActivityRoutes(router fiber.Router) {
 	router.Post("/activity/events", a.AppAuthRequired(), a.postActivityEvents)
 }
 
+// registerAdminActivityRoutes installs the admin summary routes on the shared
+// admin group.
 func (a *App) registerAdminActivityRoutes(group fiber.Router) {
 	group.Get("/activity/organizations/:id/summary", a.adminOrganizationActivitySummary)
 	group.Get("/activity/summary", a.adminActivitySummary)
 }
 
+// postActivityEvents validates and persists a batch of usage events.
 func (a *App) postActivityEvents(c *fiber.Ctx) error {
 	route := requestRoutePath(c)
 	logAPIStep(c, "activity", route, "request_received", "", nil)
@@ -134,6 +144,7 @@ func (a *App) postActivityEvents(c *fiber.Ctx) error {
 	})
 }
 
+// adminOrganizationActivitySummary returns the summary for one organization.
 func (a *App) adminOrganizationActivitySummary(c *fiber.Ctx) error {
 	route := requestRoutePath(c)
 	logAPIStep(c, "activity", route, "request_received", "", nil)
@@ -185,6 +196,8 @@ func (a *App) adminOrganizationActivitySummary(c *fiber.Ctx) error {
 	return c.JSON(summary)
 }
 
+// adminActivitySummary returns either the global summary or the current
+// organization's summary depending on scope and query parameters.
 func (a *App) adminActivitySummary(c *fiber.Ctx) error {
 	route := requestRoutePath(c)
 	logAPIStep(c, "activity", route, "request_received", "", nil)

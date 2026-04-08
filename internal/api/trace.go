@@ -14,6 +14,8 @@ import (
 
 const traceIDLocalsKey = "trace_id"
 
+// RequestTrace ensures every request gets a trace identifier before the rest of
+// the middleware chain runs.
 func (a *App) RequestTrace() fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		ensureRequestTraceID(c)
@@ -21,6 +23,8 @@ func (a *App) RequestTrace() fiber.Handler {
 	}
 }
 
+// ensureRequestTraceID normalizes an incoming trace header or generates a new
+// one when the request does not provide a usable value.
 func ensureRequestTraceID(c *fiber.Ctx) string {
 	if c == nil {
 		return observability.NewTraceID()
@@ -59,6 +63,8 @@ func ensureRequestTraceID(c *fiber.Ctx) string {
 	return traceID
 }
 
+// requestTraceID returns the current request trace identifier and creates one
+// on demand when needed.
 func requestTraceID(c *fiber.Ctx) string {
 	if c == nil {
 		return observability.DefaultTraceID
@@ -77,6 +83,8 @@ func requestTraceID(c *fiber.Ctx) string {
 	return ensureRequestTraceID(c)
 }
 
+// requestRoutePath returns the registered route path when Fiber knows it and
+// falls back to the raw path otherwise.
 func requestRoutePath(c *fiber.Ctx) string {
 	if c == nil {
 		return "-"
@@ -92,10 +100,13 @@ func requestRoutePath(c *fiber.Ctx) string {
 	return "-"
 }
 
+// requestActorIDs extracts the current user and organization IDs from claims.
 func requestActorIDs(c *fiber.Ctx) (string, string) {
 	return claimsActorIDs(MustClaims(c))
 }
 
+// claimsActorIDs returns safe log-friendly actor identifiers for structured
+// logs.
 func claimsActorIDs(claims *auth.Claims) (string, string) {
 	if claims == nil {
 		return observability.DefaultTraceID, observability.DefaultTraceID
@@ -115,6 +126,8 @@ func claimsActorIDs(claims *auth.Claims) (string, string) {
 	return userID, orgID
 }
 
+// cloneDemeterRequestString trims a request value and clones it before storing
+// it in long-lived state.
 func cloneDemeterRequestString(value string) string {
 	trimmed := strings.TrimSpace(value)
 	if trimmed == "" {
@@ -123,6 +136,8 @@ func cloneDemeterRequestString(value string) string {
 	return strings.Clone(trimmed)
 }
 
+// logAPIStep emits a structured API log line and forwards it to the
+// observability sinks.
 func logAPIStep(c *fiber.Ctx, component, route, step, title string, fields map[string]any) {
 	userID, orgID := requestActorIDs(c)
 	ctx := requestContext(c)
@@ -130,6 +145,8 @@ func logAPIStep(c *fiber.Ctx, component, route, step, title string, fields map[s
 	backenderrors.RecordLog(ctx, component, route, step, title, fields)
 }
 
+// logContextStep does the same as logAPIStep but for code paths that only have
+// a context and not a Fiber request.
 func logContextStep(ctx context.Context, component, route, step, title string, fields map[string]any) {
 	log.Print(observability.FormatStepLine(component, route, step, observability.TraceIDFromContext(ctx), observability.DefaultTraceID, observability.DefaultTraceID, title, fields))
 	backenderrors.RecordLog(ctx, component, route, step, title, fields)

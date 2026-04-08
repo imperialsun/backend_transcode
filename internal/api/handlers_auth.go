@@ -16,26 +16,33 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 )
 
+// loginRequest carries the credentials used by both app and admin logins.
 type loginRequest struct {
 	Email    string `json:"email"`
 	Password string `json:"password"`
 }
 
+// changePasswordRequest carries the current and replacement passwords for the
+// authenticated user.
 type changePasswordRequest struct {
 	CurrentPassword string `json:"currentPassword"`
 	Password        string `json:"password"`
 }
 
+// RegisterAuthRoutes installs the app authentication routes.
 func (a *App) RegisterAuthRoutes(router fiber.Router) {
 	a.RegisterAuthCoreRoutes(router)
 	a.RegisterAuthForgotPasswordRoutes(router)
 }
 
+// RegisterAdminAuthRoutes installs the admin authentication routes.
 func (a *App) RegisterAdminAuthRoutes(router fiber.Router) {
 	a.RegisterAdminAuthCoreRoutes(router)
 	a.RegisterAdminAuthForgotPasswordRoutes(router)
 }
 
+// RegisterAuthCoreRoutes installs the login, refresh, logout, and profile
+// routes for app sessions.
 func (a *App) RegisterAuthCoreRoutes(router fiber.Router) {
 	router.Post("/login", newLoginRateLimiter(), a.login)
 	router.Post("/reset-password", newPasswordResetApplyRateLimiter(), a.resetPassword)
@@ -45,10 +52,13 @@ func (a *App) RegisterAuthCoreRoutes(router fiber.Router) {
 	router.Get("/me", a.AppAuthRequired(), a.me)
 }
 
+// RegisterAuthForgotPasswordRoutes installs the app password-reset request
+// endpoint.
 func (a *App) RegisterAuthForgotPasswordRoutes(router fiber.Router) {
 	router.Post("/forgot-password", newPasswordResetRequestRateLimiter(), a.forgotPassword)
 }
 
+// RegisterAdminAuthCoreRoutes installs the admin session routes.
 func (a *App) RegisterAdminAuthCoreRoutes(router fiber.Router) {
 	router.Post("/login", newLoginRateLimiter(), a.adminLogin)
 	router.Post("/reset-password", newPasswordResetApplyRateLimiter(), a.adminResetPassword)
@@ -57,22 +67,29 @@ func (a *App) RegisterAdminAuthCoreRoutes(router fiber.Router) {
 	router.Get("/me", a.AdminAuthRequired(), a.adminMe)
 }
 
+// RegisterAdminAuthForgotPasswordRoutes installs the admin password-reset
+// request endpoint.
 func (a *App) RegisterAdminAuthForgotPasswordRoutes(router fiber.Router) {
 	router.Post("/forgot-password", newPasswordResetRequestRateLimiter(), a.adminForgotPassword)
 }
 
+// newLoginRateLimiter uses the shared IP-based limiter for login attempts.
 func newLoginRateLimiter() fiber.Handler {
 	return newIPRateLimiter(10, time.Minute, "too many login attempts")
 }
 
+// newPasswordResetRequestRateLimiter limits password-reset request bursts.
 func newPasswordResetRequestRateLimiter() fiber.Handler {
 	return newIPRateLimiter(5, time.Minute, "too many password reset requests")
 }
 
+// newPasswordResetApplyRateLimiter limits token-application attempts.
 func newPasswordResetApplyRateLimiter() fiber.Handler {
 	return newIPRateLimiter(10, time.Minute, "too many password reset attempts")
 }
 
+// newIPRateLimiter implements a tiny in-memory fixed-window limiter keyed by
+// client IP.
 func newIPRateLimiter(limit int, window time.Duration, message string) fiber.Handler {
 	type attemptWindow struct {
 		StartedAt time.Time
@@ -107,30 +124,39 @@ func newIPRateLimiter(limit int, window time.Duration, message string) fiber.Han
 	}
 }
 
+// login delegates to the session-specific login flow for the app surface.
 func (a *App) login(c *fiber.Ctx) error {
 	return a.loginForSession(c, auth.SessionTypeApp)
 }
 
+// adminLogin delegates to the session-specific login flow for the admin
+// surface.
 func (a *App) adminLogin(c *fiber.Ctx) error {
 	return a.loginForSession(c, auth.SessionTypeAdmin)
 }
 
+// forgotPassword delegates to the app password-reset flow.
 func (a *App) forgotPassword(c *fiber.Ctx) error {
 	return a.forgotPasswordForSession(c, auth.SessionTypeApp)
 }
 
+// adminForgotPassword delegates to the admin password-reset flow.
 func (a *App) adminForgotPassword(c *fiber.Ctx) error {
 	return a.forgotPasswordForSession(c, auth.SessionTypeAdmin)
 }
 
+// resetPassword applies a new password for the app session family.
 func (a *App) resetPassword(c *fiber.Ctx) error {
 	return a.resetPasswordForSession(c, auth.SessionTypeApp)
 }
 
+// adminResetPassword applies a new password for the admin session family.
 func (a *App) adminResetPassword(c *fiber.Ctx) error {
 	return a.resetPasswordForSession(c, auth.SessionTypeAdmin)
 }
 
+// changePassword updates the current user's password after verifying the old
+// secret.
 func (a *App) changePassword(c *fiber.Ctx) error {
 	route := requestRoutePath(c)
 	logAPIStep(c, "auth", route, "request_received", "change_password", nil)
@@ -189,6 +215,8 @@ func (a *App) changePassword(c *fiber.Ctx) error {
 	return c.SendStatus(fiber.StatusNoContent)
 }
 
+// loginForSession handles both app and admin login flows so token semantics and
+// validation stay aligned.
 func (a *App) loginForSession(c *fiber.Ctx, sessionType auth.SessionType) error {
 	route := requestRoutePath(c)
 	logAPIStep(c, "auth", route, "request_received", sessionType.String(), map[string]any{"session_type": sessionType.String()})

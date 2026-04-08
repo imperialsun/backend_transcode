@@ -7,6 +7,7 @@ import (
 	"strings"
 )
 
+// ReportFormat identifies one of the supported structured report outputs.
 type ReportFormat string
 
 const (
@@ -17,11 +18,14 @@ const (
 
 var ErrInvalidReport = errors.New("invalid report payload")
 
+// ReportSection is one section of a generated report draft.
 type ReportSection struct {
 	Heading    string   `json:"heading"`
 	Paragraphs []string `json:"paragraphs"`
 }
 
+// ReportJson is the normalized report shape returned by the model and stored
+// by the backend.
 type ReportJson struct {
 	Format      ReportFormat    `json:"format"`
 	Title       string          `json:"title"`
@@ -32,12 +36,14 @@ type ReportJson struct {
 	Caveats     []string        `json:"caveats,omitempty"`
 }
 
+// ReportDraft ties a parsed report to the raw model output that produced it.
 type ReportDraft struct {
 	Format ReportFormat `json:"format"`
 	Report ReportJson   `json:"report"`
 	Raw    string       `json:"raw,omitempty"`
 }
 
+// TranscriptSegment stores the speaker-attributed parts of a meeting transcript.
 type TranscriptSegment struct {
 	SpeakerID   string  `json:"speakerId,omitempty"`
 	SpeakerName string  `json:"speakerName,omitempty"`
@@ -46,12 +52,16 @@ type TranscriptSegment struct {
 	EndMS       float64 `json:"endMs,omitempty"`
 }
 
+// SpeakerAssignment associates a speaker label with the human-readable name
+// used in report generation.
 type SpeakerAssignment struct {
 	SpeakerID string `json:"speakerId"`
 	FirstName string `json:"firstName"`
 	LastName  string `json:"lastName"`
 }
 
+// ParseReportJSON extracts the structured report payload from the model output
+// and validates the expected report format.
 func ParseReportJSON(rawOutput string, expectedFormat ReportFormat) (ReportJson, error) {
 	parsed, err := parseReportCandidate(rawOutput)
 	if err != nil {
@@ -60,6 +70,7 @@ func ParseReportJSON(rawOutput string, expectedFormat ReportFormat) (ReportJson,
 	return normalizeReport(parsed, expectedFormat)
 }
 
+// ParseReportFormat normalizes a user-provided report format string.
 func ParseReportFormat(value string) (ReportFormat, bool) {
 	normalized := ReportFormat(strings.ToUpper(strings.TrimSpace(value)))
 	switch normalized {
@@ -70,6 +81,7 @@ func ParseReportFormat(value string) (ReportFormat, bool) {
 	}
 }
 
+// NormalizeReportFormats filters invalid formats and preserves order.
 func NormalizeReportFormats(values []string) []ReportFormat {
 	seen := make(map[ReportFormat]struct{}, len(values))
 	formats := make([]ReportFormat, 0, len(values))
@@ -87,14 +99,17 @@ func NormalizeReportFormats(values []string) []ReportFormat {
 	return formats
 }
 
+// AllReportFormats returns the full set of supported report formats.
 func AllReportFormats() []ReportFormat {
 	return []ReportFormat{ReportFormatCRI, ReportFormatCRO, ReportFormatCRS}
 }
 
+// ReportFormatKey returns the stable storage key for a report format.
 func ReportFormatKey(format ReportFormat) string {
 	return strings.ToLower(strings.TrimSpace(string(format)))
 }
 
+// ReportFormatDisplayName returns the human-readable name used in logs and UI.
 func ReportFormatDisplayName(format ReportFormat) string {
 	switch format {
 	case ReportFormatCRI:

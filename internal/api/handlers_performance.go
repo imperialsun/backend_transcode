@@ -11,10 +11,13 @@ import (
 	"github.com/gofiber/fiber/v2"
 )
 
+// performanceEventsRequest carries a batch of frontend performance events.
 type performanceEventsRequest struct {
 	Events []performanceEventPayload `json:"events"`
 }
 
+// performanceEventPayload is the wire format accepted by the performance ingest
+// endpoint.
 type performanceEventPayload struct {
 	EventID    string          `json:"eventId"`
 	TraceID    string          `json:"traceId"`
@@ -28,26 +31,33 @@ type performanceEventPayload struct {
 	Meta       json.RawMessage `json:"meta"`
 }
 
+// performanceRejectedEvent describes one rejected item in a mixed ingest batch.
 type performanceRejectedEvent struct {
 	EventID string `json:"eventId"`
 	Reason  string `json:"reason"`
 }
 
+// performanceEventsResponse reports how many events were accepted, deduplicated,
+// or rejected.
 type performanceEventsResponse struct {
 	Accepted   int                        `json:"accepted"`
 	Duplicates int                        `json:"duplicates"`
 	Rejected   []performanceRejectedEvent `json:"rejected"`
 }
 
+// RegisterPerformanceRoutes installs the app-facing performance ingest route.
 func (a *App) RegisterPerformanceRoutes(router fiber.Router) {
 	router.Post("/performance/events", a.AppAuthRequired(), a.postPerformanceEvents)
 }
 
+// registerAdminPerformanceRoutes installs the admin performance summary and
+// purge routes.
 func (a *App) registerAdminPerformanceRoutes(group fiber.Router) {
 	group.Get("/performance/summary", RequireSuperAdminScope(), a.adminPerformanceSummary)
 	group.Delete("/performance", RequireSuperAdminScope(), a.deletePerformanceEvents)
 }
 
+// postPerformanceEvents validates and persists a batch of frontend events.
 func (a *App) postPerformanceEvents(c *fiber.Ctx) error {
 	route := requestRoutePath(c)
 	logAPIStep(c, "performance", route, "request_received", "ingest_performance_events", nil)
@@ -109,6 +119,8 @@ func (a *App) postPerformanceEvents(c *fiber.Ctx) error {
 	})
 }
 
+// adminPerformanceSummary returns the aggregated performance summary for the
+// requested scope.
 func (a *App) adminPerformanceSummary(c *fiber.Ctx) error {
 	route := requestRoutePath(c)
 	logAPIStep(c, "admin", route, "request_received", "performance_summary", nil)
@@ -203,6 +215,8 @@ func (a *App) adminPerformanceSummary(c *fiber.Ctx) error {
 	return c.JSON(summary)
 }
 
+// deletePerformanceEvents purges performance events matching the requested
+// scope.
 func (a *App) deletePerformanceEvents(c *fiber.Ctx) error {
 	route := requestRoutePath(c)
 	logAPIStep(c, "admin", route, "request_received", "purge_performance", nil)
@@ -256,6 +270,8 @@ func (a *App) deletePerformanceEvents(c *fiber.Ctx) error {
 	return c.SendStatus(fiber.StatusNoContent)
 }
 
+// validatePerformanceEvent normalizes one frontend performance event and
+// rejects malformed input.
 func validatePerformanceEvent(raw performanceEventPayload, fallbackTraceID string) (backendperformance.Event, string) {
 	eventID := strings.TrimSpace(raw.EventID)
 	if eventID == "" {

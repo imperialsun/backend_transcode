@@ -46,6 +46,8 @@ var formatStyleRules = map[ReportFormat][]string{
 	},
 }
 
+// BuildReportSystemPrompt returns the system prompt that constrains report
+// generation to the backend's structured format.
 func BuildReportSystemPrompt() string {
 	lines := []string{
 		"Tu es un rédacteur expert des comptes rendus professionnels.",
@@ -55,6 +57,8 @@ func BuildReportSystemPrompt() string {
 	return strings.Join(lines, "\n")
 }
 
+// BuildReportUserPrompt assembles the user prompt that gives the model the
+// transcript context and the requested report format.
 func BuildReportUserPrompt(format ReportFormat, sourceText string, title string, participants []string) string {
 	participantLine := "Aucun participant fourni."
 	if len(participants) > 0 {
@@ -101,6 +105,7 @@ func BuildReportUserPrompt(format ReportFormat, sourceText string, title string,
 	return strings.Join(lines, "\n")
 }
 
+// BuildReportTitle returns the display title used for the exported document.
 func BuildReportTitle(format ReportFormat, meetingTitle string) string {
 	meetingTitle = strings.TrimSpace(meetingTitle)
 	if meetingTitle == "" {

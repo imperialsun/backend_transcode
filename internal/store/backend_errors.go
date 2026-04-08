@@ -11,6 +11,8 @@ import (
 	"github.com/google/uuid"
 )
 
+// BackendErrorEvent is the persisted row backing the operational backend-error
+// view.
 type BackendErrorEvent struct {
 	ID             string    `json:"id"`
 	TraceID        string    `json:"traceId"`
@@ -29,6 +31,8 @@ type BackendErrorEvent struct {
 	CreatedAt      time.Time `json:"createdAt"`
 }
 
+// BackendErrorEventFilters defines the search and retention filters used by the
+// admin API.
 type BackendErrorEventFilters struct {
 	OrganizationID string
 	UserID         string
@@ -41,11 +45,14 @@ type BackendErrorEventFilters struct {
 	Offset         int
 }
 
+// BackendErrorEventListResult bundles the paginated items and the matching
+// total count.
 type BackendErrorEventListResult struct {
 	Items []BackendErrorEvent
 	Total int
 }
 
+// InsertBackendErrorEvent writes one sanitized backend-error row.
 func (s *Store) InsertBackendErrorEvent(ctx context.Context, input backenderrors.Event) error {
 	payload := strings.TrimSpace(string(input.PayloadJSON))
 	if payload == "" {
@@ -98,6 +105,8 @@ func (s *Store) InsertBackendErrorEvent(ctx context.Context, input backenderrors
 	return err
 }
 
+// AttachBackendErrorAnnex adds follow-up metadata to the newest matching error
+// row for the given trace.
 func (s *Store) AttachBackendErrorAnnex(ctx context.Context, traceID string, annex json.RawMessage, recoveryStatus string) (int64, error) {
 	normalizedTraceID := strings.TrimSpace(traceID)
 	if normalizedTraceID == "" {
@@ -130,6 +139,7 @@ func (s *Store) AttachBackendErrorAnnex(ctx context.Context, traceID string, ann
 	return rowsAffected, nil
 }
 
+// ListBackendErrorEvents returns a paginated, filtered backend-error listing.
 func (s *Store) ListBackendErrorEvents(ctx context.Context, filters BackendErrorEventFilters) (BackendErrorEventListResult, error) {
 	whereSQL, args := buildBackendErrorWhereClause(filters)
 	limit := clampPositiveInt(filters.Limit, 50, 100)
@@ -213,6 +223,8 @@ func (s *Store) ListBackendErrorEvents(ctx context.Context, filters BackendError
 	}, nil
 }
 
+// DeleteBackendErrorEvents removes backend-error rows matching the supplied
+// filters.
 func (s *Store) DeleteBackendErrorEvents(ctx context.Context, filters BackendErrorEventFilters) (int64, error) {
 	whereSQL, args := buildBackendErrorWhereClause(filters)
 	result, err := s.DB.ExecContext(ctx, `DELETE FROM backend_error_events WHERE `+whereSQL, args...)
@@ -226,6 +238,7 @@ func (s *Store) DeleteBackendErrorEvents(ctx context.Context, filters BackendErr
 	return count, nil
 }
 
+// PurgeExpiredBackendErrorEvents removes rows older than the retention window.
 func (s *Store) PurgeExpiredBackendErrorEvents(ctx context.Context, now time.Time) (int64, error) {
 	cutoff := now.UTC().AddDate(0, 0, -30)
 	result, err := s.DB.ExecContext(ctx, `DELETE FROM backend_error_events WHERE created_at < ?`, cutoff)
@@ -239,6 +252,8 @@ func (s *Store) PurgeExpiredBackendErrorEvents(ctx context.Context, now time.Tim
 	return count, nil
 }
 
+// buildBackendErrorWhereClause translates the filter struct into SQL fragments
+// and bind arguments.
 func buildBackendErrorWhereClause(filters BackendErrorEventFilters) (string, []any) {
 	clauses := []string{"1=1"}
 	args := make([]any, 0, 8)
@@ -285,6 +300,7 @@ func buildBackendErrorWhereClause(filters BackendErrorEventFilters) (string, []a
 	return strings.Join(clauses, " AND "), args
 }
 
+// clampPositiveInt enforces sane pagination limits.
 func clampPositiveInt(value, fallback, maximum int) int {
 	if value <= 0 {
 		return fallback
@@ -295,6 +311,7 @@ func clampPositiveInt(value, fallback, maximum int) int {
 	return value
 }
 
+// clampNonNegativeInt prevents negative offsets.
 func clampNonNegativeInt(value int) int {
 	if value < 0 {
 		return 0
@@ -302,6 +319,7 @@ func clampNonNegativeInt(value int) int {
 	return value
 }
 
+// normalizeNullableString converts blank strings into NULL database values.
 func normalizeNullableString(value string) any {
 	value = strings.TrimSpace(value)
 	if value == "" {
@@ -310,6 +328,7 @@ func normalizeNullableString(value string) any {
 	return value
 }
 
+// normalizeRequiredString returns a trimmed value or the supplied fallback.
 func normalizeRequiredString(value string, fallback string) string {
 	value = strings.TrimSpace(value)
 	if value == "" {
@@ -318,6 +337,7 @@ func normalizeRequiredString(value string, fallback string) string {
 	return value
 }
 
+// nullableInt stores zero values as NULL.
 func nullableInt(value int) any {
 	if value == 0 {
 		return nil
@@ -325,6 +345,7 @@ func nullableInt(value int) any {
 	return value
 }
 
+// nullableInt64 stores zero values as NULL.
 func nullableInt64(value int64) any {
 	if value == 0 {
 		return nil

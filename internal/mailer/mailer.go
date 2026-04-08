@@ -25,6 +25,7 @@ var ErrUnavailable = errors.New("mailer unavailable")
 
 const DocxContentType = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 
+// Sender is the operational email boundary used by the API handlers.
 type Sender interface {
 	Ready() error
 	SendPasswordResetEmail(ctx context.Context, input PasswordResetEmail) error
@@ -32,6 +33,8 @@ type Sender interface {
 	SendUserProvisioningEmail(ctx context.Context, input UserProvisioningEmail) error
 }
 
+// Config describes the SMTP connection and sender identity used for outgoing
+// messages.
 type Config struct {
 	Host      string
 	Port      int
@@ -41,6 +44,7 @@ type Config struct {
 	FromName  string
 }
 
+// PasswordResetEmail carries the data required to send a reset link.
 type PasswordResetEmail struct {
 	ToEmail        string
 	ResetURL       string
@@ -49,12 +53,16 @@ type PasswordResetEmail struct {
 	SessionType    auth.SessionType
 }
 
+// MailAttachment represents a single file attachment that gets embedded in a
+// MIME message.
 type MailAttachment struct {
 	Filename    string
 	ContentType string
 	Data        []byte
 }
 
+// MeetingSummaryEmail contains the rendered meeting content and optional
+// attachments sent to recipients after finalization.
 type MeetingSummaryEmail struct {
 	ToEmail     string
 	Subject     string
@@ -63,6 +71,8 @@ type MeetingSummaryEmail struct {
 	Attachments []MailAttachment
 }
 
+// UserProvisioningEmail is sent when an admin creates a user and the backend
+// must share the login credentials.
 type UserProvisioningEmail struct {
 	ToEmail           string
 	Login             string
@@ -70,6 +80,7 @@ type UserProvisioningEmail struct {
 	ApplicationURL    string
 }
 
+// SMTPMailer is the concrete SMTP implementation of Sender.
 type SMTPMailer struct {
 	host      string
 	port      int
@@ -79,6 +90,8 @@ type SMTPMailer struct {
 	fromName  string
 }
 
+// NewSMTPMailer trims the caller-provided configuration and prepares the SMTP
+// client state used for outgoing messages.
 func NewSMTPMailer(cfg Config) *SMTPMailer {
 	return &SMTPMailer{
 		host:      strings.TrimSpace(cfg.Host),
@@ -90,6 +103,7 @@ func NewSMTPMailer(cfg Config) *SMTPMailer {
 	}
 }
 
+// Ready reports whether the mailer has enough configuration to send mail.
 func (m *SMTPMailer) Ready() error {
 	if m == nil {
 		return ErrUnavailable
@@ -103,6 +117,7 @@ func (m *SMTPMailer) Ready() error {
 	return nil
 }
 
+// SendPasswordResetEmail renders and delivers the password-reset message.
 func (m *SMTPMailer) SendPasswordResetEmail(ctx context.Context, input PasswordResetEmail) error {
 	if err := m.Ready(); err != nil {
 		return err
@@ -126,6 +141,8 @@ func (m *SMTPMailer) SendPasswordResetEmail(ctx context.Context, input PasswordR
 	return nil
 }
 
+// SendMeetingSummaryEmail renders and delivers the meeting summary message,
+// including any generated DOCX attachments.
 func (m *SMTPMailer) SendMeetingSummaryEmail(ctx context.Context, input MeetingSummaryEmail) error {
 	if err := m.Ready(); err != nil {
 		return err
@@ -156,6 +173,8 @@ func (m *SMTPMailer) SendMeetingSummaryEmail(ctx context.Context, input MeetingS
 	return nil
 }
 
+// SendUserProvisioningEmail renders the onboarding email for a newly created
+// account.
 func (m *SMTPMailer) SendUserProvisioningEmail(ctx context.Context, input UserProvisioningEmail) error {
 	if err := m.Ready(); err != nil {
 		return err
@@ -179,6 +198,8 @@ func (m *SMTPMailer) SendUserProvisioningEmail(ctx context.Context, input UserPr
 	return nil
 }
 
+// sendMessage establishes the SMTP connection, performs optional TLS and auth,
+// and streams the final MIME message to the recipient.
 func (m *SMTPMailer) sendMessage(ctx context.Context, toEmail string, message []byte) error {
 	logMailStep(ctx, "smtp_dial_start", map[string]any{
 		"message_bytes": len(message),
@@ -258,6 +279,7 @@ func (m *SMTPMailer) sendMessage(ctx context.Context, toEmail string, message []
 	return nil
 }
 
+// buildPasswordResetMessage constructs the reset email MIME payload.
 func (m *SMTPMailer) buildPasswordResetMessage(input PasswordResetEmail) ([]byte, error) {
 	to := strings.TrimSpace(input.ToEmail)
 	resetURL := strings.TrimSpace(input.ResetURL)
@@ -295,6 +317,8 @@ func (m *SMTPMailer) buildPasswordResetMessage(input PasswordResetEmail) ([]byte
 	return message.Bytes(), nil
 }
 
+// buildMeetingSummaryMessage constructs the summary email MIME payload with any
+// attachments included.
 func (m *SMTPMailer) buildMeetingSummaryMessage(input MeetingSummaryEmail) ([]byte, error) {
 	to := strings.TrimSpace(input.ToEmail)
 	if to == "" {
@@ -366,6 +390,7 @@ func (m *SMTPMailer) buildMeetingSummaryMessage(input MeetingSummaryEmail) ([]by
 	return message.Bytes(), nil
 }
 
+// buildUserProvisioningMessage constructs the onboarding email MIME payload.
 func (m *SMTPMailer) buildUserProvisioningMessage(input UserProvisioningEmail) ([]byte, error) {
 	to := strings.TrimSpace(input.ToEmail)
 	login := strings.TrimSpace(input.Login)
@@ -400,6 +425,8 @@ func (m *SMTPMailer) buildUserProvisioningMessage(input UserProvisioningEmail) (
 	return message.Bytes(), nil
 }
 
+// buildPasswordResetBodies returns the plain-text and HTML bodies for the reset
+// message.
 func buildPasswordResetBodies(input PasswordResetEmail) (string, string) {
 	expiresAt := input.ExpiresAt.UTC().Format("2006-01-02 15:04 UTC")
 	space := "application"
@@ -436,6 +463,8 @@ func buildPasswordResetBodies(input PasswordResetEmail) (string, string) {
 	return textBody, htmlBody
 }
 
+// buildUserProvisioningBodies returns the plain-text and HTML bodies for the
+// onboarding message.
 func buildUserProvisioningBodies(input UserProvisioningEmail) (string, string) {
 	login := strings.TrimSpace(input.Login)
 	temporaryPassword := strings.TrimSpace(input.TemporaryPassword)
@@ -466,6 +495,7 @@ func buildUserProvisioningBodies(input UserProvisioningEmail) (string, string) {
 	return textBody, htmlBody
 }
 
+// formatAddress renders the display-name form used in MIME headers.
 func formatAddress(name, address string) string {
 	cleanAddress := strings.TrimSpace(address)
 	cleanName := strings.TrimSpace(name)
@@ -479,12 +509,15 @@ func formatAddress(name, address string) string {
 	return fmt.Sprintf("\"%s\" <%s>", strings.ReplaceAll(cleanName, "\"", ""), cleanAddress)
 }
 
+// newBoundary generates a MIME boundary that is unlikely to collide with
+// message content.
 func newBoundary(prefix string) string {
 	var raw [12]byte
 	_, _ = rand.Read(raw[:])
 	return fmt.Sprintf("%s-%x", prefix, raw)
 }
 
+// encodeHeaderWord encodes header values that may contain non-ASCII data.
 func encodeHeaderWord(value string) string {
 	value = sanitizeHeaderValue(strings.TrimSpace(value))
 	if value == "" {
@@ -493,6 +526,7 @@ func encodeHeaderWord(value string) string {
 	return mime.QEncoding.Encode("utf-8", value)
 }
 
+// formatMediaTypeHeader builds a Content-Type header with optional parameters.
 func formatMediaTypeHeader(mediaType string, params map[string]string) string {
 	cleanMediaType := strings.TrimSpace(mediaType)
 	if cleanMediaType == "" {
@@ -509,6 +543,7 @@ func formatMediaTypeHeader(mediaType string, params map[string]string) string {
 	return cleanMediaType
 }
 
+// sanitizeHeaderValue removes characters that are unsafe for raw SMTP headers.
 func sanitizeHeaderValue(value string) string {
 	value = strings.TrimSpace(value)
 	value = strings.ReplaceAll(value, "\r", " ")
@@ -517,6 +552,7 @@ func sanitizeHeaderValue(value string) string {
 	return value
 }
 
+// wrapBase64 wraps base64 lines at the traditional MIME width.
 func wrapBase64(encoded string) string {
 	const width = 76
 	if len(encoded) <= width {
@@ -534,6 +570,7 @@ func wrapBase64(encoded string) string {
 	return builder.String()
 }
 
+// logMailStep emits mailer events to the structured logging pipeline.
 func logMailStep(ctx context.Context, step string, fields map[string]any) {
 	log.Print(observability.FormatStepLine("mailer", "smtp", step, observability.TraceIDFromContext(ctx), observability.DefaultTraceID, observability.DefaultTraceID, "", fields))
 	backenderrors.RecordLog(ctx, "mailer", "smtp", step, "", fields)

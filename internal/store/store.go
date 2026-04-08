@@ -15,10 +15,12 @@ import (
 	_ "modernc.org/sqlite"
 )
 
+// Store wraps the single SQLite database used by the backend.
 type Store struct {
 	DB *sql.DB
 }
 
+// Organization is the persisted tenant record used by app and admin flows.
 type Organization struct {
 	ID        string    `json:"id"`
 	Name      string    `json:"name"`
@@ -28,6 +30,7 @@ type Organization struct {
 	UpdatedAt time.Time `json:"updatedAt"`
 }
 
+// User is the persisted account record.
 type User struct {
 	ID             string    `json:"id"`
 	OrganizationID string    `json:"organizationId"`
@@ -38,6 +41,8 @@ type User struct {
 	UpdatedAt      time.Time `json:"updatedAt"`
 }
 
+// SettingsRecord stores the raw JSON settings document and its versioning
+// metadata.
 type SettingsRecord struct {
 	Version       int             `json:"version"`
 	SchemaVersion int             `json:"schemaVersion"`
@@ -45,6 +50,7 @@ type SettingsRecord struct {
 	Settings      json.RawMessage `json:"settings"`
 }
 
+// RefreshSession stores the hashed refresh-token state for one login session.
 type RefreshSession struct {
 	ID             string
 	UserID         string
@@ -56,6 +62,7 @@ type RefreshSession struct {
 	CreatedAt      time.Time
 }
 
+// PasswordResetToken stores one password-reset token and its lifecycle state.
 type PasswordResetToken struct {
 	ID                string
 	UserID            string
@@ -67,6 +74,7 @@ type PasswordResetToken struct {
 	CreatedAt         time.Time
 }
 
+// AuditLogInput captures the data required to write one audit-log row.
 type AuditLogInput struct {
 	ActorUserID    string
 	OrganizationID string
@@ -77,17 +85,22 @@ type AuditLogInput struct {
 	PayloadJSON    json.RawMessage
 }
 
+// UserPermissionOverrideInput represents one allow or deny override for a
+// single permission code.
 type UserPermissionOverrideInput struct {
 	PermissionCode string `json:"permissionCode"`
 	Effect         string `json:"effect"`
 }
 
+// UpdateUserInput carries the optional user fields accepted by the admin update
+// endpoint.
 type UpdateUserInput struct {
 	Email          *string `json:"email"`
 	Status         *string `json:"status"`
 	OrganizationID *string `json:"organizationId"`
 }
 
+// ActivityEventInput represents one ingested usage event before persistence.
 type ActivityEventInput struct {
 	EventID    string
 	EventKind  string
@@ -98,27 +111,33 @@ type ActivityEventInput struct {
 	MetaJSON   json.RawMessage
 }
 
+// ActivityIngestResult reports how many usage events were accepted or treated
+// as duplicates.
 type ActivityIngestResult struct {
 	Accepted   int `json:"accepted"`
 	Duplicates int `json:"duplicates"`
 }
 
+// ActivityRange identifies the inclusive day window used by activity summaries.
 type ActivityRange struct {
 	From string `json:"from"`
 	To   string `json:"to"`
 }
 
+// ActivityTotals aggregates high-level activity counts.
 type ActivityTotals struct {
 	Transcriptions int `json:"transcriptions"`
 	Reports        int `json:"reports"`
 }
 
+// ActivityByDayItem breaks activity totals down by day.
 type ActivityByDayItem struct {
 	Day            string `json:"day"`
 	Transcriptions int    `json:"transcriptions"`
 	Reports        int    `json:"reports"`
 }
 
+// ActivityByUserItem breaks activity totals down by user.
 type ActivityByUserItem struct {
 	UserID         string `json:"userId"`
 	Email          string `json:"email"`
@@ -126,6 +145,7 @@ type ActivityByUserItem struct {
 	Reports        int    `json:"reports"`
 }
 
+// ActivityBreakdown groups counts by mode and provider for each event family.
 type ActivityBreakdown struct {
 	TranscriptionsByMode     map[string]int `json:"transcriptionsByMode"`
 	TranscriptionsByProvider map[string]int `json:"transcriptionsByProvider"`
@@ -133,6 +153,7 @@ type ActivityBreakdown struct {
 	ReportsByProvider        map[string]int `json:"reportsByProvider"`
 }
 
+// ActivitySummary is the organization-level activity view used by admin pages.
 type ActivitySummary struct {
 	OrganizationID string               `json:"organizationId"`
 	Range          ActivityRange        `json:"range"`
@@ -142,6 +163,7 @@ type ActivitySummary struct {
 	Breakdown      ActivityBreakdown    `json:"breakdown"`
 }
 
+// UserActivitySummary is the user-level variant of the activity view.
 type UserActivitySummary struct {
 	User      User                `json:"user"`
 	Range     ActivityRange       `json:"range"`
@@ -156,6 +178,8 @@ const (
 	sqliteBusyTimeout  = 5 * time.Second
 )
 
+// Open initializes the SQLite database, applies migrations, and seeds the base
+// RBAC catalog.
 func Open(ctx context.Context, path string) (*Store, error) {
 	logStoreStep(ctx, "open_start", "store", map[string]any{"path": path})
 	dir := filepath.Dir(path)
@@ -183,6 +207,7 @@ func Open(ctx context.Context, path string) (*Store, error) {
 	return store, nil
 }
 
+// Close releases the underlying database handle.
 func (s *Store) Close() error {
 	if s.DB == nil {
 		return nil
@@ -190,10 +215,12 @@ func (s *Store) Close() error {
 	return s.DB.Close()
 }
 
+// Ping verifies that the database can accept queries.
 func (s *Store) Ping(ctx context.Context) error {
 	return s.DB.PingContext(ctx)
 }
 
+// sqliteDSN enables the pragmas the backend expects on every SQLite connection.
 func sqliteDSN(path string) string {
 	query := "_pragma=foreign_keys%3dON&_pragma=journal_mode%3dWAL&_pragma=synchronous%3dNORMAL&_pragma=busy_timeout%3d" + fmt.Sprintf("%d", sqliteBusyTimeout.Milliseconds())
 	if strings.Contains(path, "?") {
@@ -202,6 +229,7 @@ func sqliteDSN(path string) string {
 	return path + "?" + query
 }
 
+// Migrate creates every table and index the backend needs.
 func (s *Store) Migrate(ctx context.Context) error {
 	stmts := []string{
 		`CREATE TABLE IF NOT EXISTS organizations (
@@ -485,6 +513,8 @@ func (s *Store) Migrate(ctx context.Context) error {
 	return nil
 }
 
+// SeedBaseCatalog inserts the seed permissions and roles that the backend
+// expects to exist on every database.
 func (s *Store) SeedBaseCatalog(ctx context.Context) error {
 	permissions := []struct {
 		Code  string
@@ -583,6 +613,8 @@ func (s *Store) SeedBaseCatalog(ctx context.Context) error {
 	return nil
 }
 
+// EnsureBootstrap creates the initial organization and admin account when the
+// database is still empty.
 func (s *Store) EnsureBootstrap(ctx context.Context, adminEmail, passwordHash, orgName string) error {
 	logStoreStep(ctx, "bootstrap_start", "bootstrap", map[string]any{
 		"admin_email_present": strings.TrimSpace(adminEmail) != "",
@@ -651,6 +683,8 @@ func (s *Store) upsertOrganizationRole(ctx context.Context, code, label string) 
 	return err
 }
 
+// ListOrganizations returns every organization currently stored in the
+// database.
 func (s *Store) ListOrganizations(ctx context.Context) ([]Organization, error) {
 	rows, err := s.DB.QueryContext(ctx, `
 		SELECT id, name, code, status, created_at, updated_at
@@ -672,6 +706,7 @@ func (s *Store) ListOrganizations(ctx context.Context) ([]Organization, error) {
 	return out, rows.Err()
 }
 
+// GetOrganizationByID loads a single organization by primary key.
 func (s *Store) GetOrganizationByID(ctx context.Context, id string) (*Organization, error) {
 	var o Organization
 	err := s.DB.QueryRowContext(ctx, `
@@ -687,6 +722,7 @@ func (s *Store) GetOrganizationByID(ctx context.Context, id string) (*Organizati
 	return &o, nil
 }
 
+// CreateOrganization inserts a new organization record with normalized values.
 func (s *Store) CreateOrganization(ctx context.Context, name, code, status string) (*Organization, error) {
 	logStoreStep(ctx, "create_start", "organization", map[string]any{
 		"status": normalizeStatus(status),
@@ -713,6 +749,8 @@ func (s *Store) CreateOrganization(ctx context.Context, name, code, status strin
 	return org, nil
 }
 
+// UpdateOrganization applies partial updates to an organization and returns the
+// stored row after the change.
 func (s *Store) UpdateOrganization(ctx context.Context, id string, name, code, status *string) (*Organization, error) {
 	logStoreStep(ctx, "update_start", "organization", map[string]any{
 		"organization_id": id,
@@ -750,6 +788,8 @@ func (s *Store) UpdateOrganization(ctx context.Context, id string, name, code, s
 	return current, nil
 }
 
+// FindUserByEmail locates a user account without exposing password hashes to
+// callers.
 func (s *Store) FindUserByEmail(ctx context.Context, email string) (*User, error) {
 	var u User
 	err := s.DB.QueryRowContext(ctx, `
@@ -765,6 +805,7 @@ func (s *Store) FindUserByEmail(ctx context.Context, email string) (*User, error
 	return &u, nil
 }
 
+// GetUserByID loads one user account by primary key.
 func (s *Store) GetUserByID(ctx context.Context, id string) (*User, error) {
 	var u User
 	err := s.DB.QueryRowContext(ctx, `
@@ -780,6 +821,7 @@ func (s *Store) GetUserByID(ctx context.Context, id string) (*User, error) {
 	return &u, nil
 }
 
+// ListUsersByOrganization returns the users that belong to a single tenant.
 func (s *Store) ListUsersByOrganization(ctx context.Context, organizationID string) ([]User, error) {
 	rows, err := s.DB.QueryContext(ctx, `
 		SELECT id, organization_id, email, password_hash, status, created_at, updated_at
@@ -802,6 +844,7 @@ func (s *Store) ListUsersByOrganization(ctx context.Context, organizationID stri
 	return out, rows.Err()
 }
 
+// CreateUser inserts a new account and leaves role assignment to the caller.
 func (s *Store) CreateUser(ctx context.Context, organizationID, email, passwordHash, status string) (*User, error) {
 	logStoreStep(ctx, "create_start", "user", map[string]any{
 		"organization_id": strings.TrimSpace(organizationID),
@@ -829,6 +872,8 @@ func (s *Store) CreateUser(ctx context.Context, organizationID, email, passwordH
 	return u, nil
 }
 
+// CreateUserWithRoles inserts a user and attaches the requested catalog roles in
+// the same transaction.
 func (s *Store) CreateUserWithRoles(ctx context.Context, organizationID, email, passwordHash, status string, globalRoleCodes, organizationRoleCodes []string) (*User, error) {
 	logStoreStep(ctx, "create_start", "user_roles", map[string]any{
 		"organization_id":         strings.TrimSpace(organizationID),
@@ -877,6 +922,8 @@ func (s *Store) CreateUserWithRoles(ctx context.Context, organizationID, email, 
 	return u, nil
 }
 
+// CreateUserWithRolesAndOverrides inserts a user and applies both role and
+// permission override state atomically.
 func (s *Store) CreateUserWithRolesAndOverrides(ctx context.Context, organizationID, email, passwordHash, status string, globalRoleCodes, organizationRoleCodes []string, overrides []UserPermissionOverrideInput) (*User, error) {
 	logStoreStep(ctx, "create_start", "user_roles_overrides", map[string]any{
 		"organization_id":         strings.TrimSpace(organizationID),
@@ -930,6 +977,7 @@ func (s *Store) CreateUserWithRolesAndOverrides(ctx context.Context, organizatio
 	return u, nil
 }
 
+// UpdateUser applies partial account changes and returns the refreshed record.
 func (s *Store) UpdateUser(ctx context.Context, userID string, input UpdateUserInput) (*User, error) {
 	logStoreStep(ctx, "update_start", "user", map[string]any{
 		"user_id":             strings.TrimSpace(userID),
@@ -967,6 +1015,7 @@ func (s *Store) UpdateUser(ctx context.Context, userID string, input UpdateUserI
 	return current, nil
 }
 
+// UpdateUserPassword replaces the stored password hash for one account.
 func (s *Store) UpdateUserPassword(ctx context.Context, userID, passwordHash string) error {
 	logStoreStep(ctx, "password_update_start", "user", map[string]any{"user_id": strings.TrimSpace(userID)})
 	_, err := s.DB.ExecContext(ctx, `
@@ -980,6 +1029,8 @@ func (s *Store) UpdateUserPassword(ctx context.Context, userID, passwordHash str
 	return err
 }
 
+// ChangeUserPassword updates the password and clears state that depends on the
+// previous secret.
 func (s *Store) ChangeUserPassword(ctx context.Context, userID, passwordHash string) error {
 	logStoreStep(ctx, "password_change_start", "user", map[string]any{"user_id": strings.TrimSpace(userID)})
 	tx, err := s.DB.BeginTx(ctx, nil)
@@ -1016,6 +1067,7 @@ func (s *Store) ChangeUserPassword(ctx context.Context, userID, passwordHash str
 	return nil
 }
 
+// IsUserInOrganization reports whether the user belongs to the given tenant.
 func (s *Store) IsUserInOrganization(ctx context.Context, userID, organizationID string) (bool, error) {
 	var count int
 	err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM users WHERE id = ? AND organization_id = ?`, userID, organizationID).Scan(&count)
@@ -1025,6 +1077,7 @@ func (s *Store) IsUserInOrganization(ctx context.Context, userID, organizationID
 	return count > 0, nil
 }
 
+// GetGlobalRoleCodesByUser returns the global roles assigned to one user.
 func (s *Store) GetGlobalRoleCodesByUser(ctx context.Context, userID string) ([]string, error) {
 	rows, err := s.DB.QueryContext(ctx, `
 		SELECT gr.code
@@ -1040,6 +1093,8 @@ func (s *Store) GetGlobalRoleCodesByUser(ctx context.Context, userID string) ([]
 	return scanStringRows(rows)
 }
 
+// GetOrganizationRoleCodesByUser returns the organization-scoped roles
+// assigned to one user.
 func (s *Store) GetOrganizationRoleCodesByUser(ctx context.Context, userID string) ([]string, error) {
 	rows, err := s.DB.QueryContext(ctx, `
 		SELECT orr.code
@@ -1055,6 +1110,8 @@ func (s *Store) GetOrganizationRoleCodesByUser(ctx context.Context, userID strin
 	return scanStringRows(rows)
 }
 
+// ResolveEffectivePermissions computes the union of catalog permissions,
+// roles, and user-level overrides for one account.
 func (s *Store) ResolveEffectivePermissions(ctx context.Context, userID string) ([]string, error) {
 	base := map[string]struct{}{}
 
@@ -1118,6 +1175,7 @@ func (s *Store) ResolveEffectivePermissions(ctx context.Context, userID string) 
 	return out, nil
 }
 
+// SetUserGlobalRoles replaces the user's global role assignments.
 func (s *Store) SetUserGlobalRoles(ctx context.Context, userID string, roleCodes []string) error {
 	logStoreStep(ctx, "update_start", "user_global_roles", map[string]any{
 		"user_id":    strings.TrimSpace(userID),
@@ -1144,6 +1202,7 @@ func (s *Store) SetUserGlobalRoles(ctx context.Context, userID string, roleCodes
 	return nil
 }
 
+// setUserGlobalRolesTx performs the same update inside an existing transaction.
 func (s *Store) setUserGlobalRolesTx(ctx context.Context, tx *sql.Tx, userID string, roleCodes []string) error {
 	if _, err := tx.ExecContext(ctx, `DELETE FROM user_global_roles WHERE user_id = ?`, userID); err != nil {
 		return err
@@ -1163,6 +1222,7 @@ func (s *Store) setUserGlobalRolesTx(ctx context.Context, tx *sql.Tx, userID str
 	return nil
 }
 
+// SetUserOrganizationRoles replaces the user's organization-scoped roles.
 func (s *Store) SetUserOrganizationRoles(ctx context.Context, userID string, roleCodes []string) error {
 	logStoreStep(ctx, "update_start", "user_org_roles", map[string]any{
 		"user_id":    strings.TrimSpace(userID),
@@ -1189,6 +1249,8 @@ func (s *Store) SetUserOrganizationRoles(ctx context.Context, userID string, rol
 	return nil
 }
 
+// setUserOrganizationRolesTx performs the same update inside an existing
+// transaction.
 func (s *Store) setUserOrganizationRolesTx(ctx context.Context, tx *sql.Tx, userID string, roleCodes []string) error {
 	if _, err := tx.ExecContext(ctx, `DELETE FROM user_organization_roles WHERE user_id = ?`, userID); err != nil {
 		return err
@@ -1208,6 +1270,8 @@ func (s *Store) setUserOrganizationRolesTx(ctx context.Context, tx *sql.Tx, user
 	return nil
 }
 
+// SetUserPermissionOverrides replaces all explicit allow and deny overrides for
+// one user.
 func (s *Store) SetUserPermissionOverrides(ctx context.Context, userID string, overrides []UserPermissionOverrideInput) error {
 	normalizedOverrides := NormalizePermissionOverrideInputs(overrides)
 	logStoreStep(ctx, "update_start", "user_overrides", map[string]any{
@@ -1237,6 +1301,8 @@ func (s *Store) SetUserPermissionOverrides(ctx context.Context, userID string, o
 	return nil
 }
 
+// setUserPermissionOverridesTx writes the override rows inside a transaction
+// and returns how many records were inserted.
 func (s *Store) setUserPermissionOverridesTx(ctx context.Context, tx *sql.Tx, userID string, overrides []UserPermissionOverrideInput) (int, error) {
 	if _, err := tx.ExecContext(ctx, `DELETE FROM user_permission_overrides WHERE user_id = ?`, userID); err != nil {
 		return 0, err
@@ -1261,6 +1327,8 @@ func (s *Store) setUserPermissionOverridesTx(ctx context.Context, tx *sql.Tx, us
 	return appliedCount, nil
 }
 
+// SetGlobalRolePermissionsByCode replaces the permissions granted by one
+// global role.
 func (s *Store) SetGlobalRolePermissionsByCode(ctx context.Context, roleCode string, permissionCodes []string) error {
 	logStoreStep(ctx, "update_start", "global_role_permissions", map[string]any{
 		"role_code":        strings.TrimSpace(roleCode),
@@ -1313,6 +1381,8 @@ func (s *Store) SetGlobalRolePermissionsByCode(ctx context.Context, roleCode str
 	return nil
 }
 
+// SetOrganizationRolePermissionsByCode replaces the permissions granted by one
+// organization role.
 func (s *Store) SetOrganizationRolePermissionsByCode(ctx context.Context, roleCode string, permissionCodes []string) error {
 	logStoreStep(ctx, "update_start", "org_role_permissions", map[string]any{
 		"role_code":        strings.TrimSpace(roleCode),
@@ -1365,6 +1435,7 @@ func (s *Store) SetOrganizationRolePermissionsByCode(ctx context.Context, roleCo
 	return nil
 }
 
+// ListGlobalRolesCatalog returns the seeded global role catalog.
 func (s *Store) ListGlobalRolesCatalog(ctx context.Context) ([]map[string]string, error) {
 	rows, err := s.DB.QueryContext(ctx, `SELECT code, label FROM global_roles ORDER BY code`)
 	if err != nil {
@@ -1374,6 +1445,7 @@ func (s *Store) ListGlobalRolesCatalog(ctx context.Context) ([]map[string]string
 	return scanCatalogRows(rows)
 }
 
+// ListOrganizationRolesCatalog returns the seeded organization role catalog.
 func (s *Store) ListOrganizationRolesCatalog(ctx context.Context) ([]map[string]string, error) {
 	rows, err := s.DB.QueryContext(ctx, `SELECT code, label FROM organization_roles ORDER BY code`)
 	if err != nil {
@@ -1383,6 +1455,7 @@ func (s *Store) ListOrganizationRolesCatalog(ctx context.Context) ([]map[string]
 	return scanCatalogRows(rows)
 }
 
+// ListPermissionsCatalog returns the seeded permission catalog.
 func (s *Store) ListPermissionsCatalog(ctx context.Context) ([]map[string]string, error) {
 	rows, err := s.DB.QueryContext(ctx, `SELECT code, label, scope FROM permissions ORDER BY code`)
 	if err != nil {
@@ -1400,6 +1473,7 @@ func (s *Store) ListPermissionsCatalog(ctx context.Context) ([]map[string]string
 	return out, rows.Err()
 }
 
+// SaveRefreshSession stores a refresh-session hash and its expiry.
 func (s *Store) SaveRefreshSession(ctx context.Context, session RefreshSession) error {
 	if strings.TrimSpace(session.SessionType) == "" {
 		session.SessionType = "app"
@@ -1427,6 +1501,7 @@ func (s *Store) SaveRefreshSession(ctx context.Context, session RefreshSession) 
 	return err
 }
 
+// GetRefreshSessionByID loads one refresh-session row by its session ID.
 func (s *Store) GetRefreshSessionByID(ctx context.Context, id string) (*RefreshSession, error) {
 	var rec RefreshSession
 	err := s.DB.QueryRowContext(ctx, `
@@ -1445,6 +1520,7 @@ func (s *Store) GetRefreshSessionByID(ctx context.Context, id string) (*RefreshS
 	return &rec, nil
 }
 
+// RotateRefreshSession replaces the stored refresh token hash after a refresh.
 func (s *Store) RotateRefreshSession(ctx context.Context, id, newHash string, expiresAt time.Time) error {
 	logStoreStep(ctx, "rotate_start", "refresh_session", map[string]any{
 		"session_id": strings.TrimSpace(id),
@@ -1463,6 +1539,7 @@ func (s *Store) RotateRefreshSession(ctx context.Context, id, newHash string, ex
 	return err
 }
 
+// RevokeRefreshSession marks one refresh session as revoked.
 func (s *Store) RevokeRefreshSession(ctx context.Context, id string) error {
 	logStoreStep(ctx, "revoke_start", "refresh_session", map[string]any{"session_id": strings.TrimSpace(id)})
 	_, err := s.DB.ExecContext(ctx, `UPDATE refresh_sessions SET revoked_at = ? WHERE id = ?`, time.Now().UTC(), id)
@@ -1474,6 +1551,8 @@ func (s *Store) RevokeRefreshSession(ctx context.Context, id string) error {
 	return err
 }
 
+// RevokeRefreshSessionsByUser invalidates every refresh session owned by the
+// given user.
 func (s *Store) RevokeRefreshSessionsByUser(ctx context.Context, userID string) error {
 	logStoreStep(ctx, "revoke_start", "refresh_sessions", map[string]any{"user_id": strings.TrimSpace(userID)})
 	_, err := s.DB.ExecContext(ctx, `UPDATE refresh_sessions SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL`, time.Now().UTC(), userID)
@@ -1485,6 +1564,7 @@ func (s *Store) RevokeRefreshSessionsByUser(ctx context.Context, userID string) 
 	return err
 }
 
+// SavePasswordResetToken stores a one-time password reset token.
 func (s *Store) SavePasswordResetToken(ctx context.Context, token PasswordResetToken) error {
 	if strings.TrimSpace(token.ID) == "" {
 		token.ID = uuid.NewString()
@@ -1519,6 +1599,7 @@ func (s *Store) SavePasswordResetToken(ctx context.Context, token PasswordResetT
 	return err
 }
 
+// GetPasswordResetTokenByHash loads a password-reset token by its hashed value.
 func (s *Store) GetPasswordResetTokenByHash(ctx context.Context, hash string) (*PasswordResetToken, error) {
 	var record PasswordResetToken
 	err := s.DB.QueryRowContext(ctx, `
@@ -1547,6 +1628,7 @@ func (s *Store) GetPasswordResetTokenByHash(ctx context.Context, hash string) (*
 	return &record, nil
 }
 
+// ConsumePasswordResetToken marks a password-reset token as used.
 func (s *Store) ConsumePasswordResetToken(ctx context.Context, id string) error {
 	logStoreStep(ctx, "consume_start", "password_reset", map[string]any{"token_id": strings.TrimSpace(id)})
 	result, err := s.DB.ExecContext(ctx, `
@@ -1571,6 +1653,8 @@ func (s *Store) ConsumePasswordResetToken(ctx context.Context, id string) error 
 	return err
 }
 
+// RevokePasswordResetTokensByUser invalidates outstanding tokens for one user
+// and session family.
 func (s *Store) RevokePasswordResetTokensByUser(ctx context.Context, userID string, sessionType string) error {
 	logStoreStep(ctx, "revoke_start", "password_reset_tokens", map[string]any{
 		"user_id":      strings.TrimSpace(userID),
@@ -1604,6 +1688,8 @@ func (s *Store) RevokePasswordResetTokensByUser(ctx context.Context, userID stri
 	return err
 }
 
+// ApplyPasswordReset consumes a valid reset token, updates the password, and
+// clears related refresh sessions.
 func (s *Store) ApplyPasswordReset(ctx context.Context, tokenHash string, passwordHash string, sessionType string) (*PasswordResetToken, error) {
 	logStoreStep(ctx, "apply_start", "password_reset", map[string]any{
 		"session_type": strings.TrimSpace(sessionType),
@@ -1701,6 +1787,7 @@ func (s *Store) ApplyPasswordReset(ctx context.Context, tokenHash string, passwo
 	return &record, nil
 }
 
+// GetUserSettings loads the opaque JSON settings document for one user.
 func (s *Store) GetUserSettings(ctx context.Context, userID string) (*SettingsRecord, error) {
 	var record SettingsRecord
 	var payload string
@@ -1719,6 +1806,7 @@ func (s *Store) GetUserSettings(ctx context.Context, userID string) (*SettingsRe
 	return &record, nil
 }
 
+// SaveUserSettings upserts the user's JSON settings payload.
 func (s *Store) SaveUserSettings(ctx context.Context, userID, organizationID string, settings json.RawMessage, schemaVersion int) (*SettingsRecord, error) {
 	now := time.Now().UTC()
 	payload := strings.TrimSpace(string(settings))
@@ -1762,10 +1850,13 @@ func (s *Store) SaveUserSettings(ctx context.Context, userID, organizationID str
 	return record, nil
 }
 
+// ResetUserSettings replaces the settings document with an empty object.
 func (s *Store) ResetUserSettings(ctx context.Context, userID, organizationID string) (*SettingsRecord, error) {
 	return s.SaveUserSettings(ctx, userID, organizationID, json.RawMessage(`{}`), 1)
 }
 
+// IngestActivityEvents stores the validated usage events and ignores duplicate
+// event IDs.
 func (s *Store) IngestActivityEvents(
 	ctx context.Context,
 	organizationID string,
@@ -1843,6 +1934,8 @@ func (s *Store) IngestActivityEvents(
 	return result, nil
 }
 
+// GetOrganizationActivitySummary returns the organization-scoped activity
+// aggregate for the requested time window.
 func (s *Store) GetOrganizationActivitySummary(
 	ctx context.Context,
 	organizationID string,
@@ -1964,6 +2057,8 @@ func (s *Store) GetOrganizationActivitySummary(
 	return summary, nil
 }
 
+// GetUserActivitySummary returns the user-scoped activity aggregate for the
+// requested time window.
 func (s *Store) GetUserActivitySummary(
 	ctx context.Context,
 	userID string,
@@ -2062,6 +2157,8 @@ func (s *Store) GetUserActivitySummary(
 	return summary, nil
 }
 
+// scanActivityBreakdown loads the per-mode and per-provider buckets that back
+// the activity summaries.
 func (s *Store) scanActivityBreakdown(
 	ctx context.Context,
 	out map[string]int,
@@ -2085,6 +2182,8 @@ func (s *Store) scanActivityBreakdown(
 	return rows.Err()
 }
 
+// lookupRoleID resolves a role code to its database identifier inside a
+// transaction.
 func (s *Store) lookupRoleID(ctx context.Context, tx *sql.Tx, query string, code string) (string, error) {
 	var id string
 	err := tx.QueryRowContext(ctx, query, code).Scan(&id)
@@ -2111,6 +2210,7 @@ func (s *Store) lookupPermissionID(ctx context.Context, tx *sql.Tx, code string)
 	return id, err
 }
 
+// normalizeStatus maps blank values to the backend's default active state.
 func normalizeStatus(value string) string {
 	s := strings.ToLower(strings.TrimSpace(value))
 	if s == "inactive" || s == "disabled" {
@@ -2119,6 +2219,8 @@ func normalizeStatus(value string) string {
 	return "active"
 }
 
+// normalizeOrgCode converts organization codes into a predictable lowercase
+// slug-like form.
 func normalizeOrgCode(value string) string {
 	code := strings.ToLower(strings.TrimSpace(value))
 	code = strings.ReplaceAll(code, " ", "-")
@@ -2129,6 +2231,8 @@ func normalizeOrgCode(value string) string {
 	return code
 }
 
+// uniqueNormalizedCodes trims, deduplicates, and preserves the incoming order
+// of role or permission codes.
 func uniqueNormalizedCodes(values []string) []string {
 	seen := map[string]struct{}{}
 	out := make([]string, 0, len(values))
@@ -2146,6 +2250,8 @@ func uniqueNormalizedCodes(values []string) []string {
 	return out
 }
 
+// NormalizePermissionOverrideInputs trims and deduplicates override payloads
+// before they reach persistence code.
 func NormalizePermissionOverrideInputs(overrides []UserPermissionOverrideInput) []UserPermissionOverrideInput {
 	seen := map[string]int{}
 	out := make([]UserPermissionOverrideInput, 0, len(overrides))
@@ -2168,6 +2274,7 @@ func NormalizePermissionOverrideInputs(overrides []UserPermissionOverrideInput) 
 	return out
 }
 
+// scanStringRows is a tiny helper used by the catalog and role readers.
 func scanStringRows(rows *sql.Rows) ([]string, error) {
 	out := []string{}
 	for rows.Next() {
@@ -2180,6 +2287,7 @@ func scanStringRows(rows *sql.Rows) ([]string, error) {
 	return out, rows.Err()
 }
 
+// scanCatalogRows converts catalog rows into the map shape used by the API.
 func scanCatalogRows(rows *sql.Rows) ([]map[string]string, error) {
 	out := []map[string]string{}
 	for rows.Next() {
@@ -2192,6 +2300,7 @@ func scanCatalogRows(rows *sql.Rows) ([]map[string]string, error) {
 	return out, rows.Err()
 }
 
+// sortStrings keeps catalog output stable for tests and consumers.
 func sortStrings(values []string) {
 	if len(values) < 2 {
 		return
@@ -2205,6 +2314,8 @@ func sortStrings(values []string) {
 	}
 }
 
+// isActivityEventDuplicateErr recognizes the unique constraint used for
+// idempotent activity ingestion.
 func isActivityEventDuplicateErr(err error) bool {
 	if err == nil {
 		return false
@@ -2213,6 +2324,7 @@ func isActivityEventDuplicateErr(err error) bool {
 	return strings.Contains(msg, "unique constraint failed") && strings.Contains(msg, "activity_usage_events.event_id")
 }
 
+// closeRows closes a result set and intentionally ignores the close error.
 func closeRows(rows *sql.Rows) {
 	if rows == nil {
 		return
@@ -2220,6 +2332,7 @@ func closeRows(rows *sql.Rows) {
 	_ = rows.Close()
 }
 
+// rollbackTx rolls back the transaction if it is still open.
 func rollbackTx(tx *sql.Tx) {
 	if tx == nil {
 		return

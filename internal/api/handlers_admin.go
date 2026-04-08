@@ -14,69 +14,89 @@ import (
 	"github.com/gofiber/fiber/v2"
 )
 
+// createOrganizationRequest carries the minimal fields required to create a new
+// tenant.
 type createOrganizationRequest struct {
 	Name   string `json:"name"`
 	Code   string `json:"code"`
 	Status string `json:"status"`
 }
 
+// patchOrganizationRequest carries the optional fields accepted by the update
+// endpoint.
 type patchOrganizationRequest struct {
 	Name   *string `json:"name"`
 	Code   *string `json:"code"`
 	Status *string `json:"status"`
 }
 
+// createUserRequest carries the new account data used by the admin create-user
+// flow.
 type createUserRequest struct {
 	Email    string `json:"email"`
 	Password string `json:"password"`
 	Status   string `json:"status"`
 }
 
+// bulkCreateUsersRequest carries a batch of email addresses and permission
+// overrides for bulk provisioning.
 type bulkCreateUsersRequest struct {
 	Emails    []string                            `json:"emails"`
 	Overrides []store.UserPermissionOverrideInput `json:"overrides"`
 }
 
+// bulkCreateUsersResponse summarizes which users were created and which
+// requests failed.
 type bulkCreateUsersResponse struct {
 	Created []bulkCreateUsersResponseItem `json:"created"`
 	Failed  []bulkCreateUsersFailedItem   `json:"failed"`
 }
 
+// bulkCreateUsersResponseItem describes one successfully created user.
 type bulkCreateUsersResponseItem struct {
 	ID     string `json:"id"`
 	Email  string `json:"email"`
 	Status string `json:"status"`
 }
 
+// bulkCreateUsersFailedItem describes one failed bulk-provisioning entry.
 type bulkCreateUsersFailedItem struct {
 	Email  string `json:"email"`
 	Error  string `json:"error"`
 	UserID string `json:"userId,omitempty"`
 }
 
+// patchUserRequest carries the optional fields accepted by the user-update
+// endpoint.
 type patchUserRequest struct {
 	Email          *string `json:"email"`
 	Status         *string `json:"status"`
 	OrganizationID *string `json:"organizationId"`
 }
 
+// updatePasswordRequest carries the replacement password for an admin-managed
+// account.
 type updatePasswordRequest struct {
 	Password string `json:"password"`
 }
 
+// updateRoleCodesRequest carries a list of role codes to assign.
 type updateRoleCodesRequest struct {
 	Codes []string `json:"codes"`
 }
 
+// updateEntitlementsRequest carries the permission override list.
 type updateEntitlementsRequest struct {
 	Overrides []store.UserPermissionOverrideInput `json:"overrides"`
 }
 
+// RegisterAdminRoutes installs the admin CRUD and mail routes.
 func (a *App) RegisterAdminRoutes(router fiber.Router) {
 	a.RegisterAdminCoreRoutes(router)
 	a.RegisterAdminMailRoutes(router)
 }
 
+// RegisterAdminCoreRoutes installs the core admin CRUD and catalog routes.
 func (a *App) RegisterAdminCoreRoutes(router fiber.Router) {
 	group := a.adminRouteGroup(router)
 	group.Get("/organizations", a.listOrganizations)
@@ -100,6 +120,8 @@ func (a *App) RegisterAdminCoreRoutes(router fiber.Router) {
 	group.Get("/catalog/permissions", a.catalogPermissions)
 }
 
+// RegisterAdminMailRoutes installs the admin routes that trigger transactional
+// email sends.
 func (a *App) RegisterAdminMailRoutes(router fiber.Router) {
 	group := a.adminRouteGroup(router)
 	group.Post("/organizations/:id/users", a.createOrganizationUser)
@@ -107,10 +129,14 @@ func (a *App) RegisterAdminMailRoutes(router fiber.Router) {
 	group.Post("/users/:id/password-reset-email", a.sendUserPasswordResetEmail)
 }
 
+// adminRouteGroup applies the common admin session, permission, scope, and CSRF
+// checks used by every admin route.
 func (a *App) adminRouteGroup(router fiber.Router) fiber.Router {
 	return router.Group("/admin", a.AdminAuthRequired(), RequirePermissions("feature.admin"), RequireAdminScope(), RequireAdminCSRF())
 }
 
+// listOrganizations returns either every organization or only the caller's
+// organization depending on scope.
 func (a *App) listOrganizations(c *fiber.Ctx) error {
 	route := requestRoutePath(c)
 	logAPIStep(c, "admin", route, "request_received", "list_organizations", nil)
@@ -145,6 +171,8 @@ func (a *App) listOrganizations(c *fiber.Ctx) error {
 	return c.JSON([]store.Organization{*org})
 }
 
+// createOrganization is reserved to super admins because it creates a new
+// tenant.
 func (a *App) createOrganization(c *fiber.Ctx) error {
 	route := requestRoutePath(c)
 	logAPIStep(c, "admin", route, "request_received", "create_organization", nil)
@@ -179,6 +207,8 @@ func (a *App) createOrganization(c *fiber.Ctx) error {
 	return c.Status(fiber.StatusCreated).JSON(org)
 }
 
+// patchOrganization updates the organization record after validating
+// super-admin scope.
 func (a *App) patchOrganization(c *fiber.Ctx) error {
 	route := requestRoutePath(c)
 	logAPIStep(c, "admin", route, "request_received", "patch_organization", nil)
@@ -214,6 +244,8 @@ func (a *App) patchOrganization(c *fiber.Ctx) error {
 	return c.JSON(updated)
 }
 
+// listOrganizationUsers returns the users visible within one organization
+// scope.
 func (a *App) listOrganizationUsers(c *fiber.Ctx) error {
 	route := requestRoutePath(c)
 	logAPIStep(c, "admin", route, "request_received", "list_organization_users", nil)
@@ -245,6 +277,8 @@ func (a *App) listOrganizationUsers(c *fiber.Ctx) error {
 	return c.JSON(users)
 }
 
+// createOrganizationUser provisions a single account and optionally sends the
+// onboarding email.
 func (a *App) createOrganizationUser(c *fiber.Ctx) error {
 	route := requestRoutePath(c)
 	logAPIStep(c, "admin", route, "request_received", "create_organization_user", nil)
@@ -291,6 +325,8 @@ func (a *App) createOrganizationUser(c *fiber.Ctx) error {
 	return c.Status(fiber.StatusCreated).JSON(created)
 }
 
+// createOrganizationUsersBulk provisions a batch of users and attempts to send
+// a provisioning email for each address.
 func (a *App) createOrganizationUsersBulk(c *fiber.Ctx) error {
 	route := requestRoutePath(c)
 	logAPIStep(c, "admin", route, "request_received", "create_organization_users_bulk", nil)
@@ -479,6 +515,7 @@ func normalizeBulkEmail(raw string) (string, error) {
 	return email, nil
 }
 
+// patchUser applies optional identity or organization changes to a user.
 func (a *App) patchUser(c *fiber.Ctx) error {
 	route := requestRoutePath(c)
 	logAPIStep(c, "admin", route, "request_received", "patch_user", nil)
@@ -537,6 +574,8 @@ func (a *App) patchUser(c *fiber.Ctx) error {
 	return c.JSON(updated)
 }
 
+// updateUserPassword replaces an admin-managed account password and revokes
+// active refresh sessions.
 func (a *App) updateUserPassword(c *fiber.Ctx) error {
 	route := requestRoutePath(c)
 	logAPIStep(c, "admin", route, "request_received", "update_user_password", nil)
@@ -590,6 +629,8 @@ func (a *App) updateUserPassword(c *fiber.Ctx) error {
 	return c.SendStatus(fiber.StatusNoContent)
 }
 
+// deleteUser removes the user after checking that the action will not break
+// critical admin coverage.
 func (a *App) deleteUser(c *fiber.Ctx) error {
 	route := requestRoutePath(c)
 	logAPIStep(c, "admin", route, "request_received", "delete_user", nil)
@@ -683,6 +724,7 @@ func (a *App) deleteUser(c *fiber.Ctx) error {
 	return c.SendStatus(fiber.StatusNoContent)
 }
 
+// userActivitySummary returns the activity summary for one selected user.
 func (a *App) userActivitySummary(c *fiber.Ctx) error {
 	route := requestRoutePath(c)
 	logAPIStep(c, "admin", route, "request_received", "user_activity_summary", nil)
@@ -730,6 +772,8 @@ func (a *App) userActivitySummary(c *fiber.Ctx) error {
 	return c.JSON(summary)
 }
 
+// deleteUserActivity purges activity rows for one user while keeping the
+// account itself.
 func (a *App) deleteUserActivity(c *fiber.Ctx) error {
 	route := requestRoutePath(c)
 	logAPIStep(c, "admin", route, "request_received", "delete_user_activity", nil)
@@ -773,6 +817,8 @@ func (a *App) deleteUserActivity(c *fiber.Ctx) error {
 	return c.SendStatus(fiber.StatusNoContent)
 }
 
+// sendUserPasswordResetEmail sends an admin-triggered password-reset message to
+// the selected user.
 func (a *App) sendUserPasswordResetEmail(c *fiber.Ctx) error {
 	route := requestRoutePath(c)
 	logAPIStep(c, "admin", route, "request_received", "send_user_password_reset_email", nil)
@@ -824,6 +870,7 @@ func (a *App) sendUserPasswordResetEmail(c *fiber.Ctx) error {
 	return c.SendStatus(fiber.StatusNoContent)
 }
 
+// updateUserGlobalRoles replaces the user's global role assignment set.
 func (a *App) updateUserGlobalRoles(c *fiber.Ctx) error {
 	route := requestRoutePath(c)
 	logAPIStep(c, "admin", route, "request_received", "update_user_global_roles", nil)
@@ -857,6 +904,7 @@ func (a *App) updateUserGlobalRoles(c *fiber.Ctx) error {
 	return c.SendStatus(fiber.StatusNoContent)
 }
 
+// updateUserOrgRoles replaces the user's organization role assignment set.
 func (a *App) updateUserOrgRoles(c *fiber.Ctx) error {
 	route := requestRoutePath(c)
 	logAPIStep(c, "admin", route, "request_received", "update_user_org_roles", nil)
@@ -904,6 +952,7 @@ func (a *App) updateUserOrgRoles(c *fiber.Ctx) error {
 	return c.SendStatus(fiber.StatusNoContent)
 }
 
+// updateUserEntitlements replaces the user's explicit permission overrides.
 func (a *App) updateUserEntitlements(c *fiber.Ctx) error {
 	route := requestRoutePath(c)
 	logAPIStep(c, "admin", route, "request_received", "update_user_entitlements", nil)
@@ -951,6 +1000,7 @@ func (a *App) updateUserEntitlements(c *fiber.Ctx) error {
 	return c.SendStatus(fiber.StatusNoContent)
 }
 
+// getUserAccess returns the full live authorization context for the user.
 func (a *App) getUserAccess(c *fiber.Ctx) error {
 	route := requestRoutePath(c)
 	logAPIStep(c, "admin", route, "request_received", "get_user_access", nil)
@@ -1008,6 +1058,7 @@ func (a *App) getUserAccess(c *fiber.Ctx) error {
 	})
 }
 
+// catalogRoles returns the current global and organization role catalogs.
 func (a *App) catalogRoles(c *fiber.Ctx) error {
 	route := requestRoutePath(c)
 	logAPIStep(c, "admin", route, "request_received", "catalog_roles", nil)
@@ -1031,6 +1082,7 @@ func (a *App) catalogRoles(c *fiber.Ctx) error {
 	})
 }
 
+// catalogPermissions returns the seeded permission catalog.
 func (a *App) catalogPermissions(c *fiber.Ctx) error {
 	route := requestRoutePath(c)
 	logAPIStep(c, "admin", route, "request_received", "catalog_permissions", nil)
@@ -1052,6 +1104,7 @@ func isSuperAdmin(claims *auth.Claims) bool {
 	return rbac.HasRole(claims.GlobalRoles, "super_admin")
 }
 
+// writeAdminAudit writes a structured audit log for admin mutations.
 func (a *App) writeAdminAudit(ctx context.Context, claims *auth.Claims, action, targetType, targetID string, payload any) {
 	if claims == nil {
 		return

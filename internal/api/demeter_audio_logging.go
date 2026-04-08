@@ -13,6 +13,8 @@ import (
 	"github.com/gofiber/fiber/v2"
 )
 
+// demeterAudioLogContext bundles the request context and actor identity used
+// by the Demeter audio logging helpers.
 type demeterAudioLogContext struct {
 	ctx     context.Context
 	traceID string
@@ -20,6 +22,8 @@ type demeterAudioLogContext struct {
 	orgID   string
 }
 
+// newDemeterAudioLogContextFromFiber builds the logging context from the active
+// Fiber request.
 func newDemeterAudioLogContextFromFiber(c *fiber.Ctx) demeterAudioLogContext {
 	if c == nil {
 		return demeterAudioLogContext{
@@ -38,6 +42,7 @@ func newDemeterAudioLogContextFromFiber(c *fiber.Ctx) demeterAudioLogContext {
 	}
 }
 
+// newDemeterAudioLogContext builds the logging context from a bare context.
 func newDemeterAudioLogContext(ctx context.Context) demeterAudioLogContext {
 	traceID := observability.TraceIDFromContext(ctx)
 	userID, orgID := observability.DefaultTraceID, observability.DefaultTraceID
@@ -53,6 +58,7 @@ func newDemeterAudioLogContext(ctx context.Context) demeterAudioLogContext {
 	}
 }
 
+// logDemeterAudioStageCtx records a structured Demeter audio event.
 func logDemeterAudioStageCtx(logCtx demeterAudioLogContext, route string, seq uint64, stage string, fields map[string]any) {
 	if fields == nil {
 		fields = map[string]any{}
@@ -62,6 +68,7 @@ func logDemeterAudioStageCtx(logCtx demeterAudioLogContext, route string, seq ui
 	backenderrors.RecordLog(logCtx.ctx, "demeter", route, stage, "demeter_audio_transcription", fields)
 }
 
+// logDemeterAudioPerformanceTaskCtx records a Demeter audio performance event.
 func logDemeterAudioPerformanceTaskCtx(logCtx demeterAudioLogContext, route string, seq uint64, stage, task string, fields map[string]any) {
 	if fields == nil {
 		fields = map[string]any{}
@@ -71,6 +78,8 @@ func logDemeterAudioPerformanceTaskCtx(logCtx demeterAudioLogContext, route stri
 	backendperformance.RecordLog(logCtx.ctx, "demeter", route, stage, task, fields)
 }
 
+// logDemeterAudioBackendErrorTaskCtx records a backend-error event for the
+// Demeter audio path.
 func logDemeterAudioBackendErrorTaskCtx(logCtx demeterAudioLogContext, route string, seq uint64, stage string, fields map[string]any) {
 	if fields == nil {
 		fields = map[string]any{}
@@ -80,6 +89,8 @@ func logDemeterAudioBackendErrorTaskCtx(logCtx demeterAudioLogContext, route str
 	backenderrors.RecordLog(logCtx.ctx, "demeter", route, stage, "erreur_backend", fields)
 }
 
+// logDemeterRelayIssueCtx records a top-level relay problem for the current
+// request.
 func logDemeterRelayIssueCtx(logCtx demeterAudioLogContext, route string, status int, message string) {
 	logDemeterAudioStageCtx(logCtx, route, 0, "relay_issue", map[string]any{
 		"status":  status,
@@ -87,6 +98,8 @@ func logDemeterRelayIssueCtx(logCtx demeterAudioLogContext, route string, status
 	})
 }
 
+// logDemeterUpstreamStatusCtx records upstream failures when the proxied
+// service returns an error status.
 func logDemeterUpstreamStatusCtx(logCtx demeterAudioLogContext, route string, status int) {
 	if status < fiber.StatusBadRequest {
 		return
@@ -96,6 +109,8 @@ func logDemeterUpstreamStatusCtx(logCtx demeterAudioLogContext, route string, st
 	})
 }
 
+// logDemeterOwnershipStageCtx ensures ownership diagnostics always include the
+// requesting user and organization.
 func logDemeterOwnershipStageCtx(logCtx demeterAudioLogContext, route string, seq uint64, step string, fields map[string]any) {
 	if fields == nil {
 		fields = map[string]any{}
@@ -109,6 +124,7 @@ func logDemeterOwnershipStageCtx(logCtx demeterAudioLogContext, route string, se
 	logDemeterAudioStageCtx(logCtx, route, seq, step, fields)
 }
 
+// normalizeDemeterLogID keeps empty actor fields readable in structured logs.
 func normalizeDemeterLogID(value string) string {
 	value = strings.TrimSpace(value)
 	if value == "" {

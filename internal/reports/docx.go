@@ -11,6 +11,8 @@ import (
 
 const docxMimeType = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 
+// ReportDocxMetadata carries optional descriptive fields that are embedded in
+// the generated report document.
 type ReportDocxMetadata struct {
 	Format           ReportFormat
 	ModelID          string
@@ -19,6 +21,8 @@ type ReportDocxMetadata struct {
 	SourceTokenCount int
 }
 
+// TranscriptDocxMetadata carries optional descriptive fields that are embedded
+// in the transcript export.
 type TranscriptDocxMetadata struct {
 	Title            string
 	GeneratedAt      string
@@ -26,6 +30,7 @@ type TranscriptDocxMetadata struct {
 	SourceTokenCount int
 }
 
+// docxParagraph represents a single paragraph in the minimal DOCX builder.
 type docxParagraph struct {
 	Text        string
 	Bold        bool
@@ -36,6 +41,7 @@ type docxParagraph struct {
 	SpaceAfter  int
 }
 
+// BuildReportDocx renders a generated report into a standalone DOCX archive.
 func BuildReportDocx(report ReportJson, metadata ReportDocxMetadata) ([]byte, error) {
 	generatedAt := metadata.GeneratedAt
 	if generatedAt == "" {
@@ -91,6 +97,8 @@ func BuildReportDocx(report ReportJson, metadata ReportDocxMetadata) ([]byte, er
 	})
 }
 
+// BuildTranscriptDocx renders a transcript export into a standalone DOCX
+// archive.
 func BuildTranscriptDocx(title string, participants []string, sourceMode string, transcript string, segments []TranscriptSegment, metadata TranscriptDocxMetadata) ([]byte, error) {
 	if strings.TrimSpace(title) == "" {
 		title = "Réunion"
@@ -143,14 +151,18 @@ func BuildTranscriptDocx(title string, participants []string, sourceMode string,
 	})
 }
 
+// TranscriptDocxFilename builds the canonical filename for transcript exports.
 func TranscriptDocxFilename(date time.Time) string {
 	return fmt.Sprintf("transcription-brute-%04d-%02d-%02d-%02d%02d.docx", date.Year(), date.Month(), date.Day(), date.Hour(), date.Minute())
 }
 
+// ReportDocxFilename builds the canonical filename for report exports.
 func ReportDocxFilename(formatKey string, date time.Time) string {
 	return fmt.Sprintf("rapport-%s-%04d-%02d-%02d-%02d%02d.docx", strings.ToLower(strings.TrimSpace(formatKey)), date.Year(), date.Month(), date.Day(), date.Hour(), date.Minute())
 }
 
+// buildDocx assembles the ZIP container and document XML for the minimal DOCX
+// representation.
 func buildDocx(title string, paragraphs []docxParagraph, meta map[string]string) ([]byte, error) {
 	var buffer bytes.Buffer
 	zipWriter := zip.NewWriter(&buffer)
@@ -210,6 +222,7 @@ func buildDocx(title string, paragraphs []docxParagraph, meta map[string]string)
 	return buffer.Bytes(), nil
 }
 
+// buildDocumentXML converts the paragraph model into the main DOCX document.
 func buildDocumentXML(paragraphs []docxParagraph) string {
 	var builder strings.Builder
 	builder.WriteString(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>`)
@@ -223,6 +236,7 @@ func buildDocumentXML(paragraphs []docxParagraph) string {
 	return builder.String()
 }
 
+// buildParagraphXML renders one paragraph, preserving bold and heading styles.
 func buildParagraphXML(paragraph docxParagraph) string {
 	var builder strings.Builder
 	builder.WriteString(`<w:p>`)
@@ -260,6 +274,8 @@ func buildParagraphXML(paragraph docxParagraph) string {
 	return builder.String()
 }
 
+// splitTranscriptIntoParagraphs preserves speaker breaks while normalizing raw
+// transcript text.
 func splitTranscriptIntoParagraphs(transcript string) []string {
 	normalized := strings.ReplaceAll(strings.TrimSpace(transcript), "\r\n", "\n")
 	if normalized == "" {
@@ -280,12 +296,14 @@ func splitTranscriptIntoParagraphs(transcript string) []string {
 	return paragraphs
 }
 
+// xmlEscape escapes text nodes for the minimal DOCX XML documents.
 func xmlEscape(value string) string {
 	var buffer bytes.Buffer
 	_ = xml.EscapeText(&buffer, []byte(value))
 	return buffer.String()
 }
 
+// contentTypesXML returns the static DOCX content types manifest.
 func contentTypesXML() string {
 	return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
@@ -297,6 +315,7 @@ func contentTypesXML() string {
 </Types>`
 }
 
+// rootRelationshipsXML returns the static DOCX root relationships manifest.
 func rootRelationshipsXML() string {
 	return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
@@ -306,11 +325,14 @@ func rootRelationshipsXML() string {
 </Relationships>`
 }
 
+// documentRelationshipsXML returns the static DOCX relationships manifest for
+// the main document part.
 func documentRelationshipsXML() string {
 	return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"></Relationships>`
 }
 
+// corePropertiesXML renders the metadata block stored in the DOCX package.
 func corePropertiesXML(creator, title, description, language, lastModified string) string {
 	return fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:dcterms="http://purl.org/dc/terms/" xmlns:dcmitype="http://purl.org/dc/dcmitype/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
@@ -323,6 +345,8 @@ func corePropertiesXML(creator, title, description, language, lastModified strin
 </cp:coreProperties>`, xmlEscape(creator), xmlEscape(creator), xmlEscape(title), xmlEscape(description), xmlEscape(language), xmlEscape(lastModified))
 }
 
+// appPropertiesXML returns the static application-properties block required by
+// the DOCX container.
 func appPropertiesXML() string {
 	return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Properties xmlns="http://schemas.openxmlformats.org/officeDocument/2006/extended-properties" xmlns:vt="http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes">

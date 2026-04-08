@@ -24,6 +24,7 @@ const (
 	reportGenerationMaxAttempts = 3
 )
 
+// Generator holds the upstream model client and default generation parameters.
 type Generator struct {
 	Client      *mistral.Client
 	ModelID     string
@@ -31,19 +32,26 @@ type Generator struct {
 	Temperature float64
 }
 
+// GeneratedReport keeps the parsed report and the original raw text for one
+// output format.
 type GeneratedReport struct {
 	Format ReportFormat
 	Report ReportJson
 	Raw    string
 }
 
+// GeneratedReports groups the generated content by format.
 type GeneratedReports map[ReportFormat]GeneratedReport
 
+// logReportStep records report-generation progress in both stdout and the
+// persistent observability sinks.
 func logReportStep(ctx context.Context, step, title string, fields map[string]any) {
 	log.Print(observability.FormatStepLine("reports", "generator", step, observability.TraceIDFromContext(ctx), observability.DefaultTraceID, observability.DefaultTraceID, title, fields))
 	backenderrors.RecordLog(ctx, "reports", "generator", step, title, fields)
 }
 
+// GenerateReports renders one or more formats, retrying each format
+// independently so one bad format does not hide the others.
 func (g *Generator) GenerateReports(ctx context.Context, meetingTitle string, participants []string, sourceText string, formats []ReportFormat) (GeneratedReports, error) {
 	if g == nil || g.Client == nil || !g.Client.IsConfigured() {
 		return nil, errors.New("mistral client is not configured")
@@ -139,6 +147,8 @@ func (g *Generator) GenerateReports(ctx context.Context, meetingTitle string, pa
 	return results, nil
 }
 
+// generateReportForFormat retries a single report format with backoff until it
+// succeeds or the retry budget is exhausted.
 func (g *Generator) generateReportForFormat(
 	ctx context.Context,
 	modelID string,
@@ -219,6 +229,8 @@ func (g *Generator) generateReportForFormat(
 	return GeneratedReport{}, fmt.Errorf("failed to generate report for %s after %d attempts: %w", formatName, maxAttempts, lastErr)
 }
 
+// generateOne performs the actual upstream call and parses the JSON response
+// into the normalized report shape.
 func (g *Generator) generateOne(
 	ctx context.Context,
 	modelID string,
@@ -266,6 +278,8 @@ func (g *Generator) generateOne(
 	return report, content, status, nil
 }
 
+// reportGenerationRetryDelay applies a small exponential backoff between model
+// retries.
 func reportGenerationRetryDelay(attempt int) time.Duration {
 	switch attempt {
 	case 1:
@@ -277,6 +291,7 @@ func reportGenerationRetryDelay(attempt int) time.Duration {
 	}
 }
 
+// sleepContext waits for the retry delay while respecting cancellation.
 func sleepContext(ctx context.Context, delay time.Duration) error {
 	if delay <= 0 {
 		return nil
@@ -291,6 +306,8 @@ func sleepContext(ctx context.Context, delay time.Duration) error {
 	}
 }
 
+// extractChatContent pulls the assistant message content from the upstream
+// chat-completions response.
 func extractChatContent(response []byte) string {
 	if len(response) == 0 {
 		return ""
@@ -327,6 +344,7 @@ func extractChatContent(response []byte) string {
 	return normalizeTextContent(message["content"])
 }
 
+// normalizeTextContent collapses arbitrary JSON values into a trimmed string.
 func normalizeTextContent(value any) string {
 	switch typed := value.(type) {
 	case string:
@@ -347,6 +365,8 @@ func normalizeTextContent(value any) string {
 	return ""
 }
 
+// summarizeUpstreamBody extracts a compact human-readable summary from an
+// upstream failure body.
 func summarizeUpstreamBody(body []byte) string {
 	trimmed := strings.TrimSpace(string(body))
 	if trimmed == "" {
@@ -373,6 +393,7 @@ func summarizeUpstreamBody(body []byte) string {
 	return compacted
 }
 
+// firstNonEmptyMessage returns the first candidate message that contains text.
 func firstNonEmptyMessage(values ...any) string {
 	for _, value := range values {
 		if msg := messageFromAny(value); msg != "" {
@@ -382,6 +403,7 @@ func firstNonEmptyMessage(values ...any) string {
 	return ""
 }
 
+// messageFromAny converts common JSON response shapes into a trimmed string.
 func messageFromAny(value any) string {
 	switch typed := value.(type) {
 	case string:

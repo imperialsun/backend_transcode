@@ -9,21 +9,27 @@ import (
 	"github.com/gofiber/fiber/v2"
 )
 
+// adminUserSettingsRequest carries the raw JSON settings document for an admin
+// scoped user settings update.
 type adminUserSettingsRequest struct {
 	SchemaVersion int             `json:"schemaVersion"`
 	Settings      json.RawMessage `json:"settings"`
 }
 
+// registerAdminUserSettingsRoutes installs the admin routes for inspecting and
+// editing a user's settings document.
 func (a *App) registerAdminUserSettingsRoutes(group fiber.Router) {
 	group.Get("/users/:id/settings", a.getAdminUserSettings)
 	group.Put("/users/:id/settings", a.putAdminUserSettings)
 	group.Post("/users/:id/settings/reset", a.resetAdminUserSettings)
 }
 
+// getAdminUserSettings reuses the shared loader for the admin GET endpoint.
 func (a *App) getAdminUserSettings(c *fiber.Ctx) error {
 	return a.loadAdminScopedUserSettings(c)
 }
 
+// putAdminUserSettings saves the settings document for the selected user.
 func (a *App) putAdminUserSettings(c *fiber.Ctx) error {
 	route := requestRoutePath(c)
 	logAPIStep(c, "admin", route, "request_received", "put_user_settings", nil)
@@ -78,6 +84,7 @@ func (a *App) putAdminUserSettings(c *fiber.Ctx) error {
 	return c.JSON(toSettingsEnvelope(record))
 }
 
+// resetAdminUserSettings clears the selected user's settings document.
 func (a *App) resetAdminUserSettings(c *fiber.Ctx) error {
 	route := requestRoutePath(c)
 	logAPIStep(c, "admin", route, "request_received", "reset_user_settings", nil)
@@ -105,6 +112,8 @@ func (a *App) resetAdminUserSettings(c *fiber.Ctx) error {
 	return c.JSON(toSettingsEnvelope(record))
 }
 
+// loadAdminScopedUserSettings returns the current settings document for the
+// selected user while enforcing organization scope.
 func (a *App) loadAdminScopedUserSettings(c *fiber.Ctx) error {
 	route := requestRoutePath(c)
 	logAPIStep(c, "admin", route, "request_received", "get_user_settings", nil)
@@ -144,6 +153,8 @@ func (a *App) loadAdminScopedUserSettings(c *fiber.Ctx) error {
 	return c.JSON(toSettingsEnvelope(record))
 }
 
+// loadAdminSettingsTargetUser resolves the target user and validates that the
+// caller is allowed to touch it.
 func (a *App) loadAdminSettingsTargetUser(c *fiber.Ctx, claims *auth.Claims, step string) (*store.User, *fiber.Error) {
 	route := requestRoutePath(c)
 	userID := strings.TrimSpace(c.Params("id"))

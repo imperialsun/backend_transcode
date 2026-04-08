@@ -21,6 +21,7 @@ const (
 	defaultCaptureTimeout = 2 * time.Second
 )
 
+// Event represents the sanitized performance record that gets persisted.
 type Event struct {
 	EventID        string          `json:"eventId"`
 	TraceID        string          `json:"traceId"`
@@ -36,6 +37,7 @@ type Event struct {
 	OccurredAt     time.Time       `json:"occurredAt"`
 }
 
+// Sink is the persistence boundary used by the capture pipeline.
 type Sink interface {
 	InsertPerformanceEvent(context.Context, Event) error
 }
@@ -45,12 +47,15 @@ var (
 	sink   Sink
 )
 
+// RegisterSink installs the storage backend used by performance capture.
 func RegisterSink(next Sink) {
 	sinkMu.Lock()
 	defer sinkMu.Unlock()
 	sink = next
 }
 
+// RecordLog converts structured runtime logs into performance events when the
+// payload contains a usable duration.
 func RecordLog(ctx context.Context, component, route, step, title string, fields map[string]any) {
 	if observability.ShouldSkipObservabilityCaptureRoute(route) {
 		return
@@ -77,6 +82,8 @@ func RecordLog(ctx context.Context, component, route, step, title string, fields
 	}(event, currentSink)
 }
 
+// buildEvent normalizes the log payload into a single performance record and
+// skips entries that do not carry duration data.
 func buildEvent(ctx context.Context, component, route, step, title string, fields map[string]any) (Event, bool) {
 	durationMS, ok := extractDurationMS(fields)
 	if !ok {
@@ -115,6 +122,8 @@ func buildEvent(ctx context.Context, component, route, step, title string, field
 	}, true
 }
 
+// sanitizePayload sorts keys and truncates values so persisted metadata remains
+// stable and bounded.
 func sanitizePayload(fields map[string]any) map[string]any {
 	if len(fields) == 0 {
 		return map[string]any{}
@@ -133,6 +142,8 @@ func sanitizePayload(fields map[string]any) map[string]any {
 	return out
 }
 
+// sanitizeValue walks nested values up to a fixed depth and removes oversized
+// or unsafe payload fragments.
 func sanitizeValue(value any, depth int) any {
 	if depth >= maxSanitizeDepth {
 		return "<truncated>"
@@ -192,6 +203,7 @@ func sanitizeValue(value any, depth int) any {
 	}
 }
 
+// truncateText keeps persisted text fields inside a predictable size budget.
 func truncateText(value string) string {
 	value = normalizeText(value)
 	if len(value) <= maxStoredTextLength {
@@ -200,6 +212,7 @@ func truncateText(value string) string {
 	return value[:maxStoredTextLength]
 }
 
+// normalizeToken ensures persisted labels never collapse to an empty string.
 func normalizeToken(value string, fallback string) string {
 	value = strings.TrimSpace(value)
 	if value == "" {
@@ -208,6 +221,7 @@ func normalizeToken(value string, fallback string) string {
 	return normalizeText(value)
 }
 
+// normalizeText removes line breaks so captured values stay one-line friendly.
 func normalizeText(value string) string {
 	value = strings.TrimSpace(value)
 	value = strings.ReplaceAll(value, "\r", " ")
@@ -215,6 +229,7 @@ func normalizeText(value string) string {
 	return value
 }
 
+// extractDurationMS pulls the duration value from multiple supported shapes.
 func extractDurationMS(fields map[string]any) (int64, bool) {
 	if len(fields) == 0 {
 		return 0, false
@@ -232,6 +247,8 @@ func extractDurationMS(fields map[string]any) (int64, bool) {
 	return 0, false
 }
 
+// extractStatus derives the stored status from the payload or, failing that,
+// from the step naming convention.
 func extractStatus(fields map[string]any, step string) string {
 	if len(fields) == 0 {
 		return statusFromStep(step)
@@ -258,6 +275,7 @@ func extractStatus(fields map[string]any, step string) string {
 	return statusFromStep(step)
 }
 
+// statusFromCode maps HTTP-style status codes to the captured event status.
 func statusFromCode(code int, step string) string {
 	if code >= 400 {
 		return "error"
@@ -268,6 +286,8 @@ func statusFromCode(code int, step string) string {
 	return statusFromStep(step)
 }
 
+// statusFromStep falls back to a step-name heuristic when no explicit status is
+// available.
 func statusFromStep(step string) string {
 	normalized := strings.ToLower(strings.TrimSpace(step))
 	if normalized == "" {
@@ -279,6 +299,7 @@ func statusFromStep(step string) string {
 	return "success"
 }
 
+// toInt converts the common numeric shapes accepted by JSON and log payloads.
 func toInt(value any) (int, bool) {
 	switch typed := value.(type) {
 	case int:
@@ -310,6 +331,7 @@ func toInt(value any) (int, bool) {
 	}
 }
 
+// toInt64 converts the common numeric shapes accepted by JSON and log payloads.
 func toInt64(value any) (int64, bool) {
 	switch typed := value.(type) {
 	case int:

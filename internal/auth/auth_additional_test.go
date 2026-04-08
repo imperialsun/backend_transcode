@@ -6,6 +6,8 @@ import (
 	"time"
 )
 
+// These tests exercise the session-type helpers, refresh-token generation, and
+// temporary password generation paths.
 func TestSessionTypeMethods(t *testing.T) {
 	if SessionTypeApp.String() != "app" {
 		t.Fatalf("expected String() to return app, got %q", SessionTypeApp.String())

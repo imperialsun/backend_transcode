@@ -15,6 +15,8 @@ import (
 	"demeter-backend/internal/mistral"
 )
 
+// These tests cover JSON parsing, concurrent format generation, and retry
+// cancellation behavior for the report generator.
 func TestParseReportJSON(t *testing.T) {
 	raw := "```json\n{\"format\":\"CRI\",\"title\":\"Test\",\"sections\":[{\"heading\":\"Contexte\",\"paragraphs\":[\"Un paragraphe\"]}],\"key_points\":[\"P1\"],\"action_items\":[\"A1\"],\"caveats\":[\"C1\"]}\n```"
 	report, err := ParseReportJSON(raw, ReportFormatCRI)
@@ -282,6 +284,8 @@ func reportFormatFromRequest(t *testing.T, r *http.Request) ReportFormat {
 	}
 }
 
+// writeMockReportResponse emits the minimal upstream response used by the
+// generator tests.
 func writeMockReportResponse(t *testing.T, w http.ResponseWriter, format ReportFormat) {
 	t.Helper()
 
@@ -298,6 +302,8 @@ func writeMockReportResponse(t *testing.T, w http.ResponseWriter, format ReportF
 	})
 }
 
+// updateMaxInt32 tracks the highest observed concurrency level in a
+// thread-safe way.
 func updateMaxInt32(max *int32, value int32) {
 	for {
 		current := atomic.LoadInt32(max)

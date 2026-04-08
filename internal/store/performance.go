@@ -11,13 +11,17 @@ import (
 	"github.com/google/uuid"
 )
 
+// performanceSuccessStatuses defines the status strings treated as successful
+// performance events when building aggregates.
 var performanceSuccessStatuses = []string{"success", "ok", "done", "completed", "complete"}
 
+// PerformanceIngestResult reports how many events were accepted or deduped.
 type PerformanceIngestResult struct {
 	Accepted   int `json:"accepted"`
 	Duplicates int `json:"duplicates"`
 }
 
+// PerformanceEvent is the persisted event row used by the admin analytics view.
 type PerformanceEvent struct {
 	EventID        string    `json:"eventId"`
 	TraceID        string    `json:"traceId"`
@@ -35,11 +39,13 @@ type PerformanceEvent struct {
 	CreatedAt      time.Time `json:"createdAt"`
 }
 
+// PerformanceRange identifies the inclusive day window used in summaries.
 type PerformanceRange struct {
 	From string `json:"from"`
 	To   string `json:"to"`
 }
 
+// PerformanceTotals aggregates event counts and duration metrics.
 type PerformanceTotals struct {
 	Events            int   `json:"events"`
 	Successes         int   `json:"successes"`
@@ -49,6 +55,7 @@ type PerformanceTotals struct {
 	MaxDurationMS     int64 `json:"maxDurationMs"`
 }
 
+// PerformanceTaskItem represents one aggregated task bucket.
 type PerformanceTaskItem struct {
 	Surface           string    `json:"surface"`
 	Component         string    `json:"component"`
@@ -63,6 +70,7 @@ type PerformanceTaskItem struct {
 	LastOccurredAt    time.Time `json:"lastOccurredAt"`
 }
 
+// PerformanceSummary is the organization- or user-scoped performance view.
 type PerformanceSummary struct {
 	OrganizationID string                `json:"organizationId"`
 	UserID         string                `json:"userId,omitempty"`
@@ -73,6 +81,8 @@ type PerformanceSummary struct {
 	RecentEvents   []PerformanceEvent    `json:"recentEvents"`
 }
 
+// PerformanceSummaryFilters captures the search scope for summary and purge
+// operations.
 type PerformanceSummaryFilters struct {
 	OrganizationID string
 	UserID         string
@@ -83,6 +93,7 @@ type PerformanceSummaryFilters struct {
 	RecentLimit    int
 }
 
+// InsertPerformanceEvent writes one backend performance event row.
 func (s *Store) InsertPerformanceEvent(ctx context.Context, input backendperformance.Event) error {
 	metaJSON := strings.TrimSpace(string(input.MetaJSON))
 	if metaJSON == "" {
@@ -139,6 +150,8 @@ func (s *Store) InsertPerformanceEvent(ctx context.Context, input backendperform
 	return err
 }
 
+// IngestPerformanceEvents stores a batch of frontend performance events and
+// ignores duplicate event IDs.
 func (s *Store) IngestPerformanceEvents(
 	ctx context.Context,
 	organizationID string,
@@ -258,6 +271,8 @@ func (s *Store) IngestPerformanceEvents(
 	return result, nil
 }
 
+// GetPerformanceSummary returns the aggregated performance view for the
+// requested scope.
 func (s *Store) GetPerformanceSummary(ctx context.Context, filters PerformanceSummaryFilters) (*PerformanceSummary, error) {
 	fromTime, toTime := normalizePerformanceWindow(filters.From, filters.To)
 	whereSQL, args := buildPerformanceWhereClause(filters.OrganizationID, filters.UserID, fromTime, toTime, filters.Task)
@@ -435,6 +450,8 @@ func (s *Store) GetPerformanceSummary(ctx context.Context, filters PerformanceSu
 	return summary, nil
 }
 
+// PurgeExpiredPerformanceEvents removes performance events outside the
+// retention window.
 func (s *Store) PurgeExpiredPerformanceEvents(ctx context.Context, now time.Time) (int64, error) {
 	cutoff := now.UTC().Add(-performanceRetention)
 	logStoreStep(ctx, "purge_start", "performance", map[string]any{"cutoff_at": cutoff})
@@ -452,6 +469,8 @@ func (s *Store) PurgeExpiredPerformanceEvents(ctx context.Context, now time.Time
 	return count, nil
 }
 
+// DeletePerformanceEvents removes performance events matching the supplied
+// filters.
 func (s *Store) DeletePerformanceEvents(ctx context.Context, filters PerformanceSummaryFilters) (int64, error) {
 	fromTime, toTime := normalizePerformanceWindow(filters.From, filters.To)
 	whereSQL, args := buildPerformanceWhereClause(filters.OrganizationID, filters.UserID, fromTime, toTime, filters.Task)
@@ -497,6 +516,8 @@ func (s *Store) DeletePerformanceEvents(ctx context.Context, filters Performance
 	return count, nil
 }
 
+// normalizePerformanceEventInput fills the tenant attribution expected by the
+// backend persistence layer.
 func normalizePerformanceEventInput(input backendperformance.Event, organizationID, userID string) backendperformance.Event {
 	if strings.TrimSpace(input.OrganizationID) == "" {
 		input.OrganizationID = strings.TrimSpace(organizationID)
@@ -528,6 +549,8 @@ func normalizePerformanceEventInput(input backendperformance.Event, organization
 	return input
 }
 
+// buildPerformanceWhereClause turns summary filters into SQL fragments and bind
+// arguments.
 func buildPerformanceWhereClause(organizationID, userID string, fromTime, toTime time.Time, task string) (string, []any) {
 	clauses := []string{"1=1"}
 	args := make([]any, 0, 4)
@@ -556,6 +579,7 @@ func buildPerformanceWhereClause(organizationID, userID string, fromTime, toTime
 	return strings.Join(clauses, " AND "), args
 }
 
+// buildPerformanceScopeWhereClause narrows the query to a tenant or user scope.
 func buildPerformanceScopeWhereClause(organizationID, userID string, fromTime, toTime time.Time) (string, []any) {
 	clauses := []string{"1=1"}
 	args := make([]any, 0, 4)
@@ -582,6 +606,7 @@ func buildPerformanceScopeWhereClause(organizationID, userID string, fromTime, t
 
 const performanceRetention = 24 * time.Hour
 
+// normalizePerformanceWindow aligns the requested range to day boundaries.
 func normalizePerformanceWindow(fromTime, toTime time.Time) (time.Time, time.Time) {
 	fromTime = fromTime.UTC()
 	toTime = toTime.UTC()
@@ -602,6 +627,8 @@ func normalizePerformanceWindow(fromTime, toTime time.Time) (time.Time, time.Tim
 	return fromTime.UTC(), toTime.UTC()
 }
 
+// performanceSuccessCaseExpr returns the CASE expression used by success
+// aggregations.
 func performanceSuccessCaseExpr(column string) string {
 	values := make([]string, 0, len(performanceSuccessStatuses))
 	for _, status := range performanceSuccessStatuses {
@@ -610,6 +637,8 @@ func performanceSuccessCaseExpr(column string) string {
 	return "lower(COALESCE(" + column + ", '')) IN (" + strings.Join(values, ", ") + ")"
 }
 
+// isPerformanceEventDuplicateErr recognizes the unique constraint used for
+// idempotent ingestion.
 func isPerformanceEventDuplicateErr(err error) bool {
 	if err == nil {
 		return false
@@ -618,6 +647,8 @@ func isPerformanceEventDuplicateErr(err error) bool {
 	return strings.Contains(msg, "unique constraint failed") && strings.Contains(msg, "performance_events.event_id")
 }
 
+// parsePerformanceTimestamp parses the timestamps stored in the performance
+// tables.
 func parsePerformanceTimestamp(value string) (time.Time, error) {
 	trimmed := strings.TrimSpace(value)
 	if trimmed == "" {

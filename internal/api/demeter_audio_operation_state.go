@@ -7,11 +7,15 @@ import (
 	"demeter-backend/internal/store"
 )
 
+// updateDemeterAudioTranscriptionOperationState updates the job state and
+// ignores whether the fallback path was needed.
 func (a *App) updateDemeterAudioTranscriptionOperationState(ctx context.Context, record *store.DemeterAudioTranscriptionOperationRecord) error {
 	_, err := a.updateDemeterAudioTranscriptionOperationStateWithFallback(ctx, record)
 	return err
 }
 
+// updateDemeterAudioTranscriptionOperationStateWithFallback retries the update
+// by primary key when the scoped update reports an ownership mismatch.
 func (a *App) updateDemeterAudioTranscriptionOperationStateWithFallback(ctx context.Context, record *store.DemeterAudioTranscriptionOperationRecord) (bool, error) {
 	if a == nil || a.Store == nil {
 		return false, errors.New("store is not configured")

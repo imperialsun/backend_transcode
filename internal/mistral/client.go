@@ -23,6 +23,8 @@ const (
 	defaultMultipartTimeout = 20 * time.Minute
 )
 
+// Client wraps the upstream HTTP API and carries the auth key plus the
+// timeout budget used by the different request shapes.
 type Client struct {
 	HTTP             *http.Client
 	BaseURL          string
@@ -31,6 +33,7 @@ type Client struct {
 	MultipartTimeout time.Duration
 }
 
+// NewClient applies safe defaults when a caller leaves either timeout unset.
 func NewClient(baseURL, apiKey string, requestTimeout, multipartTimeout time.Duration) *Client {
 	if requestTimeout <= 0 {
 		requestTimeout = defaultRequestTimeout
@@ -47,10 +50,14 @@ func NewClient(baseURL, apiKey string, requestTimeout, multipartTimeout time.Dur
 	}
 }
 
+// IsConfigured reports whether the client has enough information to make an
+// upstream request.
 func (c *Client) IsConfigured() bool {
 	return c.APIKey != "" && c.BaseURL != ""
 }
 
+// DoJSON performs a JSON request against the upstream API and records the
+// request and response shape for observability.
 func (c *Client) DoJSON(ctx context.Context, method, path string, body []byte) (int, []byte, error) {
 	if !c.IsConfigured() {
 		return http.StatusServiceUnavailable, nil, errors.New("mistral client is not configured")
@@ -91,6 +98,8 @@ func (c *Client) DoJSON(ctx context.Context, method, path string, body []byte) (
 	return res.StatusCode, data, nil
 }
 
+// DoMultipart posts multipart or binary payloads to the upstream API using the
+// longer timeout budget required by audio requests.
 func (c *Client) DoMultipart(ctx context.Context, path string, body []byte, contentType string) (int, []byte, error) {
 	if !c.IsConfigured() {
 		return http.StatusServiceUnavailable, nil, errors.New("mistral client is not configured")
@@ -131,6 +140,7 @@ func (c *Client) DoMultipart(ctx context.Context, path string, body []byte, cont
 	return res.StatusCode, data, nil
 }
 
+// DoGet performs a plain GET request using the standard request timeout.
 func (c *Client) DoGet(ctx context.Context, path string) (int, []byte, error) {
 	if !c.IsConfigured() {
 		return http.StatusServiceUnavailable, nil, errors.New("mistral client is not configured")
@@ -165,11 +175,15 @@ func (c *Client) DoGet(ctx context.Context, path string) (int, []byte, error) {
 	return res.StatusCode, data, nil
 }
 
+// logUpstreamStep emits a normalized upstream event that can be persisted in
+// the backend-error and performance pipelines.
 func logUpstreamStep(ctx context.Context, route, step string, fields map[string]any) {
 	log.Print(observability.FormatStepLine("mistral", route, step, observability.TraceIDFromContext(ctx), observability.DefaultTraceID, observability.DefaultTraceID, "", fields))
 	backenderrors.RecordLog(ctx, "mistral", route, step, performanceTaskForRoute(route, step), fields)
 }
 
+// performanceTaskForRoute maps upstream paths to the high-level performance task
+// used in capture records.
 func performanceTaskForRoute(route, step string) string {
 	normalizedRoute := strings.TrimSpace(route)
 	switch {
@@ -183,6 +197,7 @@ func performanceTaskForRoute(route, step string) string {
 	return "mistral_request"
 }
 
+// logUpstreamTransportError records connection or protocol failures.
 func logUpstreamTransportError(ctx context.Context, method, route string, duration time.Duration, err error) {
 	logUpstreamStep(ctx, route, "transport_error", map[string]any{
 		"method":      method,
@@ -191,6 +206,8 @@ func logUpstreamTransportError(ctx context.Context, method, route string, durati
 	})
 }
 
+// logUpstreamReadError records failures encountered while reading the upstream
+// response body.
 func logUpstreamReadError(ctx context.Context, method, route string, status int, duration time.Duration, err error) {
 	logUpstreamStep(ctx, route, "read_error", map[string]any{
 		"method":      method,
@@ -200,6 +217,8 @@ func logUpstreamReadError(ctx context.Context, method, route string, status int,
 	})
 }
 
+// logUpstreamResponse records the final upstream status and a safe preview of
+// the body when the response is an error.
 func logUpstreamResponse(ctx context.Context, method, route string, status int, contentType string, duration time.Duration, body []byte) {
 	fields := map[string]any{
 		"method":         method,
@@ -220,6 +239,8 @@ func logUpstreamResponse(ctx context.Context, method, route string, status int, 
 	logUpstreamStep(ctx, route, "response_received", fields)
 }
 
+// summarizeUpstreamBody extracts a human-readable message when the upstream
+// body looks like a structured error.
 func summarizeUpstreamBody(body []byte) (string, string) {
 	preview := compactPreview(body)
 	if len(body) == 0 {
@@ -245,6 +266,8 @@ func summarizeUpstreamBody(body []byte) (string, string) {
 	return preview, preview
 }
 
+// firstNonEmptyMessage returns the first non-empty string-like value from a
+// list of candidate error fields.
 func firstNonEmptyMessage(values ...any) string {
 	for _, value := range values {
 		if msg := messageFromAny(value); msg != "" {
@@ -254,6 +277,7 @@ func firstNonEmptyMessage(values ...any) string {
 	return ""
 }
 
+// messageFromAny converts common JSON shapes to a trimmed string.
 func messageFromAny(value any) string {
 	switch typed := value.(type) {
 	case string:
@@ -273,6 +297,7 @@ func messageFromAny(value any) string {
 	}
 }
 
+// compactPreview produces a short one-line preview for logging.
 func compactPreview(body []byte) string {
 	trimmed := strings.TrimSpace(string(body))
 	if trimmed == "" {
@@ -285,6 +310,8 @@ func compactPreview(body []byte) string {
 	return compacted[:maxLoggedBodyPreview] + "..."
 }
 
+// closeSilently closes response bodies and intentionally ignores secondary
+// close errors because the main request outcome is already known.
 func closeSilently(closer io.Closer) {
 	if closer == nil {
 		return
@@ -292,6 +319,7 @@ func closeSilently(closer io.Closer) {
 	_ = closer.Close()
 }
 
+// withTimeout preserves the caller context while enforcing a deadline.
 func withTimeout(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
 	if ctx == nil {
 		ctx = context.Background()

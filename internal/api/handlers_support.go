@@ -12,6 +12,8 @@ import (
 
 const frontendErrorReportRoute = "/support/frontend-error-reports"
 
+// frontendErrorReportRequest mirrors the payload sent by the frontend support
+// form.
 type frontendErrorReportRequest struct {
 	Client           string                   `json:"client,omitempty"`
 	TraceID          string                   `json:"traceId,omitempty"`
@@ -24,6 +26,8 @@ type frontendErrorReportRequest struct {
 	DiagnosticBundle json.RawMessage          `json:"diagnosticBundle,omitempty"`
 }
 
+// frontendErrorReportError captures the backend error summary included in the
+// support payload.
 type frontendErrorReportError struct {
 	Status  int    `json:"status,omitempty"`
 	Code    string `json:"code,omitempty"`
@@ -33,6 +37,7 @@ type frontendErrorReportError struct {
 	TraceID string `json:"traceId,omitempty"`
 }
 
+// frontendErrorReportFile describes one file attached to the support report.
 type frontendErrorReportFile struct {
 	Name      string `json:"name,omitempty"`
 	SizeBytes int64  `json:"sizeBytes"`
@@ -40,17 +45,21 @@ type frontendErrorReportFile struct {
 	Source    string `json:"source,omitempty"`
 }
 
+// frontendErrorReportRetry records whether the frontend retried with raw audio.
 type frontendErrorReportRetry struct {
 	Attempted   bool `json:"attempted"`
 	Succeeded   bool `json:"succeeded"`
 	UsedRawFile bool `json:"usedRawFile,omitempty"`
 }
 
+// RegisterSupportRoutes installs the support-report endpoint.
 func (a *App) RegisterSupportRoutes(router fiber.Router) {
 	group := router.Group("/support", a.AppAuthRequired())
 	group.Post("/frontend-error-reports", a.submitFrontendErrorReport)
 }
 
+// submitFrontendErrorReport stores a frontend error report and links it to the
+// backend-error sink when possible.
 func (a *App) submitFrontendErrorReport(c *fiber.Ctx) error {
 	route := requestRoutePath(c)
 	logAPIStep(c, "frontend", route, "request_received", "frontend_error_report", nil)
@@ -192,6 +201,8 @@ func (a *App) submitFrontendErrorReport(c *fiber.Ctx) error {
 	return c.SendStatus(fiber.StatusNoContent)
 }
 
+// summarizeFrontendReportFile selects the most relevant file metadata for the
+// stored annex.
 func summarizeFrontendReportFile(req frontendErrorReportRequest) (string, int64, string) {
 	if req.ProcessedFile.Name != "" {
 		return req.ProcessedFile.Name, req.ProcessedFile.SizeBytes, req.ProcessedFile.MimeType
@@ -205,6 +216,8 @@ func summarizeFrontendReportFile(req frontendErrorReportRequest) (string, int64,
 	return "", 0, ""
 }
 
+// frontendReportRecoveryStatus converts retry state into a compact recovery
+// label.
 func frontendReportRecoveryStatus(retry frontendErrorReportRetry) string {
 	if !retry.Attempted {
 		return ""
@@ -215,6 +228,7 @@ func frontendReportRecoveryStatus(retry frontendErrorReportRetry) string {
 	return "raw_retry_failed"
 }
 
+// supportReportClient normalizes the client identifier into the supported set.
 func supportReportClient(raw string) string {
 	client := strings.ToLower(strings.TrimSpace(raw))
 	switch client {
@@ -227,6 +241,7 @@ func supportReportClient(raw string) string {
 	}
 }
 
+// supportReportTitle returns the component name used in backend-error records.
 func supportReportTitle(client string) string {
 	if client == "android" {
 		return "android_support_report"
@@ -234,6 +249,8 @@ func supportReportTitle(client string) string {
 	return "frontend_audio_retry_report"
 }
 
+// supportReportErrorMessage chooses the most helpful error message for the
+// support report.
 func supportReportErrorMessage(client string, req frontendErrorReportRequest) string {
 	errorMessage := strings.TrimSpace(req.BackendError.Message)
 	if errorMessage != "" {
@@ -254,6 +271,7 @@ func supportReportErrorMessage(client string, req frontendErrorReportRequest) st
 	return "frontend audio report"
 }
 
+// mustMarshalJSON returns a safe empty object when marshaling fails.
 func mustMarshalJSON(value any) []byte {
 	raw, err := json.Marshal(value)
 	if err != nil {

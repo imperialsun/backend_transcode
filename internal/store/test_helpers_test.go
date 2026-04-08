@@ -9,6 +9,7 @@ import (
 	"demeter-backend/internal/auth"
 )
 
+// openTestStore creates a fully initialized SQLite store for store tests.
 func openTestStore(t *testing.T, name string) *Store {
 	t.Helper()
 	st, err := Open(context.Background(), filepath.Join(t.TempDir(), name))
@@ -21,6 +22,7 @@ func openTestStore(t *testing.T, name string) *Store {
 	return st
 }
 
+// closeTestStore closes the store and reports any teardown failure.
 func closeTestStore(t *testing.T, st *Store) {
 	t.Helper()
 	if st == nil {
@@ -31,6 +33,7 @@ func closeTestStore(t *testing.T, st *Store) {
 	}
 }
 
+// closeTestDB closes a raw SQL database handle during test cleanup.
 func closeTestDB(t *testing.T, db *sql.DB) {
 	t.Helper()
 	if db == nil {
@@ -41,6 +44,7 @@ func closeTestDB(t *testing.T, db *sql.DB) {
 	}
 }
 
+// createOrg creates an organization row for tests.
 func createOrg(t *testing.T, st *Store, name, code, status string) *Organization {
 	t.Helper()
 	org, err := st.CreateOrganization(context.Background(), name, code, status)
@@ -50,6 +54,7 @@ func createOrg(t *testing.T, st *Store, name, code, status string) *Organization
 	return org
 }
 
+// createUserWithPassword hashes the password and inserts a test user.
 func createUserWithPassword(t *testing.T, st *Store, orgID, email, password, status string) *User {
 	t.Helper()
 	hash, err := auth.HashPassword(password)

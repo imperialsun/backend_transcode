@@ -17,6 +17,8 @@ import (
 )
 
 func TestJoinOrigins(t *testing.T) {
+	// The helper must emit a wildcard when no explicit origins are configured
+	// because Fiber expects a valid CORS header value.
 	if joinOrigins(nil) != "*" {
 		t.Fatal("expected wildcard when no origins")
 	}
@@ -26,6 +28,8 @@ func TestJoinOrigins(t *testing.T) {
 }
 
 func TestCombineOrigins(t *testing.T) {
+	// The combined list must preserve order while removing duplicates so CORS
+	// policy stays deterministic across app and admin origins.
 	out := combineOrigins([]string{"a", "b"}, []string{"b", "c"})
 	if len(out) != 3 {
 		t.Fatalf("expected 3 unique origins, got %d: %v", len(out), out)
@@ -33,6 +37,8 @@ func TestCombineOrigins(t *testing.T) {
 }
 
 func TestBuildApp_RegistersRoutesAndAdminOriginGuard(t *testing.T) {
+	// This is the smoke test for the server bootstrap path: route wiring,
+	// dependency injection, and the admin origin guard must all be present.
 	ctx := context.Background()
 	st, err := store.Open(ctx, filepath.Join(t.TempDir(), "server.sqlite"))
 	if err != nil {

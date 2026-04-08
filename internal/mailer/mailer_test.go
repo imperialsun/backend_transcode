@@ -14,6 +14,8 @@ import (
 	"demeter-backend/internal/auth"
 )
 
+// These tests cover message rendering, multipart encoding, and readiness
+// checks for the SMTP mailer.
 func TestSMTPMailerReadyRejectsIncompleteConfig(t *testing.T) {
 	mailer := NewSMTPMailer(Config{})
 	if err := mailer.Ready(); err == nil {
@@ -21,6 +23,8 @@ func TestSMTPMailerReadyRejectsIncompleteConfig(t *testing.T) {
 	}
 }
 
+// TestBuildPasswordResetMessageIncludesResetURL verifies the password-reset
+// body contains the expected call-to-action links.
 func TestBuildPasswordResetMessageIncludesResetURL(t *testing.T) {
 	mailer := NewSMTPMailer(Config{
 		Host:      "smtp.demeter.test",
@@ -54,6 +58,8 @@ func TestBuildPasswordResetMessageIncludesResetURL(t *testing.T) {
 	}
 }
 
+// TestBuildMeetingSummaryMessageIncludesAttachments verifies that meeting
+// summaries render as multipart messages with attached DOCX files.
 func TestBuildMeetingSummaryMessageIncludesAttachments(t *testing.T) {
 	mailer := NewSMTPMailer(Config{
 		Host:      "smtp.demeter.test",
@@ -84,6 +90,8 @@ func TestBuildMeetingSummaryMessageIncludesAttachments(t *testing.T) {
 	}
 }
 
+// TestBuildMeetingSummaryMessageEncodesAccentedHeaders verifies that accented
+// display names and subjects are MIME-encoded correctly.
 func TestBuildMeetingSummaryMessageEncodesAccentedHeaders(t *testing.T) {
 	mailer := NewSMTPMailer(Config{
 		Host:      "smtp.demeter.test",
@@ -187,6 +195,8 @@ func TestBuildMeetingSummaryMessageEncodesAccentedHeaders(t *testing.T) {
 	}
 }
 
+// TestBuildUserProvisioningMessageIncludesLoginAndPassword verifies the onboarding
+// email contains the generated credentials.
 func TestBuildUserProvisioningMessageIncludesLoginAndPassword(t *testing.T) {
 	mailer := NewSMTPMailer(Config{
 		Host:      "smtp.demeter.test",
@@ -222,6 +232,8 @@ func TestBuildUserProvisioningMessageIncludesLoginAndPassword(t *testing.T) {
 	}
 }
 
+// TestSendMeetingSummaryEmailRequiresReadyMailer verifies that the runtime
+// readiness check blocks sends when SMTP is not configured.
 func TestSendMeetingSummaryEmailRequiresReadyMailer(t *testing.T) {
 	mailer := NewSMTPMailer(Config{})
 	if err := mailer.SendMeetingSummaryEmail(context.Background(), MeetingSummaryEmail{ToEmail: "user@example.com"}); err == nil {

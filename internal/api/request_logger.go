@@ -13,7 +13,8 @@ import (
 	"github.com/gofiber/fiber/v2"
 )
 
-// RequestLogger logs every HTTP request handled by the backend.
+// RequestLogger records the final status, actor, and latency for every handled
+// HTTP request.
 func (a *App) RequestLogger() fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		traceID := requestTraceID(c)
@@ -79,6 +80,8 @@ func (a *App) RequestLogger() fiber.Handler {
 	}
 }
 
+// extractRequestFailureDetails pulls a compact error message out of the
+// response body when the request failed.
 func extractRequestFailureDetails(body []byte) (string, string) {
 	preview := compactRequestFailurePreview(body)
 	if len(body) == 0 {
@@ -100,6 +103,8 @@ func extractRequestFailureDetails(body []byte) (string, string) {
 	return "", preview
 }
 
+// compactRequestFailurePreview returns a short one-line preview of a response
+// body for failure logs.
 func compactRequestFailurePreview(body []byte) string {
 	if len(body) == 0 {
 		return ""

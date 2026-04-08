@@ -7,6 +7,7 @@ import (
 	"github.com/gofiber/fiber/v2"
 )
 
+// putSettingsRequest carries the schema version and opaque JSON settings blob.
 type putSettingsRequest struct {
 	SchemaVersion int             `json:"schemaVersion"`
 	Settings      json.RawMessage `json:"settings"`
@@ -17,12 +18,14 @@ var removedLegacySettingsKeys = map[string]struct{}{
 	"cloudContextPreset": {},
 }
 
+// RegisterSettingsRoutes installs the app settings read/write endpoints.
 func (a *App) RegisterSettingsRoutes(router fiber.Router) {
 	router.Get("/settings", a.AppAuthRequired(), a.getSettings)
 	router.Put("/settings", a.AppAuthRequired(), a.putSettings)
 	router.Post("/settings/reset", a.AppAuthRequired(), a.resetSettings)
 }
 
+// getSettings returns the caller's current settings document.
 func (a *App) getSettings(c *fiber.Ctx) error {
 	route := requestRoutePath(c)
 	logAPIStep(c, "settings", route, "request_received", "", nil)
@@ -47,6 +50,7 @@ func (a *App) getSettings(c *fiber.Ctx) error {
 	return c.JSON(toSettingsEnvelope(record))
 }
 
+// putSettings validates and persists the caller's settings document.
 func (a *App) putSettings(c *fiber.Ctx) error {
 	route := requestRoutePath(c)
 	logAPIStep(c, "settings", route, "request_received", "", nil)
@@ -91,6 +95,7 @@ func (a *App) putSettings(c *fiber.Ctx) error {
 	return c.JSON(toSettingsEnvelope(record))
 }
 
+// resetSettings replaces the caller's settings document with an empty object.
 func (a *App) resetSettings(c *fiber.Ctx) error {
 	route := requestRoutePath(c)
 	logAPIStep(c, "settings", route, "request_received", "", nil)
@@ -110,6 +115,8 @@ func (a *App) resetSettings(c *fiber.Ctx) error {
 	return c.JSON(toSettingsEnvelope(record))
 }
 
+// sanitizeSettingsPayload strips legacy keys from the raw settings JSON while
+// preserving other caller-managed fields.
 func sanitizeSettingsPayload(payload json.RawMessage) (json.RawMessage, error) {
 	if len(strings.TrimSpace(string(payload))) == 0 {
 		return json.RawMessage(`{}`), nil

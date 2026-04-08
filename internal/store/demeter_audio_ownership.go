@@ -7,6 +7,8 @@ import (
 	"strings"
 )
 
+// DemeterAudioTranscriptionOperationOwnershipError reports that a request tried
+// to access a transcription job owned by another user or organization.
 type DemeterAudioTranscriptionOperationOwnershipError struct {
 	OperationID           string
 	RequestOrganizationID string
@@ -17,14 +19,17 @@ type DemeterAudioTranscriptionOperationOwnershipError struct {
 	Source                string
 }
 
+// Error returns the canonical ownership violation message.
 func (e *DemeterAudioTranscriptionOperationOwnershipError) Error() string {
 	return ErrDemeterAudioTranscriptionOperationOwnership.Error()
 }
 
+// Is lets callers compare the error against the shared ownership sentinel.
 func (e *DemeterAudioTranscriptionOperationOwnershipError) Is(target error) bool {
 	return target == ErrDemeterAudioTranscriptionOperationOwnership
 }
 
+// WithSource returns a copy that records where the ownership check failed.
 func (e *DemeterAudioTranscriptionOperationOwnershipError) WithSource(source string) *DemeterAudioTranscriptionOperationOwnershipError {
 	if e == nil {
 		return nil
@@ -37,6 +42,8 @@ func (e *DemeterAudioTranscriptionOperationOwnershipError) WithSource(source str
 	return &clone
 }
 
+// LogFields serializes the ownership error into the shape expected by the
+// structured logging pipeline.
 func (e *DemeterAudioTranscriptionOperationOwnershipError) LogFields() map[string]any {
 	if e == nil {
 		return map[string]any{}
@@ -57,6 +64,8 @@ func (e *DemeterAudioTranscriptionOperationOwnershipError) LogFields() map[strin
 	return fields
 }
 
+// newDemeterAudioTranscriptionOperationOwnershipError builds the ownership
+// violation with the stored actor and record state for diagnostics.
 func newDemeterAudioTranscriptionOperationOwnershipError(
 	source string,
 	reason string,
@@ -85,6 +94,8 @@ func newDemeterAudioTranscriptionOperationOwnershipError(
 	return err
 }
 
+// peekDemeterAudioTranscriptionOperation loads a transcription job without any
+// ownership enforcement so callers can produce a better mismatch error.
 func (s *Store) peekDemeterAudioTranscriptionOperation(ctx context.Context, operationID string) (*DemeterAudioTranscriptionOperationRecord, error) {
 	if s == nil {
 		return nil, errors.New("store is not configured")

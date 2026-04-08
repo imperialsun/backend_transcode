@@ -30,12 +30,16 @@ const (
 
 var demeterAudioSequenceCounter uint64
 
+// demeterAudioFileInfo summarizes one uploaded audio file for validation
+// errors.
 type demeterAudioFileInfo struct {
 	FileName  string
 	MimeType  string
 	SizeBytes int64
 }
 
+// demeterAudioValidationError carries a machine-readable code together with
+// file metadata for client feedback.
 type demeterAudioValidationError struct {
 	code    string
 	message string
@@ -49,6 +53,7 @@ func (e *demeterAudioValidationError) Error() string {
 	return e.message
 }
 
+// RegisterDemeterRoutes installs the upstream model and audio relay routes.
 func (a *App) RegisterDemeterRoutes(router fiber.Router) {
 	group := router.Group("/providers/demeter-sante", a.AppAuthRequired())
 	group.Get("/models", RequireAnyPermission("provider.cloud.demeter_sante", "provider.llm.demeter_sante"), a.demeterModels)
@@ -59,6 +64,7 @@ func (a *App) RegisterDemeterRoutes(router fiber.Router) {
 	group.Post("/chat/completions", RequirePermissions("feature.llmapi", "provider.llm.demeter_sante"), a.demeterChatCompletions)
 }
 
+// demeterModels proxies the upstream model listing endpoint.
 func (a *App) demeterModels(c *fiber.Ctx) error {
 	route := requestRoutePath(c)
 	logAPIStep(c, "demeter", route, "request_received", "models", nil)
@@ -84,6 +90,7 @@ func (a *App) demeterModels(c *fiber.Ctx) error {
 	return c.Send(body)
 }
 
+// demeterChatCompletions proxies the upstream chat-completions endpoint.
 func (a *App) demeterChatCompletions(c *fiber.Ctx) error {
 	route := requestRoutePath(c)
 	requestBody := c.Body()
@@ -122,6 +129,8 @@ func (a *App) demeterChatCompletions(c *fiber.Ctx) error {
 	return c.Send(body)
 }
 
+// demeterAudioTranscriptions handles the front door for both slice transport
+// and backend reconstruction flows.
 func (a *App) demeterAudioTranscriptions(c *fiber.Ctx) error {
 	route := requestRoutePath(c)
 	startedAt := time.Now()
@@ -181,6 +190,8 @@ func (a *App) demeterAudioTranscriptions(c *fiber.Ctx) error {
 	})
 }
 
+// demeterAudioTranscriptionRelayResult captures the upstream status and timing
+// for one relay attempt.
 type demeterAudioTranscriptionRelayResult struct {
 	statusCode         int
 	responseBody       []byte
@@ -188,6 +199,8 @@ type demeterAudioTranscriptionRelayResult struct {
 	attempts           int
 }
 
+// demeterAudioTranscriptionWithRetry executes the multipart relay with retry
+// logic and timing capture.
 func (a *App) demeterAudioTranscriptionWithRetry(logCtx demeterAudioLogContext, route string, seq uint64, routeMode string, audioDurationSec float64, audioDurationProvided bool, requestBody []byte, contentType string, requestBytes int) (demeterAudioTranscriptionRelayResult, error) {
 	ctx := logCtx.ctx
 	for attempt := 1; attempt <= demeterAudioTranscriptionMaxAttempts; attempt++ {

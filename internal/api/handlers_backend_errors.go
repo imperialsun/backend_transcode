@@ -11,6 +11,8 @@ import (
 	"github.com/gofiber/fiber/v2"
 )
 
+// backendErrorEventsResponse is the paginated admin response for captured
+// backend errors.
 type backendErrorEventsResponse struct {
 	Items    []store.BackendErrorEvent `json:"items"`
 	Total    int                       `json:"total"`
@@ -18,11 +20,14 @@ type backendErrorEventsResponse struct {
 	PageSize int                       `json:"pageSize"`
 }
 
+// registerBackendErrorRoutes installs the admin backend-error listing and
+// purge routes.
 func (a *App) registerBackendErrorRoutes(group fiber.Router) {
 	group.Get("/backend-errors", RequireSuperAdminScope(), a.listBackendErrorEvents)
 	group.Delete("/backend-errors", RequireSuperAdminScope(), a.deleteBackendErrorEvents)
 }
 
+// listBackendErrorEvents returns the paginated backend-error history.
 func (a *App) listBackendErrorEvents(c *fiber.Ctx) error {
 	route := requestRoutePath(c)
 	logAPIStep(c, "admin", route, "request_received", "list_backend_errors", nil)
@@ -90,6 +95,8 @@ func (a *App) listBackendErrorEvents(c *fiber.Ctx) error {
 	})
 }
 
+// deleteBackendErrorEvents purges backend-error rows that match the supplied
+// filters.
 func (a *App) deleteBackendErrorEvents(c *fiber.Ctx) error {
 	route := requestRoutePath(c)
 	logAPIStep(c, "admin", route, "request_received", "purge_backend_errors", nil)
@@ -150,6 +157,8 @@ func (a *App) deleteBackendErrorEvents(c *fiber.Ctx) error {
 	return c.SendStatus(fiber.StatusNoContent)
 }
 
+// resolveBackendErrorRange normalizes inclusive date filters into UTC
+// timestamps.
 func resolveBackendErrorRange(fromRaw string, toRaw string) (time.Time, time.Time, error) {
 	fromRaw = strings.TrimSpace(fromRaw)
 	toRaw = strings.TrimSpace(toRaw)
@@ -180,6 +189,7 @@ func resolveBackendErrorRange(fromRaw string, toRaw string) (time.Time, time.Tim
 	return from, to, nil
 }
 
+// resolveBackendErrorPagination validates and bounds the page controls.
 func resolveBackendErrorPagination(pageRaw, pageSizeRaw string) (int, int, error) {
 	page := 1
 	pageSize := 25
@@ -206,6 +216,8 @@ func resolveBackendErrorPagination(pageRaw, pageSizeRaw string) (int, int, error
 	return page, pageSize, nil
 }
 
+// rangeAuditValue converts an optional range boundary into a serializable
+// audit-log value.
 func rangeAuditValue(value time.Time) any {
 	if value.IsZero() {
 		return nil

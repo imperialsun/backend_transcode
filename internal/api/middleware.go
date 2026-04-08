@@ -15,14 +15,19 @@ import (
 
 const claimsContextKey = "claims"
 
+// AppAuthRequired enforces the application session semantics for protected app
+// routes.
 func (a *App) AppAuthRequired() fiber.Handler {
 	return a.AuthRequired(auth.SessionTypeApp)
 }
 
+// AdminAuthRequired enforces the dedicated admin session semantics.
 func (a *App) AdminAuthRequired() fiber.Handler {
 	return a.AuthRequired(auth.SessionTypeAdmin)
 }
 
+// AuthRequired loads the access token, refreshes the live claims from the
+// database, and aborts the request when the session is invalid.
 func (a *App) AuthRequired(sessionType auth.SessionType) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		traceID := requestTraceID(c)
@@ -66,6 +71,7 @@ func (a *App) AuthRequired(sessionType auth.SessionType) fiber.Handler {
 	}
 }
 
+// logAuthAccessDenied emits a structured trace line for denied requests.
 func logAuthAccessDenied(c *fiber.Ctx, traceID string, sessionType auth.SessionType, reason string, claims *auth.Claims, err error, fields map[string]any) {
 	if fields == nil {
 		fields = map[string]any{}
@@ -79,6 +85,8 @@ func logAuthAccessDenied(c *fiber.Ctx, traceID string, sessionType auth.SessionT
 	log.Print(observability.FormatStepLine("auth", requestRoutePath(c), "access_denied", traceID, userID, orgID, "access denied", fields))
 }
 
+// resolveLiveClaims rehydrates the access token into the current database
+// state so role changes and deactivations take effect immediately.
 func (a *App) resolveLiveClaims(ctx context.Context, tokenClaims *auth.Claims, sessionType auth.SessionType) (*auth.Claims, int, error) {
 	if tokenClaims == nil || strings.TrimSpace(tokenClaims.UserID) == "" {
 		return nil, fiber.StatusUnauthorized, fiber.ErrUnauthorized
@@ -131,6 +139,7 @@ func (a *App) resolveLiveClaims(ctx context.Context, tokenClaims *auth.Claims, s
 	}, fiber.StatusOK, nil
 }
 
+// RequirePermissions blocks the request unless every permission is present.
 func RequirePermissions(codes ...string) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		claims, ok := c.Locals(claimsContextKey).(*auth.Claims)
@@ -146,6 +155,8 @@ func RequirePermissions(codes ...string) fiber.Handler {
 	}
 }
 
+// RequireAnyPermission blocks the request unless at least one permission is
+// present.
 func RequireAnyPermission(codes ...string) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		claims, ok := c.Locals(claimsContextKey).(*auth.Claims)
@@ -159,6 +170,7 @@ func RequireAnyPermission(codes ...string) fiber.Handler {
 	}
 }
 
+// RequireAdminScope allows either a super admin or an organization admin.
 func RequireAdminScope() fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		claims := MustClaims(c)
@@ -172,6 +184,7 @@ func RequireAdminScope() fiber.Handler {
 	}
 }
 
+// RequireSuperAdminScope is the stricter variant reserved to global admins.
 func RequireSuperAdminScope() fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		claims := MustClaims(c)
@@ -189,6 +202,8 @@ func RequireSuperAdminScope() fiber.Handler {
 	}
 }
 
+// RequireAdminCSRF protects mutating admin requests with a header token that
+// is separate from the access token.
 func RequireAdminCSRF() fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		if c.Method() == fiber.MethodGet || c.Method() == fiber.MethodHead || c.Method() == fiber.MethodOptions {
@@ -206,6 +221,8 @@ func RequireAdminCSRF() fiber.Handler {
 	}
 }
 
+// EnforceAdminOrigin rejects browser requests to admin routes when the Origin
+// header is not in the configured allowlist.
 func (a *App) EnforceAdminOrigin() fiber.Handler {
 	allowedOrigins := make(map[string]struct{}, len(a.Config.AdminCORSOrigins))
 	for _, origin := range a.Config.AdminCORSOrigins {
@@ -226,11 +243,14 @@ func (a *App) EnforceAdminOrigin() fiber.Handler {
 	}
 }
 
+// MustClaims returns the live claims stored in the request context.
 func MustClaims(c *fiber.Ctx) *auth.Claims {
 	claims, _ := c.Locals(claimsContextKey).(*auth.Claims)
 	return claims
 }
 
+// readAccessToken resolves the access token from either the cookie jar or the
+// Authorization header.
 func readAccessToken(c *fiber.Ctx, sessionType auth.SessionType) string {
 	cookie := strings.TrimSpace(c.Cookies(sessionType.AccessCookieName()))
 	if cookie != "" {

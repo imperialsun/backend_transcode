@@ -31,11 +31,15 @@ const (
 	demeterBackendFfprobeBinary           = "ffprobe"
 )
 
+// demeterBackendAudioChunkSettings carries the user-configured chunking policy
+// loaded from backend settings.
 type demeterBackendAudioChunkSettings struct {
 	ChunkDurationSec int
 	OverlapSec       int
 }
 
+// demeterBackendAudioUpload describes the reconstructed audio source that will
+// be chunked and sent upstream.
 type demeterBackendAudioUpload struct {
 	FileName      string
 	MimeType      string
@@ -51,6 +55,8 @@ type demeterBackendAudioUpload struct {
 	cleanup       func()
 }
 
+// demeterBackendChunkingConfig stores the effective chunking policy after
+// clamping the user configuration and the model limits.
 type demeterBackendChunkingConfig struct {
 	RequestedDurationSec int
 	EffectiveDurationSec int
@@ -59,6 +65,7 @@ type demeterBackendChunkingConfig struct {
 	DurationWasCapped    bool
 }
 
+// demeterBackendChunkPlan describes one time window in the reconstructed audio.
 type demeterBackendChunkPlan struct {
 	Index    int
 	StartSec float64
@@ -69,6 +76,7 @@ type demeterBackendChunkPlan struct {
 	MimeType string
 }
 
+// demeterMistralWord mirrors the word-level upstream payload.
 type demeterMistralWord struct {
 	Word       string   `json:"word"`
 	Start      float64  `json:"start"`
@@ -76,6 +84,7 @@ type demeterMistralWord struct {
 	Confidence *float64 `json:"confidence,omitempty"`
 }
 
+// demeterMistralSegment mirrors one upstream transcription segment.
 type demeterMistralSegment struct {
 	Text       string               `json:"text"`
 	Start      *float64             `json:"start,omitempty"`
@@ -86,6 +95,8 @@ type demeterMistralSegment struct {
 	Words      []demeterMistralWord `json:"words,omitempty"`
 }
 
+// demeterMistralTranscriptionResponse is the raw JSON shape returned by the
+// upstream provider.
 type demeterMistralTranscriptionResponse struct {
 	Text     string                  `json:"text,omitempty"`
 	Language string                  `json:"language,omitempty"`
@@ -95,6 +106,8 @@ type demeterMistralTranscriptionResponse struct {
 	Words    []demeterMistralWord    `json:"words,omitempty"`
 }
 
+// demeterBackendTranscriptionSegment is the normalized segment shape returned
+// by the backend pipeline.
 type demeterBackendTranscriptionSegment struct {
 	Index      int                  `json:"index"`
 	Start      float64              `json:"start"`
@@ -107,6 +120,7 @@ type demeterBackendTranscriptionSegment struct {
 	Words      []demeterMistralWord `json:"words,omitempty"`
 }
 
+// demeterBackendChunkMetadata summarizes one processed chunk.
 type demeterBackendChunkMetadata struct {
 	ChunkID          string  `json:"chunkId"`
 	Index            int     `json:"index"`
@@ -121,6 +135,8 @@ type demeterBackendChunkMetadata struct {
 	Text             string  `json:"text,omitempty"`
 }
 
+// demeterBackendTranscriptionChunk combines metadata and normalized segments
+// for one chunk.
 type demeterBackendTranscriptionChunk struct {
 	ChunkID          string                               `json:"chunkId"`
 	Index            int                                  `json:"index"`
@@ -136,6 +152,8 @@ type demeterBackendTranscriptionChunk struct {
 	Segments         []demeterBackendTranscriptionSegment `json:"segments,omitempty"`
 }
 
+// demeterBackendTranscriptionResponse is the final response returned by the
+// backend audio path.
 type demeterBackendTranscriptionResponse struct {
 	Text     string                             `json:"text,omitempty"`
 	Language string                             `json:"language,omitempty"`
@@ -144,6 +162,8 @@ type demeterBackendTranscriptionResponse struct {
 	Words    []demeterMistralWord               `json:"words,omitempty"`
 }
 
+// demeterAudioTranscriptionsBackendDirect handles the backend route family that
+// already carries the reconstructed audio request.
 func (a *App) demeterAudioTranscriptionsBackendDirect(
 	c *fiber.Ctx,
 	route string,
@@ -199,6 +219,8 @@ func (a *App) demeterAudioTranscriptionsBackendDirect(
 	return a.demeterAudioTranscriptionsTransportSlice(c, route, seq, startedAt, routeMode, audioDurationSec, audioDurationProvided, requestBytes, contentType)
 }
 
+// demeterBackendTranscribeChunks sends each chunk to the upstream provider and
+// merges the responses into a single transcript.
 func (a *App) demeterBackendTranscribeChunks(
 	logCtx demeterAudioLogContext,
 	route string,
@@ -258,6 +280,8 @@ func (a *App) demeterBackendTranscribeChunks(
 	return finalResponse, fiber.StatusOK, nil, totalUpstreamDurationMs, nil
 }
 
+// demeterChunkTranscriptionResult carries the raw upstream response for one
+// chunk together with timing metadata.
 type demeterChunkTranscriptionResult struct {
 	statusCode         int
 	responseBody       []byte
@@ -265,6 +289,8 @@ type demeterChunkTranscriptionResult struct {
 	response           demeterMistralTranscriptionResponse
 }
 
+// transcribeDemeterBackendChunk prepares one chunk, transcodes it if needed,
+// and relays it to the upstream provider.
 func (a *App) transcribeDemeterBackendChunk(
 	logCtx demeterAudioLogContext,
 	route string,
@@ -592,6 +618,8 @@ func (a *App) transcribeDemeterBackendChunk(
 	}, nil
 }
 
+// buildDemeterAudioMultipart creates the multipart body used for upstream
+// transcription requests.
 func buildDemeterAudioMultipart(fileBytes []byte, fileName, model string, diarize bool) ([]byte, string, error) {
 	var buffer bytes.Buffer
 	writer := multipart.NewWriter(&buffer)
@@ -620,6 +648,8 @@ func buildDemeterAudioMultipart(fileBytes []byte, fileName, model string, diariz
 	return buffer.Bytes(), writer.FormDataContentType(), nil
 }
 
+// buildDemeterBackendTranscriptionChunk converts one upstream response into the
+// normalized backend chunk shape and corresponding merged text.
 func buildDemeterBackendTranscriptionChunk(
 	resp demeterMistralTranscriptionResponse,
 	plan demeterBackendChunkPlan,
@@ -708,6 +738,8 @@ func buildDemeterBackendTranscriptionChunk(
 	}, chunkText
 }
 
+// offsetDemeterWords shifts word timings so each chunk can be stitched back
+// into the full transcript.
 func offsetDemeterWords(words []demeterMistralWord, offsetSec float64) []demeterMistralWord {
 	if len(words) == 0 {
 		return nil
@@ -732,6 +764,8 @@ func offsetDemeterWords(words []demeterMistralWord, offsetSec float64) []demeter
 	return out
 }
 
+// buildDemeterBackendAudioUploadFromSource probes a local audio file and
+// prepares the reconstruction metadata used by the backend path.
 func buildDemeterBackendAudioUploadFromSource(
 	ctx context.Context,
 	logCtx demeterAudioLogContext,
@@ -802,6 +836,8 @@ func buildDemeterBackendAudioUploadFromSource(
 	}, nil
 }
 
+// fileSizeBytes returns zero when the file is missing and the actual byte size
+// otherwise.
 func fileSizeBytes(path string) int64 {
 	info, err := os.Stat(path)
 	if err != nil {
@@ -810,6 +846,8 @@ func fileSizeBytes(path string) int64 {
 	return info.Size()
 }
 
+// demeterAudioProbeResult stores the ffprobe-derived metadata used during
+// validation.
 type demeterAudioProbeResult struct {
 	DurationSec float64
 	FormatName  string
@@ -818,6 +856,8 @@ type demeterAudioProbeResult struct {
 	Channels    int
 }
 
+// probeDemeterAudioFile inspects the source audio file with ffprobe and
+// converts it into the validation metadata used by the backend route.
 func probeDemeterAudioFile(ctx context.Context, inputPath string) (*demeterAudioProbeResult, error) {
 	ffprobePath, err := exec.LookPath(demeterBackendFfprobeBinary)
 	if err != nil {
@@ -921,6 +961,8 @@ func probeDemeterAudioFile(ctx context.Context, inputPath string) (*demeterAudio
 	return probe, nil
 }
 
+// resolveDemeterBackendChunkingConfig merges settings and model limits into one
+// effective chunking policy.
 func resolveDemeterBackendChunkingConfig(settings demeterBackendAudioChunkSettings, model string) demeterBackendChunkingConfig {
 	modelMax := resolveDemeterBackendModelMaxDurationSec(model)
 	requestedDuration := settings.ChunkDurationSec
@@ -955,6 +997,8 @@ func resolveDemeterBackendChunkingConfig(settings demeterBackendAudioChunkSettin
 	}
 }
 
+// resolveDemeterBackendModelMaxDurationSec returns the maximum supported chunk
+// duration for the selected model.
 func resolveDemeterBackendModelMaxDurationSec(model string) int {
 	normalized := strings.ToLower(strings.TrimSpace(model))
 	if normalized == "" {
@@ -966,6 +1010,8 @@ func resolveDemeterBackendModelMaxDurationSec(model string) int {
 	return demeterBackendChunkMaxDurationSec
 }
 
+// loadDemeterBackendAudioChunkSettings reads the chunking policy from the
+// caller's settings document.
 func (a *App) loadDemeterBackendAudioChunkSettings(ctx context.Context, userID string) (demeterBackendAudioChunkSettings, error) {
 	settings := demeterBackendAudioChunkSettings{
 		ChunkDurationSec: demeterBackendDefaultChunkDurationSec,
@@ -998,6 +1044,8 @@ func (a *App) loadDemeterBackendAudioChunkSettings(ctx context.Context, userID s
 	return settings, nil
 }
 
+// readDemeterBackendIntSettingFromKeys extracts the first matching numeric
+// setting from the payload.
 func readDemeterBackendIntSettingFromKeys(payload map[string]any, keys ...string) (int, bool) {
 	for _, key := range keys {
 		value, ok := payload[key]
@@ -1011,6 +1059,8 @@ func readDemeterBackendIntSettingFromKeys(payload map[string]any, keys ...string
 	return 0, false
 }
 
+// readDemeterBackendIntSetting converts supported JSON number shapes into a
+// Go int.
 func readDemeterBackendIntSetting(value any) (int, bool) {
 	switch typed := value.(type) {
 	case float64:
@@ -1043,10 +1093,14 @@ func readDemeterBackendIntSetting(value any) (int, bool) {
 	return 0, false
 }
 
+// buildDemeterBackendChunkPlans splits the audio duration into the default
+// sequence of chunk windows.
 func buildDemeterBackendChunkPlans(durationSec float64, chunkDurationSec, overlapSec int) []demeterBackendChunkPlan {
 	return buildDemeterBackendChunkPlansWithPrefix(durationSec, chunkDurationSec, overlapSec, "demeter-backend")
 }
 
+// buildDemeterBackendChunkPlansWithPrefix does the same split while allowing a
+// deterministic chunk identifier prefix.
 func buildDemeterBackendChunkPlansWithPrefix(durationSec float64, chunkDurationSec, overlapSec int, chunkIDPrefix string) []demeterBackendChunkPlan {
 	if !(durationSec > 0) {
 		return nil
@@ -1081,6 +1135,8 @@ func buildDemeterBackendChunkPlansWithPrefix(durationSec float64, chunkDurationS
 	return plans
 }
 
+// transcodeDemeterAudioChunk converts the source audio into the normalized WAV
+// format expected by the upstream provider.
 func transcodeDemeterAudioChunk(ctx context.Context, inputPath, outputPath string, startSec, durationSec float64) error {
 	ffmpegPath, err := exec.LookPath(demeterBackendFfmpegBinary)
 	if err != nil {
@@ -1122,13 +1178,20 @@ func transcodeDemeterAudioChunk(ctx context.Context, inputPath, outputPath strin
 	return nil
 }
 
+// errDemeterAudioTranscodeFailed marks ffmpeg failures after stderr has been
+// attached to the error.
 var errDemeterAudioTranscodeFailed = errors.New("audio transcode failed")
+
+// errDemeterAudioChunkEmpty reports that ffmpeg produced an empty output file.
 var errDemeterAudioChunkEmpty = errors.New("audio chunk empty")
 
+// formatDemeterFloat renders float values in a stable compact representation
+// for ffmpeg arguments and logs.
 func formatDemeterFloat(value float64) string {
 	return strconv.FormatFloat(value, 'f', 3, 64)
 }
 
+// maxInt returns the larger of two integers.
 func maxInt(left, right int) int {
 	if left > right {
 		return left

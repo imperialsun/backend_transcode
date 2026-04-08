@@ -11,6 +11,8 @@ import (
 	"time"
 )
 
+// MeetingFinalizeOperationStatus* constants track the lifecycle of a finalize
+// job inside the store.
 const (
 	MeetingFinalizeOperationStatusPending   = "pending"
 	MeetingFinalizeOperationStatusCompleted = "completed"
@@ -19,8 +21,12 @@ const (
 	meetingFinalizeOperationRetention = 24 * time.Hour
 )
 
+// ErrMeetingFinalizeOperationOwnership reports that the current actor tried to
+// access someone else's finalize operation.
 var ErrMeetingFinalizeOperationOwnership = errors.New("meeting finalize operation owned by another user")
 
+// MeetingFinalizeOperationRecord stores the state of one idempotent meeting
+// finalization job.
 type MeetingFinalizeOperationRecord struct {
 	OperationID       string
 	OrganizationID    string
@@ -35,11 +41,15 @@ type MeetingFinalizeOperationRecord struct {
 	TerminalExpiresAt sql.NullTime
 }
 
+// MeetingFinalizeOperationClaimResult describes the current state and whether
+// the caller claimed a pending operation.
 type MeetingFinalizeOperationClaimResult struct {
 	Record  *MeetingFinalizeOperationRecord
 	Claimed bool
 }
 
+// ClaimMeetingFinalizeOperation creates or claims one pending operation inside
+// a transaction so only one worker can finish it.
 func (s *Store) ClaimMeetingFinalizeOperation(ctx context.Context, operationID, organizationID, userID string, now time.Time) (*MeetingFinalizeOperationClaimResult, error) {
 	operationID = strings.TrimSpace(operationID)
 	organizationID = strings.TrimSpace(organizationID)
@@ -92,6 +102,8 @@ func (s *Store) ClaimMeetingFinalizeOperation(ctx context.Context, operationID, 
 	})
 }
 
+// GetMeetingFinalizeOperation loads the current record without changing its
+// state unless a stale pending job needs to be failed.
 func (s *Store) GetMeetingFinalizeOperation(ctx context.Context, operationID, organizationID, userID string, now time.Time) (*MeetingFinalizeOperationRecord, error) {
 	operationID = strings.TrimSpace(operationID)
 	organizationID = strings.TrimSpace(organizationID)
@@ -156,6 +168,7 @@ func (s *Store) GetMeetingFinalizeOperation(ctx context.Context, operationID, or
 	})
 }
 
+// CompleteMeetingFinalizeOperation stores the successful terminal result.
 func (s *Store) CompleteMeetingFinalizeOperation(
 	ctx context.Context,
 	operationID, organizationID, userID string,
@@ -166,6 +179,7 @@ func (s *Store) CompleteMeetingFinalizeOperation(
 	return s.updateMeetingFinalizeOperationTerminal(ctx, "finalize_complete", operationID, organizationID, userID, statusCode, responseJSON, "", now)
 }
 
+// FailMeetingFinalizeOperation stores a failure response for the job.
 func (s *Store) FailMeetingFinalizeOperation(
 	ctx context.Context,
 	operationID, organizationID, userID string,
@@ -177,6 +191,8 @@ func (s *Store) FailMeetingFinalizeOperation(
 	return s.updateMeetingFinalizeOperationTerminal(ctx, "finalize_fail", operationID, organizationID, userID, statusCode, responseJSON, errorMessage, now)
 }
 
+// PurgeExpiredMeetingFinalizeOperations advances timed-out pending jobs to a
+// terminal failure and removes old terminal rows.
 func (s *Store) PurgeExpiredMeetingFinalizeOperations(ctx context.Context, now time.Time) (int64, error) {
 	now = now.UTC()
 	logStoreStep(ctx, "finalize_purge_start", "meeting_finalize_operation", map[string]any{
@@ -227,6 +243,8 @@ func (s *Store) PurgeExpiredMeetingFinalizeOperations(ctx context.Context, now t
 	return total, nil
 }
 
+// claimOrGetMeetingFinalizeOperationTx centralizes the claim-or-read logic used
+// by both the public claim and get methods.
 func claimOrGetMeetingFinalizeOperationTx(
 	ctx context.Context,
 	tx *sql.Tx,
@@ -274,6 +292,8 @@ func claimOrGetMeetingFinalizeOperationTx(
 	return &MeetingFinalizeOperationClaimResult{Record: record, Claimed: false}, nil
 }
 
+// loadMeetingFinalizeOperationRecordTx reads one row inside the current
+// transaction.
 func loadMeetingFinalizeOperationRecordTx(ctx context.Context, tx *sql.Tx, operationID string) (*MeetingFinalizeOperationRecord, error) {
 	row := tx.QueryRowContext(ctx, `
 		SELECT operation_id, organization_id, user_id, status, status_code, response_json, error_message, created_at, updated_at, completed_at, terminal_expires_at
@@ -304,6 +324,7 @@ func loadMeetingFinalizeOperationRecordTx(ctx context.Context, tx *sql.Tx, opera
 	return &record, nil
 }
 
+// insertMeetingFinalizeOperationPendingTx creates a brand-new pending record.
 func insertMeetingFinalizeOperationPendingTx(ctx context.Context, tx *sql.Tx, operationID, organizationID, userID string, now time.Time) (*MeetingFinalizeOperationRecord, error) {
 	record := &MeetingFinalizeOperationRecord{
 		OperationID:    strings.TrimSpace(operationID),
@@ -334,6 +355,8 @@ func insertMeetingFinalizeOperationPendingTx(ctx context.Context, tx *sql.Tx, op
 	return record, nil
 }
 
+// markMeetingFinalizeOperationFailedTx updates an existing record to a failed
+// terminal state.
 func markMeetingFinalizeOperationFailedTx(
 	ctx context.Context,
 	tx *sql.Tx,
@@ -365,6 +388,8 @@ func markMeetingFinalizeOperationFailedTx(
 	return loadMeetingFinalizeOperationRecordTx(ctx, tx, operationID)
 }
 
+// updateMeetingFinalizeOperationTerminal stores the final response and terminal
+// expiry for a job.
 func (s *Store) updateMeetingFinalizeOperationTerminal(
 	ctx context.Context,
 	step string,
@@ -472,10 +497,14 @@ func (s *Store) updateMeetingFinalizeOperationTerminal(
 	})
 }
 
+// isMeetingFinalizeOperationStale reports whether a pending job has outlived
+// its processing window.
 func isMeetingFinalizeOperationStale(record *MeetingFinalizeOperationRecord, now time.Time) bool {
 	return record != nil && record.Status == MeetingFinalizeOperationStatusPending && record.CreatedAt.Add(meetingFinalizeOperationRetention).Before(now)
 }
 
+// isMeetingFinalizeOperationTerminalExpired reports whether a terminal row is
+// eligible for deletion.
 func isMeetingFinalizeOperationTerminalExpired(record *MeetingFinalizeOperationRecord, now time.Time) bool {
 	if record == nil {
 		return false
@@ -486,6 +515,7 @@ func isMeetingFinalizeOperationTerminalExpired(record *MeetingFinalizeOperationR
 	return !record.TerminalExpiresAt.Time.After(now)
 }
 
+// terminalStatusFromStatusCode maps the HTTP result into a terminal state.
 func terminalStatusFromStatusCode(statusCode int) string {
 	switch {
 	case statusCode >= 200 && statusCode < 300:

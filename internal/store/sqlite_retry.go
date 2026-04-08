@@ -14,9 +14,8 @@ const (
 	sqliteRetryDelay    = 25 * time.Millisecond
 )
 
-// SQLite can surface SQLITE_BUSY_SNAPSHOT when a deferred transaction reads and
-// then tries to write after a concurrent commit. Retrying the full idempotent
-// operation is safer than failing the request immediately.
+// withSQLiteRetry retries idempotent store operations when SQLite returns a
+// transient busy or locked error after a deferred read-then-write transaction.
 func withSQLiteRetry[T any](ctx context.Context, fn func() (T, error)) (T, error) {
 	var zero T
 
@@ -47,6 +46,8 @@ func withSQLiteRetry[T any](ctx context.Context, fn func() (T, error)) (T, error
 	return zero, context.Canceled
 }
 
+// isRetryableSQLiteError recognizes the SQLite error codes that should be
+// retried instead of surfaced immediately.
 func isRetryableSQLiteError(err error) bool {
 	var sqliteErr *moderncsqlite.Error
 	if !errors.As(err, &sqliteErr) {

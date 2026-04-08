@@ -10,6 +10,8 @@ import (
 	"time"
 )
 
+// DemeterAudioTranscriptionOperationStatus* constants track the lifecycle of a
+// backend transcription job.
 const (
 	DemeterAudioTranscriptionOperationStatusPending   = "pending"
 	DemeterAudioTranscriptionOperationStatusRunning   = "running"
@@ -19,8 +21,12 @@ const (
 	demeterAudioTranscriptionOperationRetention       = 24 * time.Hour
 )
 
+// ErrDemeterAudioTranscriptionOperationOwnership reports that the caller tried
+// to access someone else's upload session.
 var ErrDemeterAudioTranscriptionOperationOwnership = errors.New("demeter audio transcription operation owned by another user")
 
+// DemeterAudioTranscriptionOperationRecord stores the state of one backend
+// audio transcription job.
 type DemeterAudioTranscriptionOperationRecord struct {
 	OperationID    string
 	OrganizationID string
@@ -39,6 +45,7 @@ type DemeterAudioTranscriptionOperationRecord struct {
 	FinishedAt     sql.NullTime
 }
 
+// CreateDemeterAudioTranscriptionOperation inserts a new job record.
 func (s *Store) CreateDemeterAudioTranscriptionOperation(ctx context.Context, record *DemeterAudioTranscriptionOperationRecord) error {
 	if record == nil {
 		return fmt.Errorf("record is required")
@@ -105,6 +112,8 @@ func (s *Store) CreateDemeterAudioTranscriptionOperation(ctx context.Context, re
 	return nil
 }
 
+// UpdateDemeterAudioTranscriptionOperation updates a record that is scoped to a
+// specific organization and user.
 func (s *Store) UpdateDemeterAudioTranscriptionOperation(ctx context.Context, record *DemeterAudioTranscriptionOperationRecord) error {
 	if record == nil {
 		return fmt.Errorf("record is required")
@@ -174,6 +183,8 @@ func (s *Store) UpdateDemeterAudioTranscriptionOperation(ctx context.Context, re
 	return nil
 }
 
+// UpdateDemeterAudioTranscriptionOperationByID updates a record by primary key
+// only and is used as a fallback when ownership has already been checked.
 func (s *Store) UpdateDemeterAudioTranscriptionOperationByID(ctx context.Context, record *DemeterAudioTranscriptionOperationRecord) error {
 	if record == nil {
 		return fmt.Errorf("record is required")
@@ -226,6 +237,8 @@ func (s *Store) UpdateDemeterAudioTranscriptionOperationByID(ctx context.Context
 	return nil
 }
 
+// GetDemeterAudioTranscriptionOperation loads the current job record and
+// validates ownership before returning it.
 func (s *Store) GetDemeterAudioTranscriptionOperation(ctx context.Context, operationID, organizationID, userID string) (*DemeterAudioTranscriptionOperationRecord, error) {
 	operationID = strings.TrimSpace(operationID)
 	organizationID = strings.TrimSpace(organizationID)
@@ -277,6 +290,7 @@ func (s *Store) GetDemeterAudioTranscriptionOperation(ctx context.Context, opera
 	return record, nil
 }
 
+// CancelDemeterAudioTranscriptionOperation marks a running job as cancelled.
 func (s *Store) CancelDemeterAudioTranscriptionOperation(ctx context.Context, operationID, organizationID, userID string, now time.Time) (*DemeterAudioTranscriptionOperationRecord, error) {
 	now = now.UTC()
 	record := &DemeterAudioTranscriptionOperationRecord{
@@ -323,6 +337,8 @@ func (s *Store) CancelDemeterAudioTranscriptionOperation(ctx context.Context, op
 	return s.GetDemeterAudioTranscriptionOperation(ctx, record.OperationID, record.OrganizationID, record.UserID)
 }
 
+// scanDemeterAudioTranscriptionOperationRecord converts one SQL row into the
+// strongly typed record used by the API layer.
 func scanDemeterAudioTranscriptionOperationRecord(row *sql.Row) (*DemeterAudioTranscriptionOperationRecord, error) {
 	var record DemeterAudioTranscriptionOperationRecord
 	if err := row.Scan(
@@ -347,6 +363,7 @@ func scanDemeterAudioTranscriptionOperationRecord(row *sql.Row) (*DemeterAudioTr
 	return &record, nil
 }
 
+// nullStringValue converts a nullable string into a database bind value.
 func nullStringValue(value sql.NullString) any {
 	if !value.Valid {
 		return nil
@@ -354,6 +371,7 @@ func nullStringValue(value sql.NullString) any {
 	return strings.TrimSpace(value.String)
 }
 
+// textValue returns the stored string when the nullable value is valid.
 func textValue(value sql.NullString) string {
 	if !value.Valid {
 		return ""
@@ -361,6 +379,7 @@ func textValue(value sql.NullString) string {
 	return strings.TrimSpace(value.String)
 }
 
+// nullTimeValue converts a nullable time into a database bind value.
 func nullTimeValue(value sql.NullTime) any {
 	if !value.Valid {
 		return nil

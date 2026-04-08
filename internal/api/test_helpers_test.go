@@ -20,11 +20,14 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 )
 
+// testResponse is the compact response container used by the API integration
+// tests.
 type testResponse struct {
 	StatusCode int
 	Body       []byte
 }
 
+// openAPITestStore creates an isolated SQLite database for API tests.
 func openAPITestStore(t *testing.T, name string) *store.Store {
 	t.Helper()
 
@@ -40,6 +43,8 @@ func openAPITestStore(t *testing.T, name string) *store.Store {
 	return st
 }
 
+// newAPIAppContext creates an API app and its backing store with a test JWT
+// secret when needed.
 func newAPIAppContext(t *testing.T, dbName string, cfg config.Config) (*App, *store.Store) {
 	t.Helper()
 
@@ -51,11 +56,13 @@ func newAPIAppContext(t *testing.T, dbName string, cfg config.Config) (*App, *st
 	return &App{Config: appCfg, Store: st}, st
 }
 
+// issueAccessToken mints a standard app-session access token for tests.
 func issueAccessToken(t *testing.T, secret string, claims auth.Claims) string {
 	t.Helper()
 	return issueAccessTokenForSession(t, secret, auth.SessionTypeApp, claims)
 }
 
+// issueAccessTokenForSession mints a session-specific access token for tests.
 func issueAccessTokenForSession(t *testing.T, secret string, sessionType auth.SessionType, claims auth.Claims) string {
 	t.Helper()
 	claims.RegisteredClaims = jwt.RegisteredClaims{
@@ -68,6 +75,7 @@ func issueAccessTokenForSession(t *testing.T, secret string, sessionType auth.Se
 	return token
 }
 
+// issueSettingsToken creates an app-session token scoped to one user.
 func issueSettingsToken(t *testing.T, secret string, user *store.User) string {
 	t.Helper()
 	return issueAccessToken(t, secret, auth.Claims{
@@ -77,6 +85,7 @@ func issueSettingsToken(t *testing.T, secret string, user *store.User) string {
 	})
 }
 
+// issueActivityToken creates an app-session token scoped to one user.
 func issueActivityToken(t *testing.T, secret string, user *store.User) string {
 	t.Helper()
 	return issueAccessToken(t, secret, auth.Claims{
@@ -86,6 +95,7 @@ func issueActivityToken(t *testing.T, secret string, user *store.User) string {
 	})
 }
 
+// issueAdminActivityToken creates an admin-session token for activity tests.
 func issueAdminActivityToken(t *testing.T, secret string, user *store.User) string {
 	t.Helper()
 	return issueAccessTokenForSession(t, secret, auth.SessionTypeAdmin, auth.Claims{
@@ -95,6 +105,8 @@ func issueAdminActivityToken(t *testing.T, secret string, user *store.User) stri
 	})
 }
 
+// performJSONRequest sends a JSON request and returns the response body for
+// assertions.
 func performJSONRequest(t *testing.T, app *fiber.App, method, path, token, body string) testResponse {
 	t.Helper()
 
@@ -119,6 +131,8 @@ func performJSONRequest(t *testing.T, app *fiber.App, method, path, token, body 
 	return testResponse{StatusCode: resp.StatusCode, Body: raw}
 }
 
+// performJSONRequestWithHeaders sends a JSON request with explicit cookies and
+// headers.
 func performJSONRequestWithHeaders(t *testing.T, app *fiber.App, method, path string, payload any, cookies []*http.Cookie, headers map[string]string) *http.Response {
 	t.Helper()
 
@@ -152,6 +166,8 @@ func performJSONRequestWithHeaders(t *testing.T, app *fiber.App, method, path st
 	return resp
 }
 
+// closeHTTPResponse closes the response body and reports close errors in the
+// test output.
 func closeHTTPResponse(t *testing.T, resp *http.Response) {
 	t.Helper()
 	if resp == nil || resp.Body == nil {
@@ -162,11 +178,14 @@ func closeHTTPResponse(t *testing.T, resp *http.Response) {
 	}
 }
 
+// performLoginRequest sends a login request with a JSON payload.
 func performLoginRequest(t *testing.T, app *fiber.App, path string, payload map[string]string) *http.Response {
 	t.Helper()
 	return performJSONRequestWithHeaders(t, app, http.MethodPost, path, payload, nil, nil)
 }
 
+// performPasswordResetRequest sends a password-reset request with optional
+// cookies and headers.
 func performPasswordResetRequest(
 	t *testing.T,
 	app *fiber.App,
@@ -180,6 +199,7 @@ func performPasswordResetRequest(
 	return performJSONRequestWithHeaders(t, app, method, path, payload, cookies, headers)
 }
 
+// findCookie extracts a cookie by name and fails the test when it is missing.
 func findCookie(t *testing.T, resp *http.Response, name string) *http.Cookie {
 	t.Helper()
 	for _, cookie := range resp.Cookies() {
@@ -191,6 +211,8 @@ func findCookie(t *testing.T, resp *http.Response, name string) *http.Cookie {
 	return nil
 }
 
+// assertSetCookieContains verifies that a Set-Cookie header contains the
+// expected cookie name and a target fragment.
 func assertSetCookieContains(t *testing.T, resp *http.Response, cookieName, fragment string) {
 	t.Helper()
 	expectedPrefix := strings.ToLower(cookieName) + "="
@@ -204,6 +226,7 @@ func assertSetCookieContains(t *testing.T, resp *http.Response, cookieName, frag
 	t.Fatalf("expected Set-Cookie for %q to contain %q, got %v", cookieName, fragment, resp.Header.Values("Set-Cookie"))
 }
 
+// createTestOrganization inserts an organization and fails the test on error.
 func createTestOrganization(t *testing.T, st *store.Store, name, code, status string) *store.Organization {
 	t.Helper()
 	org, err := st.CreateOrganization(context.Background(), name, code, status)
@@ -213,6 +236,7 @@ func createTestOrganization(t *testing.T, st *store.Store, name, code, status st
 	return org
 }
 
+// createTestUser inserts a user and fails the test on error.
 func createTestUser(t *testing.T, st *store.Store, orgID, email, passwordHash, status string) *store.User {
 	t.Helper()
 	user, err := st.CreateUser(context.Background(), orgID, email, passwordHash, status)

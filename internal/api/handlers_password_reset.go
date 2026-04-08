@@ -14,17 +14,23 @@ import (
 	"github.com/gofiber/fiber/v2"
 )
 
+// forgotPasswordRequest carries the email address used to request a reset link.
 type forgotPasswordRequest struct {
 	Email string `json:"email"`
 }
 
+// resetPasswordRequest carries the reset token and the replacement password.
 type resetPasswordRequest struct {
 	Token    string `json:"token"`
 	Password string `json:"password"`
 }
 
+// errPasswordResetUnavailable is returned when the environment lacks the URLs
+// or mailer configuration required to issue reset links.
 var errPasswordResetUnavailable = errors.New("password reset unavailable")
 
+// forgotPasswordForSession validates the request and sends a password-reset
+// email when the user exists and is active.
 func (a *App) forgotPasswordForSession(c *fiber.Ctx, sessionType auth.SessionType) error {
 	route := requestRoutePath(c)
 	logAPIStep(c, "password-reset", route, "request_received", sessionType.String(), map[string]any{"session_type": sessionType.String()})
@@ -49,6 +55,8 @@ func (a *App) forgotPasswordForSession(c *fiber.Ctx, sessionType auth.SessionTyp
 	return c.SendStatus(fiber.StatusNoContent)
 }
 
+// resetPasswordForSession validates the token and writes the new password hash
+// back to the store.
 func (a *App) resetPasswordForSession(c *fiber.Ctx, sessionType auth.SessionType) error {
 	route := requestRoutePath(c)
 	logAPIStep(c, "password-reset", route, "request_received", sessionType.String(), map[string]any{"session_type": sessionType.String()})
@@ -95,6 +103,8 @@ func (a *App) resetPasswordForSession(c *fiber.Ctx, sessionType auth.SessionType
 	return c.SendStatus(fiber.StatusNoContent)
 }
 
+// requestPasswordResetByEmail looks up the user and delegates the mail send
+// when the account is active.
 func (a *App) requestPasswordResetByEmail(
 	ctx context.Context,
 	route string,
@@ -115,6 +125,8 @@ func (a *App) requestPasswordResetByEmail(
 	return a.sendPasswordResetForUser(ctx, route, user, sessionType, requestedByUserID)
 }
 
+// sendPasswordResetForUser revokes existing tokens, stores a new one, and
+// delivers the reset email.
 func (a *App) sendPasswordResetForUser(
 	ctx context.Context,
 	route string,
@@ -186,6 +198,8 @@ func (a *App) sendPasswordResetForUser(
 	return nil
 }
 
+// ensurePasswordResetAvailable validates the URLs and mailer dependencies
+// required by the reset flow.
 func (a *App) ensurePasswordResetAvailable(sessionType auth.SessionType) (string, error) {
 	applicationURL, err := a.applicationPublicURL()
 	if err != nil {
@@ -203,6 +217,7 @@ func (a *App) ensurePasswordResetAvailable(sessionType auth.SessionType) (string
 	return applicationURL, nil
 }
 
+// applicationPublicURL validates the public app URL used in the email body.
 func (a *App) applicationPublicURL() (string, error) {
 	baseURL := strings.TrimSpace(a.Config.AppPublicURL)
 	if baseURL == "" {
@@ -222,6 +237,7 @@ func (a *App) applicationPublicURL() (string, error) {
 	return strings.TrimRight(baseURL, "/") + "/", nil
 }
 
+// passwordResetURL builds the final reset link that gets emailed to the user.
 func (a *App) passwordResetURL(sessionType auth.SessionType, token string) (string, error) {
 	baseURL, err := a.passwordResetBaseURL(sessionType)
 	if err != nil {
@@ -230,6 +246,7 @@ func (a *App) passwordResetURL(sessionType auth.SessionType, token string) (stri
 	return strings.TrimRight(baseURL, "/") + "/reset-password?token=" + url.QueryEscape(strings.TrimSpace(token)), nil
 }
 
+// passwordResetBaseURL selects the correct public URL for the session family.
 func (a *App) passwordResetBaseURL(sessionType auth.SessionType) (string, error) {
 	baseURL := strings.TrimSpace(a.Config.AppPublicURL)
 	if sessionType == auth.SessionTypeAdmin {

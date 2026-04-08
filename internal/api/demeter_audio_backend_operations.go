@@ -22,6 +22,8 @@ const demeterAudioTranscriptionOperationStatusRoute = "/api/v1/providers/demeter
 
 var demeterAudioTranscriptionOperationCancels sync.Map
 
+// demeterAudioTranscriptionOperationResponse converts the store record into the
+// API response shape used by the polling endpoints.
 type demeterAudioTranscriptionOperationResponse struct {
 	OperationID string                               `json:"operationId"`
 	Status      string                               `json:"status"`
@@ -37,10 +39,14 @@ type demeterAudioTranscriptionOperationResponse struct {
 	Response    *demeterBackendTranscriptionResponse `json:"response,omitempty"`
 }
 
+// demeterAudioTranscriptionOperationStartResponse is the initial accepted
+// response returned when a backend transcription starts.
 type demeterAudioTranscriptionOperationStartResponse struct {
 	demeterAudioTranscriptionOperationResponse
 }
 
+// demeterAudioTranscriptionOperationResponseFromRecord maps a store record into
+// the API response shape.
 func demeterAudioTranscriptionOperationResponseFromRecord(record *store.DemeterAudioTranscriptionOperationRecord) demeterAudioTranscriptionOperationResponse {
 	response := demeterAudioTranscriptionOperationResponse{}
 	if record == nil {
@@ -72,6 +78,8 @@ func demeterAudioTranscriptionOperationResponseFromRecord(record *store.DemeterA
 	return response
 }
 
+// startDemeterAudioTranscriptionOperation creates the database row and spawns
+// the background worker that performs the transcription.
 func (a *App) startDemeterAudioTranscriptionOperation(
 	c *fiber.Ctx,
 	logCtx demeterAudioLogContext,
@@ -226,6 +234,8 @@ func (a *App) startDemeterAudioTranscriptionOperation(
 	})
 }
 
+// getDemeterAudioTranscriptionOperationStatus returns the current job state for
+// the caller's upload.
 func (a *App) getDemeterAudioTranscriptionOperationStatus(c *fiber.Ctx) error {
 	logCtx := newDemeterAudioLogContextFromFiber(c)
 	traceID := requestTraceID(c)
@@ -291,6 +301,8 @@ func (a *App) getDemeterAudioTranscriptionOperationStatus(c *fiber.Ctx) error {
 	return c.Status(fiber.StatusOK).JSON(demeterAudioTranscriptionOperationResponseFromRecord(record))
 }
 
+// cancelDemeterAudioTranscriptionOperation cancels the in-flight transcription
+// job if the caller still owns it.
 func (a *App) cancelDemeterAudioTranscriptionOperation(c *fiber.Ctx) error {
 	logCtx := newDemeterAudioLogContextFromFiber(c)
 	traceID := requestTraceID(c)
@@ -358,6 +370,8 @@ func (a *App) cancelDemeterAudioTranscriptionOperation(c *fiber.Ctx) error {
 	})
 }
 
+// runDemeterAudioTranscriptionOperation performs the background transcription
+// work and keeps the store state synchronized with each stage.
 func (a *App) runDemeterAudioTranscriptionOperation(
 	ctx context.Context,
 	baseLogCtx demeterAudioLogContext,

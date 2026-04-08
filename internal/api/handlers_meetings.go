@@ -27,6 +27,8 @@ const (
 	meetingFinalizeRoute    = "/api/v1/meetings/finalize"
 )
 
+// meetingRequest carries the payload used by both draft and finalization
+// flows.
 type meetingRequest struct {
 	OperationID             string                             `json:"operationId,omitempty"`
 	MeetingTitle            string                             `json:"meetingTitle"`
@@ -44,6 +46,8 @@ type meetingRequest struct {
 	Reports                 []meetingReportEnvelope            `json:"reports,omitempty"`
 }
 
+// meetingReportEnvelope wraps one generated report together with its origin
+// metadata.
 type meetingReportEnvelope struct {
 	Format           string                    `json:"format"`
 	Report           meetingreports.ReportJson `json:"report"`
@@ -55,6 +59,7 @@ type meetingReportEnvelope struct {
 	SourceTokenCount int                       `json:"sourceTokenCount,omitempty"`
 }
 
+// meetingDraftResponse returns the generated drafts for the requested meeting.
 type meetingDraftResponse struct {
 	MeetingTitle     string                  `json:"meetingTitle"`
 	Participants     []string                `json:"participants"`
@@ -67,12 +72,15 @@ type meetingDraftResponse struct {
 	Reports          []meetingReportEnvelope `json:"reports"`
 }
 
+// meetingAttachmentResponse summarizes one generated attachment.
 type meetingAttachmentResponse struct {
 	Filename    string `json:"filename"`
 	ContentType string `json:"contentType"`
 	SizeBytes   int    `json:"sizeBytes"`
 }
 
+// meetingFinalizeResponse is the final response returned after successful
+// meeting processing and email delivery.
 type meetingFinalizeResponse struct {
 	OperationID             string                      `json:"operationId"`
 	MeetingTitle            string                      `json:"meetingTitle"`
@@ -90,6 +98,7 @@ type meetingFinalizeResponse struct {
 	Attachments             []meetingAttachmentResponse `json:"attachments"`
 }
 
+// RegisterMeetingRoutes installs the report-draft and finalization endpoints.
 func (a *App) RegisterMeetingRoutes(router fiber.Router) {
 	group := router.Group("/meetings")
 	group.Post("/reports/drafts", a.AppAuthRequired(), RequirePermissions("feature.llmapi", "provider.llm.demeter_sante"), a.postMeetingReportDrafts)
@@ -97,6 +106,7 @@ func (a *App) RegisterMeetingRoutes(router fiber.Router) {
 	group.Get("/finalize/operations/:operationId", a.AppAuthRequired(), RequirePermissions("feature.llmapi", "provider.llm.demeter_sante"), a.getFinalizeMeetingOperationStatus)
 }
 
+// postMeetingReportDrafts turns a transcript into one or more report drafts.
 func (a *App) postMeetingReportDrafts(c *fiber.Ctx) error {
 	traceID := requestTraceID(c)
 	logMeetingStage(c, meetingDraftsRoute, traceID, "request_received", "", nil)
@@ -190,6 +200,8 @@ func (a *App) postMeetingReportDrafts(c *fiber.Ctx) error {
 	return c.JSON(response)
 }
 
+// finalizeMeeting performs the end-to-end finalization flow, including report
+// generation, document creation, and email delivery.
 func (a *App) finalizeMeeting(c *fiber.Ctx) error {
 	traceID := requestTraceID(c)
 	logMeetingStage(c, meetingFinalizeRoute, traceID, "request_received", "", nil)
@@ -449,6 +461,8 @@ func (a *App) finalizeMeeting(c *fiber.Ctx) error {
 	return a.finalizeMeetingSuccessResponse(c, claims, operationID, response)
 }
 
+// newMeetingReportGenerator resolves the upstream model settings and returns a
+// ready-to-use report generator.
 func (a *App) newMeetingReportGenerator(modelID string, maxTokens int, temperature float64) (*meetingreports.Generator, error) {
 	if a.MistralClient == nil || !a.MistralClient.IsConfigured() {
 		return nil, fmt.Errorf("mistral client is not configured")
@@ -461,6 +475,8 @@ func (a *App) newMeetingReportGenerator(modelID string, maxTokens int, temperatu
 	}, nil
 }
 
+// generateMeetingReportDrafts renders every selected format and returns the
+// generated payloads keyed by report format.
 func (a *App) generateMeetingReportDrafts(
 	ctx context.Context,
 	generator *meetingreports.Generator,
@@ -494,6 +510,8 @@ func (a *App) generateMeetingReportDrafts(
 	return out, nil
 }
 
+// buildMeetingDocuments renders the transcript and report DOCX attachments used
+// by the finalization email.
 func (a *App) buildMeetingDocuments(
 	ctx context.Context,
 	reportModelID string,
@@ -595,6 +613,7 @@ func (a *App) buildMeetingDocuments(
 	return attachments, reportEnvelopes, nil
 }
 
+// normalizeMeetingTitle trims and collapses whitespace in the meeting title.
 func normalizeMeetingTitle(value string) string {
 	title := strings.TrimSpace(value)
 	if title == "" {
@@ -603,6 +622,7 @@ func normalizeMeetingTitle(value string) string {
 	return title
 }
 
+// normalizeStringList trims entries and removes blanks while preserving order.
 func normalizeStringList(values []string) []string {
 	seen := map[string]struct{}{}
 	out := make([]string, 0, len(values))
@@ -621,6 +641,8 @@ func normalizeStringList(values []string) []string {
 	return out
 }
 
+// resolveMeetingSourceText selects the edited transcript when present and falls
+// back to the raw transcript otherwise.
 func resolveMeetingSourceText(editedText, rawText string) string {
 	if trimmed := strings.TrimSpace(editedText); trimmed != "" {
 		return trimmed
@@ -628,6 +650,8 @@ func resolveMeetingSourceText(editedText, rawText string) string {
 	return strings.TrimSpace(rawText)
 }
 
+// resolveMeetingTranscriptForMail picks the transcript text that should be sent
+// in the email body.
 func resolveMeetingTranscriptForMail(rawText, editedText string) string {
 	if trimmed := strings.TrimSpace(rawText); trimmed != "" {
 		return trimmed
@@ -635,6 +659,8 @@ func resolveMeetingTranscriptForMail(rawText, editedText string) string {
 	return strings.TrimSpace(editedText)
 }
 
+// buildMeetingReportSourceText rebuilds the model input using speaker
+// assignments when they are available.
 func buildMeetingReportSourceText(editedText, rawText string, speakerAssignments []meetingreports.SpeakerAssignment) string {
 	transcript := resolveMeetingSourceText(editedText, rawText)
 	parts := make([]string, 0, 2)
@@ -661,6 +687,7 @@ func buildMeetingReportSourceText(editedText, rawText string, speakerAssignments
 	return strings.TrimSpace(strings.Join(parts, "\n\n"))
 }
 
+// joinNameParts concatenates the non-empty name fragments into one label.
 func joinNameParts(parts ...string) string {
 	filtered := make([]string, 0, len(parts))
 	for _, part := range parts {
@@ -672,6 +699,8 @@ func joinNameParts(parts ...string) string {
 	return strings.Join(filtered, " ")
 }
 
+// normalizeMeetingFormats maps raw strings to the supported report formats and
+// removes duplicates.
 func normalizeMeetingFormats(values []string) []meetingreports.ReportFormat {
 	formats := meetingreports.NormalizeReportFormats(values)
 	if len(formats) == 0 {
@@ -680,6 +709,7 @@ func normalizeMeetingFormats(values []string) []meetingreports.ReportFormat {
 	return formats
 }
 
+// selectedFormatsToStrings converts report formats back to their wire values.
 func selectedFormatsToStrings(formats []meetingreports.ReportFormat) []string {
 	out := make([]string, 0, len(formats))
 	for _, format := range formats {
@@ -688,6 +718,7 @@ func selectedFormatsToStrings(formats []meetingreports.ReportFormat) []string {
 	return out
 }
 
+// normalizeRecipientEmails trims and validates recipient addresses.
 func normalizeRecipientEmails(values []string) ([]string, error) {
 	seen := map[string]struct{}{}
 	out := make([]string, 0, len(values))
@@ -713,6 +744,8 @@ func normalizeRecipientEmails(values []string) ([]string, error) {
 	return out, nil
 }
 
+// extractMeetingReportFormats returns the report formats carried by the request
+// payload.
 func extractMeetingReportFormats(reports []meetingReportEnvelope) []meetingreports.ReportFormat {
 	formats := make([]meetingreports.ReportFormat, 0, len(reports))
 	seen := map[meetingreports.ReportFormat]struct{}{}
@@ -733,6 +766,7 @@ func extractMeetingReportFormats(reports []meetingReportEnvelope) []meetingrepor
 	return formats
 }
 
+// buildMeetingSubject returns the email subject used for finalized meetings.
 func buildMeetingSubject(title string) string {
 	title = strings.TrimSpace(title)
 	if title == "" {
@@ -741,6 +775,8 @@ func buildMeetingSubject(title string) string {
 	return "Compte rendu de réunion - " + title
 }
 
+// buildMeetingEmailBodies renders the plain-text and HTML email bodies for the
+// finalization summary.
 func buildMeetingEmailBodies(title string, transcriptionSourceMode string, reports map[meetingreports.ReportFormat]meetingReportEnvelope) (string, string) {
 	summaryBullets := collectMeetingHighlights(reports)
 	reportFormats := extractMeetingReportFormatsFromMap(reports)
@@ -789,6 +825,8 @@ func buildMeetingEmailBodies(title string, transcriptionSourceMode string, repor
 	return strings.Join(textLines, "\n"), htmlBody
 }
 
+// collectMeetingHighlights extracts short summary bullets from the generated
+// reports.
 func collectMeetingHighlights(reports map[meetingreports.ReportFormat]meetingReportEnvelope) []string {
 	orderedFormats := meetingreports.AllReportFormats()
 	highlights := make([]string, 0, 3)
@@ -834,6 +872,7 @@ func collectMeetingHighlights(reports map[meetingreports.ReportFormat]meetingRep
 	return highlights
 }
 
+// extractMeetingReportFormatsFromMap returns the map keys as stable strings.
 func extractMeetingReportFormatsFromMap(reports map[meetingreports.ReportFormat]meetingReportEnvelope) []string {
 	formats := meetingreports.AllReportFormats()
 	out := make([]string, 0, len(formats))
@@ -850,6 +889,8 @@ func extractMeetingReportFormatsFromMap(reports map[meetingreports.ReportFormat]
 	return out
 }
 
+// transcriptionSourceModeLabel converts the source mode into a user-facing
+// label.
 func transcriptionSourceModeLabel(sourceMode string) string {
 	switch strings.ToLower(strings.TrimSpace(sourceMode)) {
 	case "local":
@@ -861,6 +902,8 @@ func transcriptionSourceModeLabel(sourceMode string) string {
 	}
 }
 
+// normalizeMeetingTranscriptionSource validates the transcription source and
+// provider combination expected by finalization.
 func normalizeMeetingTranscriptionSource(mode, provider string) (string, string, error) {
 	normalizedMode := strings.ToLower(strings.TrimSpace(mode))
 	normalizedProvider := strings.ToLower(strings.TrimSpace(provider))
@@ -887,6 +930,8 @@ func normalizeMeetingTranscriptionSource(mode, provider string) (string, string,
 	}
 }
 
+// normalizeProvidedMeetingReports validates pre-generated report payloads that
+// are submitted back by the client.
 func normalizeProvidedMeetingReports(inputs []meetingReportEnvelope) (map[meetingreports.ReportFormat]meetingReportEnvelope, error) {
 	if len(inputs) == 0 {
 		return map[meetingreports.ReportFormat]meetingReportEnvelope{}, nil
@@ -906,6 +951,8 @@ func normalizeProvidedMeetingReports(inputs []meetingReportEnvelope) (map[meetin
 	return out, nil
 }
 
+// normalizeProvidedMeetingReport validates one report payload and normalizes
+// the format metadata.
 func normalizeProvidedMeetingReport(input meetingReportEnvelope) (meetingReportEnvelope, error) {
 	formatCandidate := strings.TrimSpace(input.Format)
 	if formatCandidate == "" && input.Report.Format != "" {
@@ -941,6 +988,8 @@ func normalizeProvidedMeetingReport(input meetingReportEnvelope) (meetingReportE
 	}, nil
 }
 
+// buildMeetingReportEnvelopeList returns the requested formats in a stable
+// output order.
 func buildMeetingReportEnvelopeList(selectedFormats []meetingreports.ReportFormat, reports map[meetingreports.ReportFormat]meetingReportEnvelope) []meetingReportEnvelope {
 	out := make([]meetingReportEnvelope, 0, len(selectedFormats))
 	for _, format := range selectedFormats {
@@ -953,10 +1002,12 @@ func buildMeetingReportEnvelopeList(selectedFormats []meetingreports.ReportForma
 	return out
 }
 
+// approximateTokenCount provides a coarse estimate for logging and budgeting.
 func approximateTokenCount(text string) int {
 	return len(strings.Fields(strings.TrimSpace(text)))
 }
 
+// meetingReportMaxTokens clamps the model token budget to a safe range.
 func meetingReportMaxTokens(value int) int {
 	if value > 0 {
 		return value
@@ -964,6 +1015,7 @@ func meetingReportMaxTokens(value int) int {
 	return meetingreports.DefaultReportMaxTokens
 }
 
+// meetingReportTemperature clamps the model temperature to a valid range.
 func meetingReportTemperature(value float64) float64 {
 	if value < 0 || value > 2 {
 		return meetingreports.DefaultReportTemp
@@ -971,6 +1023,7 @@ func meetingReportTemperature(value float64) float64 {
 	return value
 }
 
+// generatorModelID returns the active upstream model ID or the default one.
 func generatorModelID(generator *meetingreports.Generator) string {
 	if generator == nil {
 		return meetingreports.DefaultReportModelID
@@ -981,6 +1034,8 @@ func generatorModelID(generator *meetingreports.Generator) string {
 	return strings.TrimSpace(generator.ModelID)
 }
 
+// extractTranscriptFilename picks the transcript attachment filename from the
+// attachment list.
 func extractTranscriptFilename(attachments []mailer.MailAttachment) string {
 	for _, attachment := range attachments {
 		if strings.HasPrefix(strings.ToLower(attachment.Filename), "transcription-") {
@@ -993,6 +1048,7 @@ func extractTranscriptFilename(attachments []mailer.MailAttachment) string {
 	return ""
 }
 
+// extractReportFilenames returns the report attachment filenames in order.
 func extractReportFilenames(attachments []mailer.MailAttachment) []string {
 	out := make([]string, 0, len(attachments))
 	for _, attachment := range attachments {
@@ -1004,6 +1060,8 @@ func extractReportFilenames(attachments []mailer.MailAttachment) []string {
 	return out
 }
 
+// summarizeAttachments returns a compact JSON-friendly summary for the
+// response body.
 func summarizeAttachments(attachments []mailer.MailAttachment) []meetingAttachmentResponse {
 	out := make([]meetingAttachmentResponse, 0, len(attachments))
 	for _, attachment := range attachments {
@@ -1016,6 +1074,7 @@ func summarizeAttachments(attachments []mailer.MailAttachment) []meetingAttachme
 	return out
 }
 
+// logMeetingStage emits a structured trace line for the meeting pipeline.
 func logMeetingStage(c *fiber.Ctx, route, traceID, step, title string, fields map[string]any) {
 	userID, orgID := demeterActorIDs(c)
 	ctx := requestContext(c)
@@ -1023,6 +1082,8 @@ func logMeetingStage(c *fiber.Ctx, route, traceID, step, title string, fields ma
 	backenderrors.RecordLog(ctx, "meetings", route, step, title, fields)
 }
 
+// recordMeetingActivityEvent persists an activity event that mirrors the
+// meeting-side action for admin analytics.
 func (a *App) recordMeetingActivityEvent(
 	claims *auth.Claims,
 	eventKind string,
@@ -1052,6 +1113,8 @@ func (a *App) recordMeetingActivityEvent(
 	return err
 }
 
+// meetingDraftErrorResponse maps report-generation errors to user-facing HTTP
+// responses.
 func (a *App) meetingDraftErrorResponse(c *fiber.Ctx, err error) error {
 	if err == nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{Error: "failed to generate report drafts"})
@@ -1062,6 +1125,8 @@ func (a *App) meetingDraftErrorResponse(c *fiber.Ctx, err error) error {
 	return c.Status(fiber.StatusBadGateway).JSON(ErrorResponse{Error: err.Error()})
 }
 
+// meetingFinalizeErrorResponse maps finalization errors to user-facing HTTP
+// responses.
 func (a *App) meetingFinalizeErrorResponse(c *fiber.Ctx, err error) error {
 	if err == nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{Error: "failed to finalize meeting"})
@@ -1079,6 +1144,8 @@ func (a *App) meetingFinalizeErrorResponse(c *fiber.Ctx, err error) error {
 	}
 }
 
+// finalizeMeetingSuccessResponse writes the completed finalization payload and
+// keeps the operation record in sync.
 func (a *App) finalizeMeetingSuccessResponse(c *fiber.Ctx, claims *auth.Claims, operationID string, response meetingFinalizeResponse) error {
 	body, err := json.Marshal(response)
 	if err != nil {
@@ -1101,6 +1168,8 @@ func (a *App) finalizeMeetingSuccessResponse(c *fiber.Ctx, claims *auth.Claims, 
 	return c.Status(fiber.StatusOK).Send(body)
 }
 
+// finalizeMeetingFailureResponse writes a terminal failure and records the
+// failure state for later replay.
 func (a *App) finalizeMeetingFailureResponse(c *fiber.Ctx, claims *auth.Claims, operationID string, statusCode int, message string) error {
 	message = strings.TrimSpace(message)
 	if message == "" {
@@ -1126,6 +1195,8 @@ func (a *App) finalizeMeetingFailureResponse(c *fiber.Ctx, claims *auth.Claims, 
 	return c.Status(statusCode).Send(body)
 }
 
+// meetingFinalizeFailureStatusCode maps an error to the HTTP status used for a
+// terminal finalize response.
 func meetingFinalizeFailureStatusCode(err error) int {
 	if err == nil {
 		return fiber.StatusInternalServerError

@@ -17,12 +17,16 @@ import (
 )
 
 func main() {
+	// The process loads configuration first so startup failures surface before
+	// any network listeners or background workers are created.
 	cfg := config.Load()
 	if err := run(context.Background(), cfg); err != nil {
 		os.Exit(1)
 	}
 }
 
+// buildApp assembles the Fiber application with shared middleware, route
+// groups, and the dependency bundle used by every handler.
 func buildApp(cfg config.Config, st *store.Store, mistralClient *mistral.Client, appMailer mailer.Sender) *fiber.App {
 	appCtx := &api.App{
 		Config:        cfg,
@@ -69,6 +73,8 @@ func buildApp(cfg config.Config, st *store.Store, mistralClient *mistral.Client,
 	return app
 }
 
+// joinOrigins turns a list of allowed origins into the comma-separated format
+// expected by Fiber's CORS middleware.
 func joinOrigins(origins []string) string {
 	if len(origins) == 0 {
 		return "*"
@@ -80,6 +86,8 @@ func joinOrigins(origins []string) string {
 	return result
 }
 
+// combineOrigins merges multiple origin lists while preserving order and
+// removing duplicates so app and admin CORS policy can share values safely.
 func combineOrigins(groups ...[]string) []string {
 	seen := map[string]struct{}{}
 	out := make([]string, 0)

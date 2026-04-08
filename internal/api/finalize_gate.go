@@ -27,6 +27,8 @@ type meetingFinalizeOperationStatusResponse struct {
 	ExpiresAt   string          `json:"expiresAt,omitempty"`
 }
 
+// finalizeMeetingOperationGate claims an idempotent meeting finalization
+// operation before the main handler runs.
 func (a *App) finalizeMeetingOperationGate() fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		traceID := requestTraceID(c)
@@ -109,6 +111,8 @@ func (a *App) finalizeMeetingOperationGate() fiber.Handler {
 	}
 }
 
+// getFinalizeMeetingOperationStatus returns the stored state for one finalize
+// operation.
 func (a *App) getFinalizeMeetingOperationStatus(c *fiber.Ctx) error {
 	traceID := requestTraceID(c)
 	logMeetingStage(c, meetingFinalizeOperationStatusRoute, traceID, "request_received", "", nil)
@@ -173,6 +177,8 @@ func (a *App) getFinalizeMeetingOperationStatus(c *fiber.Ctx) error {
 	return c.Status(fiber.StatusOK).JSON(response)
 }
 
+// requestFinalizeOperationID resolves the idempotency key from the path, the
+// dedicated header, or Fiber locals.
 func requestFinalizeOperationID(c *fiber.Ctx) string {
 	if c == nil {
 		return ""
@@ -189,6 +195,8 @@ func requestFinalizeOperationID(c *fiber.Ctx) string {
 	return ""
 }
 
+// sendStoredMeetingFinalizeOperation replays a previously completed finalize
+// response verbatim.
 func sendStoredMeetingFinalizeOperation(c *fiber.Ctx, record *store.MeetingFinalizeOperationRecord) error {
 	if c == nil || record == nil {
 		return fiber.NewError(fiber.StatusInternalServerError, "failed to replay meeting finalization")

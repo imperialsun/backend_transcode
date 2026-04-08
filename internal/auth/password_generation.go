@@ -7,7 +7,7 @@ import (
 )
 
 // GenerateTemporaryPassword returns a cryptographically random password that is
-// safe to type and safe to put in URLs or emails without extra escaping.
+// safe to type and safe to embed in URLs or emails without extra escaping.
 func GenerateTemporaryPassword(byteLen int) (string, error) {
 	if byteLen < 16 {
 		byteLen = 16

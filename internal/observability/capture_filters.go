@@ -2,8 +2,8 @@ package observability
 
 import "strings"
 
-// ShouldSkipObservabilityCaptureRoute reports whether a route should stay out of
-// persisted backend error/performance tables.
+// ShouldSkipObservabilityCaptureRoute reports whether a route should stay out
+// of persisted backend error and performance tables.
 func ShouldSkipObservabilityCaptureRoute(route string) bool {
 	normalized := strings.TrimSpace(route)
 	if normalized == "" {

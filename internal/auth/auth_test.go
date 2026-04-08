@@ -5,6 +5,7 @@ import (
 	"time"
 )
 
+// These tests cover the core token, password, and reset-token helpers.
 func TestHashAndVerifyPassword(t *testing.T) {
 	hash, err := HashPassword("StrongPass123!")
 	if err != nil {

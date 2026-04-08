@@ -10,6 +10,8 @@ import (
 	"time"
 )
 
+// These tests cover timeout defaults and upstream error summarization for the
+// Mistral client wrapper.
 func TestNewClient_DefaultTimeouts(t *testing.T) {
 	client := NewClient("https://api.mistral.ai", "key", 0, 0)
 
@@ -21,6 +23,8 @@ func TestNewClient_DefaultTimeouts(t *testing.T) {
 	}
 }
 
+// TestSummarizeUpstreamBody_JSONMessage verifies that structured error bodies
+// are reduced to a concise summary string.
 func TestSummarizeUpstreamBody_JSONMessage(t *testing.T) {
 	body := []byte(`{"error":{"message":"rate limit exceeded"}}`)
 	summary, preview := summarizeUpstreamBody(body)
@@ -33,6 +37,8 @@ func TestSummarizeUpstreamBody_JSONMessage(t *testing.T) {
 	}
 }
 
+// TestSummarizeUpstreamBody_JSONDetailArray verifies that nested detail arrays
+// are flattened into a readable message.
 func TestSummarizeUpstreamBody_JSONDetailArray(t *testing.T) {
 	body := []byte(`{"detail":[{"loc":["body","model"],"msg":"field required"},{"msg":"invalid request"}]}`)
 	summary, _ := summarizeUpstreamBody(body)
@@ -42,6 +48,8 @@ func TestSummarizeUpstreamBody_JSONDetailArray(t *testing.T) {
 	}
 }
 
+// TestSummarizeUpstreamBody_TextFallback verifies that plain-text bodies are
+// preserved as the error summary.
 func TestSummarizeUpstreamBody_TextFallback(t *testing.T) {
 	body := []byte("upstream gateway timeout")
 	summary, preview := summarizeUpstreamBody(body)
@@ -54,6 +62,8 @@ func TestSummarizeUpstreamBody_TextFallback(t *testing.T) {
 	}
 }
 
+// TestClientDoGet_UsesRequestTimeout verifies that the standard request timeout
+// is applied to GET requests.
 func TestClientDoGet_UsesRequestTimeout(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(80 * time.Millisecond)
@@ -72,6 +82,8 @@ func TestClientDoGet_UsesRequestTimeout(t *testing.T) {
 	}
 }
 
+// TestClientDoMultipart_UsesMultipartTimeout verifies that multipart requests
+// use the longer audio timeout.
 func TestClientDoMultipart_UsesMultipartTimeout(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(80 * time.Millisecond)

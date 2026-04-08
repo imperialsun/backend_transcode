@@ -2,6 +2,7 @@ package rbac
 
 import "testing"
 
+// This test covers the tiny permission and role membership helpers.
 func TestHasPermissionAndRole(t *testing.T) {
 	perms := []string{"foo", "bar"}
 	if !HasPermission(perms, "foo") {

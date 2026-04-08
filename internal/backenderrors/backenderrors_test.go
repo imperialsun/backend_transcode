@@ -14,6 +14,8 @@ import (
 	"demeter-backend/internal/store"
 )
 
+// These integration-style tests verify that backend-error capture persists the
+// right rows and skips the expected success-only lifecycle steps.
 func TestRecordLogPersistsCapturedBackendErrors(t *testing.T) {
 	ctx := context.Background()
 	dbPath := filepath.Join(t.TempDir(), "backenderrors.sqlite")
@@ -142,6 +144,8 @@ func TestRecordLogCapturesErrorLifecycleSteps(t *testing.T) {
 	}
 }
 
+// waitForBackendErrorEvent polls the store until the asynchronous capture
+// goroutine has written the expected row.
 func waitForBackendErrorEvent(t *testing.T, st *store.Store, traceID string) *store.BackendErrorEvent {
 	t.Helper()
 

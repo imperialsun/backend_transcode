@@ -11,6 +11,7 @@ import (
 	"demeter-backend/internal/store"
 )
 
+// App bundles the dependencies shared by every API handler.
 type App struct {
 	Config        config.Config
 	Store         *store.Store
@@ -18,6 +19,7 @@ type App struct {
 	Mailer        mailer.Sender
 }
 
+// ErrorResponse is the common JSON envelope returned for user-facing failures.
 type ErrorResponse struct {
 	Error         string `json:"error"`
 	Code          string `json:"code,omitempty"`
@@ -28,6 +30,7 @@ type ErrorResponse struct {
 	MimeType      string `json:"mimeType,omitempty"`
 }
 
+// AuthResponse is the standard login and session refresh response.
 type AuthResponse struct {
 	User         AuthUser `json:"user"`
 	Organization AuthOrg  `json:"organization"`
@@ -38,12 +41,14 @@ type AuthResponse struct {
 	RuntimeMode  string   `json:"runtimeMode"`
 }
 
+// AuthUser is the user portion of the auth response.
 type AuthUser struct {
 	ID     string `json:"id"`
 	Email  string `json:"email"`
 	Status string `json:"status"`
 }
 
+// AuthOrg is the organization portion of the auth response.
 type AuthOrg struct {
 	ID     string `json:"id"`
 	Name   string `json:"name"`
@@ -51,6 +56,7 @@ type AuthOrg struct {
 	Status string `json:"status"`
 }
 
+// SettingsEnvelope wraps the settings document with versioning metadata.
 type SettingsEnvelope struct {
 	Version       int             `json:"version"`
 	SchemaVersion int             `json:"schemaVersion"`
@@ -58,6 +64,8 @@ type SettingsEnvelope struct {
 	Settings      json.RawMessage `json:"settings"`
 }
 
+// toSettingsEnvelope converts a persisted settings record into the response
+// shape expected by the frontends.
 func toSettingsEnvelope(rec *store.SettingsRecord) SettingsEnvelope {
 	if rec == nil {
 		return SettingsEnvelope{

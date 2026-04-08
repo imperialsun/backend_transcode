@@ -39,6 +39,8 @@ const (
 
 var demeterAudioTransportSessions sync.Map
 
+// demeterAudioTransportOwnershipError reports that the current request tried to
+// mutate a slice upload session owned by another actor.
 type demeterAudioTransportOwnershipError struct {
 	UploadID              string
 	RequestOrganizationID string
@@ -49,10 +51,13 @@ type demeterAudioTransportOwnershipError struct {
 	Source                string
 }
 
+// Error returns the canonical ownership-mismatch message.
 func (e *demeterAudioTransportOwnershipError) Error() string {
 	return "upload session owned by another user"
 }
 
+// LogFields renders the ownership mismatch in the shape expected by the
+// structured logs.
 func (e *demeterAudioTransportOwnershipError) LogFields() map[string]any {
 	if e == nil {
 		return map[string]any{}
@@ -73,6 +78,8 @@ func (e *demeterAudioTransportOwnershipError) LogFields() map[string]any {
 	return fields
 }
 
+// newDemeterAudioTransportOwnershipError captures the stored owner details for
+// later diagnostics.
 func newDemeterAudioTransportOwnershipError(source, reason, uploadID, requestOrgID, requestUserID string, session *demeterAudioTransportSession) *demeterAudioTransportOwnershipError {
 	err := &demeterAudioTransportOwnershipError{
 		UploadID:              strings.TrimSpace(uploadID),
@@ -94,6 +101,8 @@ func newDemeterAudioTransportOwnershipError(source, reason, uploadID, requestOrg
 	return err
 }
 
+// demeterAudioTransportSliceRequest carries the metadata for one uploaded
+// slice.
 type demeterAudioTransportSliceRequest struct {
 	UploadID              string
 	SliceIndex            int
@@ -107,6 +116,8 @@ type demeterAudioTransportSliceRequest struct {
 	AudioDurationProvided bool
 }
 
+// demeterAudioTransportSession tracks the slices and reconstruction state for
+// one backend audio upload.
 type demeterAudioTransportSession struct {
 	mu                    sync.Mutex
 	uploadID              string
@@ -133,6 +144,7 @@ type demeterAudioTransportSession struct {
 	cleanupOnce           sync.Once
 }
 
+// cleanup removes the temporary files that belong to the session.
 func (s *demeterAudioTransportSession) cleanup() {
 	if s == nil {
 		return
@@ -144,14 +156,19 @@ func (s *demeterAudioTransportSession) cleanup() {
 	})
 }
 
+// demeterAudioTransportRootDir returns the base directory used for upload
+// sessions.
 func demeterAudioTransportRootDir() string {
 	return filepath.Join(os.TempDir(), demeterAudioTransportSessionRootDirName)
 }
 
+// demeterAudioTransportSessionDir derives the per-upload session directory.
 func demeterAudioTransportSessionDir(uploadID string) string {
 	return filepath.Join(demeterAudioTransportRootDir(), sanitizeDemeterAudioTransportUploadID(uploadID))
 }
 
+// sanitizeDemeterAudioTransportUploadID strips path separators from upload IDs
+// before they are used in file paths.
 func sanitizeDemeterAudioTransportUploadID(uploadID string) string {
 	trimmed := strings.TrimSpace(uploadID)
 	if trimmed == "" {
@@ -167,14 +184,18 @@ func sanitizeDemeterAudioTransportUploadID(uploadID string) string {
 	}, trimmed)
 }
 
+// demeterAudioTransportSliceFileName returns the stable filename used for one
+// uploaded slice.
 func demeterAudioTransportSliceFileName(sliceIndex int) string {
 	return fmt.Sprintf("slice_%06d%s", sliceIndex+1, demeterAudioTransportSliceFileExt)
 }
 
+// demeterAudioTransportSlicePath returns the on-disk path for a slice file.
 func demeterAudioTransportSlicePath(tempDir string, sliceIndex int) string {
 	return filepath.Join(tempDir, demeterAudioTransportSliceFileName(sliceIndex))
 }
 
+// demeterAudioTransportTotalBytes sums the stored slice sizes for a session.
 func demeterAudioTransportTotalBytes(tempDir string, sliceCount int) int64 {
 	if sliceCount <= 0 {
 		return 0
@@ -191,10 +212,14 @@ func demeterAudioTransportTotalBytes(tempDir string, sliceCount int) int64 {
 	return total
 }
 
+// isDemeterAudioSliceTransport reports whether the request selected the slice
+// transport contract.
 func isDemeterAudioSliceTransport(c *fiber.Ctx) bool {
 	return strings.EqualFold(strings.TrimSpace(c.Get(demeterAudioTransportHeader)), demeterAudioTransportModeSliceV1)
 }
 
+// cleanupExpiredDemeterAudioTransportSessions removes sessions that have not
+// been updated within the retention window.
 func cleanupExpiredDemeterAudioTransportSessions(now time.Time) {
 	demeterAudioTransportSessions.Range(func(key, value any) bool {
 		session, ok := value.(*demeterAudioTransportSession)
@@ -214,6 +239,8 @@ func cleanupExpiredDemeterAudioTransportSessions(now time.Time) {
 	})
 }
 
+// parseDemeterAudioTransportSliceRequest validates the multipart headers and
+// extracts the slice metadata.
 func parseDemeterAudioTransportSliceRequest(c *fiber.Ctx) (*demeterAudioTransportSliceRequest, error) {
 	if c == nil {
 		return nil, fmt.Errorf("missing request context")
@@ -292,6 +319,8 @@ func parseDemeterAudioTransportSliceRequest(c *fiber.Ctx) (*demeterAudioTranspor
 	}, nil
 }
 
+// getOrCreateDemeterAudioTransportSession loads the in-memory session or
+// creates a new one when the upload is seen for the first time.
 func getOrCreateDemeterAudioTransportSession(
 	uploadID string,
 	orgID string,
@@ -350,6 +379,8 @@ func getOrCreateDemeterAudioTransportSession(
 	return session, nil
 }
 
+// storeDemeterAudioTransportSlice writes one slice to disk and updates the
+// session bookkeeping.
 func storeDemeterAudioTransportSlice(session *demeterAudioTransportSession, req *demeterAudioTransportSliceRequest, fileHeader *multipart.FileHeader) (int64, error) {
 	if session == nil {
 		return 0, fmt.Errorf("missing transport session")
@@ -444,6 +475,8 @@ func storeDemeterAudioTransportSlice(session *demeterAudioTransportSession, req 
 	return sizeCopied, nil
 }
 
+// demeterTransportSessionSlicePaths returns the ordered list of slice file
+// paths that belong to the session.
 func demeterTransportSessionSlicePaths(session *demeterAudioTransportSession) ([]string, error) {
 	if session == nil {
 		return nil, fmt.Errorf("missing transport session")
@@ -471,6 +504,8 @@ func demeterTransportSessionSlicePaths(session *demeterAudioTransportSession) ([
 	return paths, nil
 }
 
+// demeterAudioSourceFileExt infers the source extension from the MIME type or
+// filename.
 func demeterAudioSourceFileExt(fileName, mimeType string) string {
 	switch resolveDemeterAudioKind(fileName, mimeType) {
 	case "mp3":
@@ -490,6 +525,8 @@ func demeterAudioSourceFileExt(fileName, mimeType string) string {
 	}
 }
 
+// buildDemeterBackendAudioUploadFromTransportSession converts the stored slices
+// into a reconstructed upload description for backend processing.
 func buildDemeterBackendAudioUploadFromTransportSession(
 	logCtx demeterAudioLogContext,
 	route string,
@@ -625,6 +662,8 @@ func buildDemeterBackendAudioUploadFromTransportSession(
 	return loggedUpload, nil
 }
 
+// startDemeterAudioTransportTranscriptionOperation moves the transport session
+// into the long-running transcription pipeline.
 func (a *App) startDemeterAudioTransportTranscriptionOperation(
 	c *fiber.Ctx,
 	logCtx demeterAudioLogContext,
@@ -739,6 +778,8 @@ func (a *App) startDemeterAudioTransportTranscriptionOperation(
 	})
 }
 
+// runDemeterAudioTransportTranscriptionOperation reconstructs the audio source
+// and delegates to the backend transcription path.
 func (a *App) runDemeterAudioTransportTranscriptionOperation(
 	ctx context.Context,
 	baseLogCtx demeterAudioLogContext,
@@ -1091,6 +1132,8 @@ func (a *App) runDemeterAudioTransportTranscriptionOperation(
 	)
 }
 
+// demeterAudioTranscriptionsTransportSlice is the slice-transport entrypoint
+// used by the front door handler.
 func (a *App) demeterAudioTranscriptionsTransportSlice(
 	c *fiber.Ctx,
 	route string,

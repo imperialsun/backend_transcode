@@ -8,36 +8,54 @@ import (
 )
 
 type Config struct {
-	AppEnv                 string
-	Port                   string
-	BodyLimitBytes         int
-	SQLitePath             string
-	JWTSecret              string
-	AccessTTL              time.Duration
-	RefreshTTL             time.Duration
-	AdminAccessTTL         time.Duration
-	AdminRefreshTTL        time.Duration
-	CookieSecure           bool
-	AppCORSOrigins         []string
-	AdminCORSOrigins       []string
-	MistralAPIBaseURL      string
-	MistralAPIKey          string
-	MistralRequestTimeout  time.Duration
-	MistralAudioTimeout    time.Duration
-	SMTPHost               string
-	SMTPPort               int
-	SMTPUsername           string
-	SMTPPassword           string
-	SMTPFromEmail          string
-	SMTPFromName           string
-	AppPublicURL           string
-	AdminPublicURL         string
-	PasswordResetTTL       time.Duration
+	// AppEnv selects the runtime profile and controls a few safe defaults.
+	AppEnv string
+	// Port is the HTTP listen port used by the Fiber server.
+	Port string
+	// BodyLimitBytes caps request bodies before they reach handler logic.
+	BodyLimitBytes int
+	// SQLitePath points to the single backend database file.
+	SQLitePath string
+	// JWTSecret signs access tokens.
+	JWTSecret string
+	// AccessTTL and refresh TTLs define the lifetime of app sessions.
+	AccessTTL  time.Duration
+	RefreshTTL time.Duration
+	// AdminAccessTTL and AdminRefreshTTL are intentionally shorter and separate
+	// from app sessions because the admin surface carries higher privilege.
+	AdminAccessTTL  time.Duration
+	AdminRefreshTTL time.Duration
+	// CookieSecure toggles the Secure flag on auth cookies.
+	CookieSecure bool
+	// AppCORSOrigins and AdminCORSOrigins gate browser access for the two UIs.
+	AppCORSOrigins   []string
+	AdminCORSOrigins []string
+	// Mistral settings configure the upstream provider relay.
+	MistralAPIBaseURL     string
+	MistralAPIKey         string
+	MistralRequestTimeout time.Duration
+	MistralAudioTimeout   time.Duration
+	// SMTP settings configure password-reset, meeting, and provisioning emails.
+	SMTPHost      string
+	SMTPPort      int
+	SMTPUsername  string
+	SMTPPassword  string
+	SMTPFromEmail string
+	SMTPFromName  string
+	// Public URLs are embedded in transactional emails and reset links.
+	AppPublicURL   string
+	AdminPublicURL string
+	// PasswordResetTTL controls how long reset tokens remain valid.
+	PasswordResetTTL time.Duration
+	// Bootstrap values seed the first admin organization when the database is
+	// empty.
 	BootstrapAdminEmail    string
 	BootstrapAdminPassword string
 	BootstrapOrgName       string
 }
 
+// Load reads environment variables once at startup and fills in a fully
+// usable configuration with conservative defaults.
 func Load() Config {
 	appEnv := getEnv("APP_ENV", "development")
 	legacyAppOrigins := getEnv("CORS_ORIGINS", "http://localhost:3000,http://localhost:4173")
@@ -74,6 +92,8 @@ func Load() Config {
 	return cfg
 }
 
+// getEnv returns the trimmed environment value when present, otherwise the
+// supplied fallback.
 func getEnv(key, fallback string) string {
 	v := strings.TrimSpace(os.Getenv(key))
 	if v == "" {
@@ -82,6 +102,8 @@ func getEnv(key, fallback string) string {
 	return v
 }
 
+// getEnvInt parses an integer environment variable and falls back on invalid
+// or missing input.
 func getEnvInt(key string, fallback int) int {
 	v := strings.TrimSpace(os.Getenv(key))
 	if v == "" {
@@ -94,6 +116,7 @@ func getEnvInt(key string, fallback int) int {
 	return parsed
 }
 
+// getEnvBool accepts the common truthy spellings used in shell environments.
 func getEnvBool(key string, fallback bool) bool {
 	v := strings.ToLower(strings.TrimSpace(os.Getenv(key)))
 	if v == "" {
@@ -102,6 +125,8 @@ func getEnvBool(key string, fallback bool) bool {
 	return v == "1" || v == "true" || v == "yes" || v == "on"
 }
 
+// splitCSV normalizes a comma-separated list of origins or returns a wildcard
+// fallback when nothing usable is configured.
 func splitCSV(value string) []string {
 	parts := strings.Split(value, ",")
 	out := make([]string, 0, len(parts))

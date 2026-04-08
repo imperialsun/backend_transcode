@@ -16,6 +16,8 @@ import (
 	"golang.org/x/crypto/argon2"
 )
 
+// SessionType identifies which cookie names, token audience, and route family a
+// token belongs to.
 type SessionType string
 
 const (
@@ -35,6 +37,8 @@ const (
 	AdminCSRFHeaderName    = "X-Admin-CSRF"
 )
 
+// Claims carries the live authorization context embedded in access tokens.
+// The server refreshes roles and permissions from the database on each request.
 type Claims struct {
 	UserID      string   `json:"uid"`
 	OrgID       string   `json:"oid"`
@@ -50,6 +54,7 @@ func (s SessionType) String() string {
 	return string(s)
 }
 
+// AccessCookieName returns the access-token cookie name for the session type.
 func (s SessionType) AccessCookieName() string {
 	if s == SessionTypeAdmin {
 		return AdminAccessCookieName
@@ -57,6 +62,7 @@ func (s SessionType) AccessCookieName() string {
 	return AppAccessCookieName
 }
 
+// RefreshCookieName returns the refresh-token cookie name for the session type.
 func (s SessionType) RefreshCookieName() string {
 	if s == SessionTypeAdmin {
 		return AdminRefreshCookieName
@@ -64,6 +70,8 @@ func (s SessionType) RefreshCookieName() string {
 	return AppRefreshCookieName
 }
 
+// AccessCookiePath returns the cookie path that scopes access tokens to the
+// right route family.
 func (s SessionType) AccessCookiePath() string {
 	if s == SessionTypeAdmin {
 		return AdminAccessCookiePath
@@ -71,6 +79,8 @@ func (s SessionType) AccessCookiePath() string {
 	return AppAccessCookiePath
 }
 
+// RefreshCookiePath returns the cookie path that scopes refresh tokens to the
+// auth sub-routes.
 func (s SessionType) RefreshCookiePath() string {
 	if s == SessionTypeAdmin {
 		return AdminRefreshCookiePath
@@ -78,6 +88,8 @@ func (s SessionType) RefreshCookiePath() string {
 	return AppRefreshCookiePath
 }
 
+// HashPassword hashes a user password with Argon2id and enforces a minimum
+// password length before any expensive work is done.
 func HashPassword(password string) (string, error) {
 	password = strings.TrimSpace(password)
 	if len(password) < 8 {
@@ -93,6 +105,8 @@ func HashPassword(password string) (string, error) {
 		base64.RawStdEncoding.EncodeToString(key)), nil
 }
 
+// VerifyPassword compares a stored Argon2id hash with a candidate password in
+// constant time.
 func VerifyPassword(encodedHash, password string) bool {
 	parts := strings.Split(encodedHash, "$")
 	if len(parts) != 5 || parts[0] != "argon2id" {
@@ -110,6 +124,8 @@ func VerifyPassword(encodedHash, password string) bool {
 	return subtle.ConstantTimeCompare(stored, candidate) == 1
 }
 
+// NewAccessToken creates a signed JWT access token and returns its expiry time
+// alongside the serialized token.
 func NewAccessToken(secret string, ttl time.Duration, claims Claims) (string, time.Time, error) {
 	now := time.Now().UTC()
 	expiresAt := now.Add(ttl)
@@ -131,6 +147,8 @@ func NewAccessToken(secret string, ttl time.Duration, claims Claims) (string, ti
 	return signed, expiresAt, nil
 }
 
+// ParseAccessToken validates the JWT signature and unmarshals the embedded
+// authorization claims.
 func ParseAccessToken(secret, raw string) (*Claims, error) {
 	claims := &Claims{}
 	token, err := jwt.ParseWithClaims(raw, claims, func(t *jwt.Token) (any, error) {
@@ -148,6 +166,8 @@ func ParseAccessToken(secret, raw string) (*Claims, error) {
 	return claims, nil
 }
 
+// HasAudience checks whether the token was minted for the expected session
+// type, which prevents app and admin tokens from being mixed.
 func HasAudience(claims *Claims, sessionType SessionType) bool {
 	if claims == nil {
 		return false
@@ -161,6 +181,8 @@ func HasAudience(claims *Claims, sessionType SessionType) bool {
 	return false
 }
 
+// RefreshTokenPayload contains the raw refresh token and its hashed database
+// representation.
 type RefreshTokenPayload struct {
 	SessionID string
 	RawToken  string
@@ -168,6 +190,8 @@ type RefreshTokenPayload struct {
 	ExpiresAt time.Time
 }
 
+// NewRefreshToken generates a random token, derives its database hash, and
+// returns the session identifier used for refresh-session storage.
 func NewRefreshToken(ttl time.Duration) (*RefreshTokenPayload, error) {
 	sessionID := uuid.NewString()
 	raw := make([]byte, 48)
@@ -185,6 +209,7 @@ func NewRefreshToken(ttl time.Duration) (*RefreshTokenPayload, error) {
 	}, nil
 }
 
+// NewCSRFToken produces a cryptographically random token suitable for headers.
 func NewCSRFToken() (string, error) {
 	raw := make([]byte, 32)
 	if _, err := rand.Read(raw); err != nil {
@@ -193,6 +218,8 @@ func NewCSRFToken() (string, error) {
 	return base64.RawStdEncoding.EncodeToString(raw), nil
 }
 
+// ParseRefreshToken splits the persisted raw format into the session ID and the
+// secret token portion.
 func ParseRefreshToken(raw string) (sessionID string, token string, err error) {
 	parts := strings.Split(raw, ".")
 	if len(parts) != 2 {
@@ -204,10 +231,13 @@ func ParseRefreshToken(raw string) (sessionID string, token string, err error) {
 	return parts[0], parts[1], nil
 }
 
+// HashRefreshToken hashes the refresh token exactly as the database stores it.
 func HashRefreshToken(raw string) string {
 	return sha256Hex(raw)
 }
 
+// VerifyRefreshHash compares a stored refresh-token hash with the candidate in
+// constant time.
 func VerifyRefreshHash(hash, raw string) bool {
 	candidate := sha256Hex(raw)
 	return subtle.ConstantTimeCompare([]byte(hash), []byte(candidate)) == 1

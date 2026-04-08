@@ -32,6 +32,8 @@ func captureTestLogOutput(t *testing.T) *bytes.Buffer {
 	return &buf
 }
 
+// This test exercises the shutdown path with a fake listener so the log trace
+// order can be verified without opening a real socket.
 func TestRunServerLifecycle_LogsTraceSteps(t *testing.T) {
 	var buf bytes.Buffer
 	previousWriter := log.Writer()
@@ -92,6 +94,8 @@ type fakeMeetingFinalizeOperationPurger struct {
 	err    error
 }
 
+// fakeMeetingFinalizeOperationPurger lets the cleanup loop be tested without a
+// database by returning a controlled purge result.
 func (p fakeMeetingFinalizeOperationPurger) PurgeExpiredMeetingFinalizeOperations(context.Context, time.Time) (int64, error) {
 	return p.purged, p.err
 }
@@ -102,11 +106,15 @@ type fakeBackendErrorEventPurger struct {
 	calls  int64
 }
 
+// fakeBackendErrorEventPurger tracks how many times the periodic cleanup loop
+// invokes the purge hook.
 func (p *fakeBackendErrorEventPurger) PurgeExpiredBackendErrorEvents(context.Context, time.Time) (int64, error) {
 	atomic.AddInt64(&p.calls, 1)
 	return p.purged, p.err
 }
 
+// These tests assert that the lifecycle cleanup helpers emit the expected
+// structured log entries for both successful and partial-failure cases.
 func TestRunMeetingFinalizeOperationCleanupOnce_LogsTraceSteps(t *testing.T) {
 	buf := captureTestLogOutput(t)
 

@@ -10,6 +10,8 @@ import (
 	"github.com/gofiber/fiber/v2"
 )
 
+// RequestTimeout wraps a handler with a context deadline, except for routes
+// that need longer processing budgets.
 func (a *App) RequestTimeout(timeout time.Duration) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		if timeout <= 0 || shouldSkipRequestTimeout(c.Path()) {
@@ -30,6 +32,8 @@ func (a *App) RequestTimeout(timeout time.Duration) fiber.Handler {
 	}
 }
 
+// shouldSkipRequestTimeout identifies routes that are expected to outlive the
+// generic request budget.
 func shouldSkipRequestTimeout(path string) bool {
 	normalized := strings.TrimSpace(path)
 	if normalized == "" {
@@ -55,6 +59,8 @@ func shouldSkipRequestTimeout(path string) bool {
 	}
 }
 
+// logRequestTimeout records a timeout event with enough context to diagnose the
+// downstream call that exceeded the budget.
 func (a *App) logRequestTimeout(c *fiber.Ctx, startedAt time.Time, timeout time.Duration, timeoutErr error, downstreamErr error) {
 	claims := MustClaims(c)
 	deadlineUTC := "-"
@@ -86,6 +92,8 @@ func (a *App) logRequestTimeout(c *fiber.Ctx, startedAt time.Time, timeout time.
 	})
 }
 
+// requestSessionName infers whether the request belongs to the app or admin
+// session family.
 func requestSessionName(c *fiber.Ctx, claims *auth.Claims) string {
 	if claims != nil {
 		if auth.HasAudience(claims, auth.SessionTypeAdmin) {
