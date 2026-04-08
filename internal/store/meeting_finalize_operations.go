@@ -49,45 +49,47 @@ func (s *Store) ClaimMeetingFinalizeOperation(ctx context.Context, operationID, 
 		return nil, fmt.Errorf("operation_id, organization_id and user_id are required")
 	}
 
-	logStoreStep(ctx, "finalize_claim_start", "meeting_finalize_operation", map[string]any{
-		"operation_id":    operationID,
-		"organization_id": organizationID,
-		"user_id":         userID,
+	return withSQLiteRetry(ctx, func() (*MeetingFinalizeOperationClaimResult, error) {
+		logStoreStep(ctx, "finalize_claim_start", "meeting_finalize_operation", map[string]any{
+			"operation_id":    operationID,
+			"organization_id": organizationID,
+			"user_id":         userID,
+		})
+
+		tx, err := s.DB.BeginTx(ctx, nil)
+		if err != nil {
+			logStoreStep(ctx, "finalize_claim_error", "meeting_finalize_operation", map[string]any{
+				"operation_id": operationID,
+				"error":        err,
+			})
+			return nil, err
+		}
+		defer rollbackTx(tx)
+
+		result, err := claimOrGetMeetingFinalizeOperationTx(ctx, tx, operationID, organizationID, userID, now, true)
+		if err != nil {
+			logStoreStep(ctx, "finalize_claim_error", "meeting_finalize_operation", map[string]any{
+				"operation_id": operationID,
+				"error":        err,
+			})
+			return nil, err
+		}
+
+		if err := tx.Commit(); err != nil {
+			logStoreStep(ctx, "finalize_claim_error", "meeting_finalize_operation", map[string]any{
+				"operation_id": operationID,
+				"error":        err,
+			})
+			return nil, err
+		}
+
+		logStoreStep(ctx, "finalize_claim_success", "meeting_finalize_operation", map[string]any{
+			"operation_id": operationID,
+			"status":       result.Record.Status,
+			"claimed":      result.Claimed,
+		})
+		return result, nil
 	})
-
-	tx, err := s.DB.BeginTx(ctx, nil)
-	if err != nil {
-		logStoreStep(ctx, "finalize_claim_error", "meeting_finalize_operation", map[string]any{
-			"operation_id": operationID,
-			"error":        err,
-		})
-		return nil, err
-	}
-	defer rollbackTx(tx)
-
-	result, err := claimOrGetMeetingFinalizeOperationTx(ctx, tx, operationID, organizationID, userID, now, true)
-	if err != nil {
-		logStoreStep(ctx, "finalize_claim_error", "meeting_finalize_operation", map[string]any{
-			"operation_id": operationID,
-			"error":        err,
-		})
-		return nil, err
-	}
-
-	if err := tx.Commit(); err != nil {
-		logStoreStep(ctx, "finalize_claim_error", "meeting_finalize_operation", map[string]any{
-			"operation_id": operationID,
-			"error":        err,
-		})
-		return nil, err
-	}
-
-	logStoreStep(ctx, "finalize_claim_success", "meeting_finalize_operation", map[string]any{
-		"operation_id": operationID,
-		"status":       result.Record.Status,
-		"claimed":      result.Claimed,
-	})
-	return result, nil
 }
 
 func (s *Store) GetMeetingFinalizeOperation(ctx context.Context, operationID, organizationID, userID string, now time.Time) (*MeetingFinalizeOperationRecord, error) {
@@ -99,57 +101,59 @@ func (s *Store) GetMeetingFinalizeOperation(ctx context.Context, operationID, or
 		return nil, fmt.Errorf("operation_id, organization_id and user_id are required")
 	}
 
-	logStoreStep(ctx, "finalize_get_start", "meeting_finalize_operation", map[string]any{
-		"operation_id":    operationID,
-		"organization_id": organizationID,
-		"user_id":         userID,
-	})
-
-	tx, err := s.DB.BeginTx(ctx, nil)
-	if err != nil {
-		logStoreStep(ctx, "finalize_get_error", "meeting_finalize_operation", map[string]any{
-			"operation_id": operationID,
-			"error":        err,
+	return withSQLiteRetry(ctx, func() (*MeetingFinalizeOperationRecord, error) {
+		logStoreStep(ctx, "finalize_get_start", "meeting_finalize_operation", map[string]any{
+			"operation_id":    operationID,
+			"organization_id": organizationID,
+			"user_id":         userID,
 		})
-		return nil, err
-	}
-	defer rollbackTx(tx)
 
-	result, err := claimOrGetMeetingFinalizeOperationTx(ctx, tx, operationID, organizationID, userID, now, false)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			if commitErr := tx.Commit(); commitErr != nil {
-				logStoreStep(ctx, "finalize_get_error", "meeting_finalize_operation", map[string]any{
-					"operation_id": operationID,
-					"error":        commitErr,
-				})
-				return nil, commitErr
-			}
-			logStoreStep(ctx, "finalize_get_missing", "meeting_finalize_operation", map[string]any{
+		tx, err := s.DB.BeginTx(ctx, nil)
+		if err != nil {
+			logStoreStep(ctx, "finalize_get_error", "meeting_finalize_operation", map[string]any{
 				"operation_id": operationID,
+				"error":        err,
 			})
-			return nil, sql.ErrNoRows
+			return nil, err
 		}
-		logStoreStep(ctx, "finalize_get_error", "meeting_finalize_operation", map[string]any{
-			"operation_id": operationID,
-			"error":        err,
-		})
-		return nil, err
-	}
+		defer rollbackTx(tx)
 
-	if err := tx.Commit(); err != nil {
-		logStoreStep(ctx, "finalize_get_error", "meeting_finalize_operation", map[string]any{
-			"operation_id": operationID,
-			"error":        err,
-		})
-		return nil, err
-	}
+		result, err := claimOrGetMeetingFinalizeOperationTx(ctx, tx, operationID, organizationID, userID, now, false)
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				if commitErr := tx.Commit(); commitErr != nil {
+					logStoreStep(ctx, "finalize_get_error", "meeting_finalize_operation", map[string]any{
+						"operation_id": operationID,
+						"error":        commitErr,
+					})
+					return nil, commitErr
+				}
+				logStoreStep(ctx, "finalize_get_missing", "meeting_finalize_operation", map[string]any{
+					"operation_id": operationID,
+				})
+				return nil, sql.ErrNoRows
+			}
+			logStoreStep(ctx, "finalize_get_error", "meeting_finalize_operation", map[string]any{
+				"operation_id": operationID,
+				"error":        err,
+			})
+			return nil, err
+		}
 
-	logStoreStep(ctx, "finalize_get_success", "meeting_finalize_operation", map[string]any{
-		"operation_id": operationID,
-		"status":       result.Record.Status,
+		if err := tx.Commit(); err != nil {
+			logStoreStep(ctx, "finalize_get_error", "meeting_finalize_operation", map[string]any{
+				"operation_id": operationID,
+				"error":        err,
+			})
+			return nil, err
+		}
+
+		logStoreStep(ctx, "finalize_get_success", "meeting_finalize_operation", map[string]any{
+			"operation_id": operationID,
+			"status":       result.Record.Status,
+		})
+		return result.Record, nil
 	})
-	return result.Record, nil
 }
 
 func (s *Store) CompleteMeetingFinalizeOperation(
@@ -378,92 +382,94 @@ func (s *Store) updateMeetingFinalizeOperationTerminal(
 		return nil, fmt.Errorf("operation_id, organization_id and user_id are required")
 	}
 
-	logStoreStep(ctx, step+"_start", "meeting_finalize_operation", map[string]any{
-		"operation_id":    operationID,
-		"organization_id": organizationID,
-		"user_id":         userID,
-		"status_code":     statusCode,
-	})
-
-	tx, err := s.DB.BeginTx(ctx, nil)
-	if err != nil {
-		logStoreStep(ctx, step+"_error", "meeting_finalize_operation", map[string]any{
-			"operation_id": operationID,
-			"error":        err,
+	return withSQLiteRetry(ctx, func() (*MeetingFinalizeOperationRecord, error) {
+		logStoreStep(ctx, step+"_start", "meeting_finalize_operation", map[string]any{
+			"operation_id":    operationID,
+			"organization_id": organizationID,
+			"user_id":         userID,
+			"status_code":     statusCode,
 		})
-		return nil, err
-	}
-	defer rollbackTx(tx)
 
-	record, err := loadMeetingFinalizeOperationRecordTx(ctx, tx, operationID)
-	if err != nil {
-		logStoreStep(ctx, step+"_error", "meeting_finalize_operation", map[string]any{
-			"operation_id": operationID,
-			"error":        err,
-		})
-		return nil, err
-	}
-	if record.OrganizationID != organizationID || record.UserID != userID {
-		logStoreStep(ctx, step+"_error", "meeting_finalize_operation", map[string]any{
-			"operation_id": operationID,
-			"error":        ErrMeetingFinalizeOperationOwnership,
-		})
-		return nil, ErrMeetingFinalizeOperationOwnership
-	}
-	if record.Status != MeetingFinalizeOperationStatusPending {
-		logStoreStep(ctx, step+"_error", "meeting_finalize_operation", map[string]any{
-			"operation_id": operationID,
-			"status":       record.Status,
-		})
-		return nil, fmt.Errorf("meeting finalize operation is not pending")
-	}
+		tx, err := s.DB.BeginTx(ctx, nil)
+		if err != nil {
+			logStoreStep(ctx, step+"_error", "meeting_finalize_operation", map[string]any{
+				"operation_id": operationID,
+				"error":        err,
+			})
+			return nil, err
+		}
+		defer rollbackTx(tx)
 
-	response := strings.TrimSpace(string(responseJSON))
-	if response == "" {
-		response = `{}`
-	}
-	if errorMessage != "" {
-		errorMessage = strings.TrimSpace(errorMessage)
-	}
-	if statusCode == 0 {
-		statusCode = http.StatusOK
-	}
+		record, err := loadMeetingFinalizeOperationRecordTx(ctx, tx, operationID)
+		if err != nil {
+			logStoreStep(ctx, step+"_error", "meeting_finalize_operation", map[string]any{
+				"operation_id": operationID,
+				"error":        err,
+			})
+			return nil, err
+		}
+		if record.OrganizationID != organizationID || record.UserID != userID {
+			logStoreStep(ctx, step+"_error", "meeting_finalize_operation", map[string]any{
+				"operation_id": operationID,
+				"error":        ErrMeetingFinalizeOperationOwnership,
+			})
+			return nil, ErrMeetingFinalizeOperationOwnership
+		}
+		if record.Status != MeetingFinalizeOperationStatusPending {
+			logStoreStep(ctx, step+"_error", "meeting_finalize_operation", map[string]any{
+				"operation_id": operationID,
+				"status":       record.Status,
+			})
+			return nil, fmt.Errorf("meeting finalize operation is not pending")
+		}
 
-	_, err = tx.ExecContext(ctx, `
+		response := strings.TrimSpace(string(responseJSON))
+		if response == "" {
+			response = `{}`
+		}
+		if errorMessage != "" {
+			errorMessage = strings.TrimSpace(errorMessage)
+		}
+		if statusCode == 0 {
+			statusCode = http.StatusOK
+		}
+
+		_, err = tx.ExecContext(ctx, `
 		UPDATE meeting_finalize_operations
 		SET status = ?, status_code = ?, response_json = ?, error_message = ?, completed_at = ?, terminal_expires_at = ?, updated_at = ?
 		WHERE operation_id = ? AND organization_id = ? AND user_id = ? AND status = ?
 	`, terminalStatusFromStatusCode(statusCode), statusCode, response, nullableString(errorMessage), now, now.Add(meetingFinalizeOperationRetention), now, operationID, organizationID, userID, MeetingFinalizeOperationStatusPending)
-	if err != nil {
-		logStoreStep(ctx, step+"_error", "meeting_finalize_operation", map[string]any{
-			"operation_id": operationID,
-			"error":        err,
-		})
-		return nil, err
-	}
+		if err != nil {
+			logStoreStep(ctx, step+"_error", "meeting_finalize_operation", map[string]any{
+				"operation_id": operationID,
+				"error":        err,
+			})
+			return nil, err
+		}
 
-	if err := tx.Commit(); err != nil {
-		logStoreStep(ctx, step+"_error", "meeting_finalize_operation", map[string]any{
-			"operation_id": operationID,
-			"error":        err,
-		})
-		return nil, err
-	}
+		updated, err := loadMeetingFinalizeOperationRecordTx(ctx, tx, operationID)
+		if err != nil {
+			logStoreStep(ctx, step+"_error", "meeting_finalize_operation", map[string]any{
+				"operation_id": operationID,
+				"error":        err,
+			})
+			return nil, err
+		}
 
-	updated, err := s.GetMeetingFinalizeOperation(ctx, operationID, organizationID, userID, now)
-	if err != nil {
-		logStoreStep(ctx, step+"_error", "meeting_finalize_operation", map[string]any{
-			"operation_id": operationID,
-			"error":        err,
-		})
-		return nil, err
-	}
+		if err := tx.Commit(); err != nil {
+			logStoreStep(ctx, step+"_error", "meeting_finalize_operation", map[string]any{
+				"operation_id": operationID,
+				"error":        err,
+			})
+			return nil, err
+		}
 
-	logStoreStep(ctx, step+"_success", "meeting_finalize_operation", map[string]any{
-		"operation_id": operationID,
-		"status":       updated.Status,
+		logStoreStep(ctx, step+"_success", "meeting_finalize_operation", map[string]any{
+			"operation_id": operationID,
+			"status":       updated.Status,
+		})
+		return updated, nil
 	})
-	return updated, nil
 }
 
 func isMeetingFinalizeOperationStale(record *MeetingFinalizeOperationRecord, now time.Time) bool {
