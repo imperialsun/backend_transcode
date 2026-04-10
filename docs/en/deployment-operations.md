@@ -79,7 +79,7 @@ Image characteristics:
 The repo also provides:
 
 - `compose.yml` for a prod-like local deployment using the final image,
-- `compose.dev.yml` for development with `go run` inside `golang:1.26.0`.
+- `compose.dev.yml` for development with `go run` inside `golang:1.26.2`.
 
 Prod-like launch:
 

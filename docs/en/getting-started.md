@@ -2,7 +2,7 @@
 
 ## Prerequisites
 
-- Go `1.26.0` or compatible with `go.mod`.
+- Go `1.26.2` or compatible with `go.mod`.
 - `make` for the standard repo commands.
 - Docker is optional if you want to run the containerized stacks locally.
 - A `MISTRAL_API_KEY` if you want to use the Demeter routes or get a green `readyz`.
@@ -72,7 +72,7 @@ Prod-like launch with the existing distroless image:
 docker compose up --build
 ```
 
-Development launch with `go run` inside `golang:1.26.0` and the repo mounted into the container:
+Development launch with `go run` inside `golang:1.26.2` and the repo mounted into the container:
 
 ```bash
 docker compose -f compose.dev.yml up
