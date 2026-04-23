@@ -362,9 +362,10 @@ func (a *App) transcribeDemeterBackendChunk(
 			}))
 			return demeterChunkTranscriptionResult{statusCode: fiber.StatusInternalServerError}, err
 		}
-		defer func() {
-			_ = os.RemoveAll(chunkDir)
-		}()
+		defer cleanupDemeterAudioTempPath(logCtx, route, seq, "chunk_processing", "backend_chunk_dir", chunkDir, map[string]any{
+			"chunk_index": plan.Index,
+			"chunk_id":    plan.ChunkID,
+		})
 
 		chunkPath := filepath.Join(chunkDir, fmt.Sprintf("chunk_%03d%s", plan.Index+1, demeterAudioChunkFileExt))
 		transcodeStartedAt := time.Now()
@@ -800,13 +801,11 @@ func buildDemeterBackendAudioUploadFromSource(
 			probeFields["message"] = validationErr.Error()
 			probeFields["status_code"] = demeterAudioValidationStatusCode(validationErr.code)
 			logDemeterAudioPerformanceTaskCtx(logCtx, route, seq, "ffprobe_validation_failed", "validation_ffprobe", probeFields)
-			_ = os.RemoveAll(tempDir)
 			return nil, validationErr
 		}
 		probeFields["message"] = err.Error()
 		probeFields["status_code"] = fiber.StatusInternalServerError
 		logDemeterAudioPerformanceTaskCtx(logCtx, route, seq, "ffprobe_validation_failed", "validation_ffprobe", probeFields)
-		_ = os.RemoveAll(tempDir)
 		return nil, err
 	}
 
@@ -831,7 +830,11 @@ func buildDemeterBackendAudioUploadFromSource(
 		DurationSec:   probe.DurationSec,
 		ChunkSettings: demeterBackendChunkingConfig{},
 		cleanup: func() {
-			_ = os.RemoveAll(tempDir)
+			cleanupDemeterAudioTempPath(logCtx, route, seq, "source_cleanup", "backend_upload_dir", tempDir, map[string]any{
+				"file_name":     fileName,
+				"mime_type":     mimeType,
+				"source_format": sourceFormat,
+			})
 		},
 	}, nil
 }

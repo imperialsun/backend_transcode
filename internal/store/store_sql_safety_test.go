@@ -102,3 +102,39 @@ func TestHasColumnUsesWhitelistedPragmaTargets(t *testing.T) {
 		t.Fatalf("expected unsupported table info target error, got %v", err)
 	}
 }
+
+func TestMigrateDropsDemeterAudioLegacyColumn(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "demeter-migration.sqlite")
+	st, err := Open(ctx, dbPath)
+	if err != nil {
+		t.Fatalf("failed to open sqlite store: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = st.Close()
+	})
+
+	if _, err := st.DB.ExecContext(ctx, `ALTER TABLE demeter_audio_transcription_operations ADD COLUMN partial_text TEXT NOT NULL DEFAULT ''`); err != nil {
+		t.Fatalf("failed to add legacy partial_text column: %v", err)
+	}
+
+	ok, err := hasColumn(ctx, st.DB, "demeter_audio_transcription_operations", "partial_text")
+	if err != nil {
+		t.Fatalf("failed to inspect legacy column: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected legacy partial_text column to exist before migration rerun")
+	}
+
+	if err := st.Migrate(ctx); err != nil {
+		t.Fatalf("failed to rerun migration: %v", err)
+	}
+
+	ok, err = hasColumn(ctx, st.DB, "demeter_audio_transcription_operations", "partial_text")
+	if err != nil {
+		t.Fatalf("failed to inspect demeter transcription table after migration: %v", err)
+	}
+	if ok {
+		t.Fatal("expected partial_text column to be removed by migration")
+	}
+}

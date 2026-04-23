@@ -226,7 +226,7 @@ func TestDemeterOwnershipFallbackLogs(t *testing.T) {
 		ChunkIndex:     1,
 		ChunkCount:     1,
 		Progress:       1,
-		PartialText:    sql.NullString{String: "hello", Valid: true},
+		ResponseJSON:   sql.NullString{String: `{"text":"hello"}`, Valid: true},
 		StatusCode:     http.StatusOK,
 		UpdatedAt:      time.Now().UTC(),
 		FinishedAt:     sql.NullTime{Time: time.Now().UTC(), Valid: true},

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"demeter-backend/internal/backenderrors"
+	"demeter-backend/internal/backendperformance"
 	"demeter-backend/internal/observability"
 
 	"github.com/gofiber/fiber/v2"
@@ -37,7 +38,39 @@ func logDemeterChatStageCtx(logCtx demeterChatLogContext, route string, seq uint
 	}
 	fields["seq"] = seq
 	log.Print(observability.FormatStepLine("demeter", route, stage, logCtx.traceID, logCtx.userID, logCtx.orgID, "chat_completions", fields))
-	backenderrors.RecordLog(logCtx.ctx, "demeter", route, stage, "demeter_report_generation", fields)
+}
+
+func logDemeterChatBackendErrorCtx(logCtx demeterChatLogContext, route string, seq uint64, stage string, fields map[string]any) {
+	if fields == nil {
+		fields = map[string]any{}
+	}
+	fields["seq"] = seq
+	log.Print(observability.FormatStepLine("demeter", route, stage, logCtx.traceID, logCtx.userID, logCtx.orgID, "demeter_report_generation", fields))
+	backenderrors.RecordLog(logCtx.ctx, "demeter", route, stage, "demeter_report_generation", stripDemeterChatDurationFields(fields))
+}
+
+func logDemeterChatPerformanceTaskCtx(logCtx demeterChatLogContext, route string, seq uint64, stage string, fields map[string]any) {
+	if fields == nil {
+		fields = map[string]any{}
+	}
+	fields["seq"] = seq
+	log.Print(observability.FormatStepLine("demeter", route, stage, logCtx.traceID, logCtx.userID, logCtx.orgID, "demeter_report_generation", fields))
+	backendperformance.RecordLog(logCtx.ctx, "demeter", route, stage, "demeter_report_generation", fields)
+}
+
+func stripDemeterChatDurationFields(fields map[string]any) map[string]any {
+	if len(fields) == 0 {
+		return map[string]any{}
+	}
+
+	out := make(map[string]any, len(fields))
+	for key, value := range fields {
+		out[key] = value
+	}
+	for _, key := range []string{"duration_ms", "total_duration_ms", "upstream_duration_ms", "elapsed_ms"} {
+		delete(out, key)
+	}
+	return out
 }
 
 func logDemeterChatRelayIssueCtx(logCtx demeterChatLogContext, route string, status int, message string) {
@@ -51,7 +84,7 @@ func logDemeterChatUpstreamStatusCtx(logCtx demeterChatLogContext, route string,
 	if status < fiber.StatusBadRequest {
 		return
 	}
-	logDemeterChatStageCtx(logCtx, route, 0, "upstream_error", map[string]any{
+	logDemeterChatBackendErrorCtx(logCtx, route, 0, "upstream_error", map[string]any{
 		"status": status,
 	})
 }
@@ -120,7 +153,7 @@ func (a *App) demeterChatCompletionsWithRetry(logCtx demeterChatLogContext, rout
 				} else {
 					fields["action"] = "exhausted"
 				}
-				logDemeterChatStageCtx(logCtx, route, seq, "upstream_capacity_error", fields)
+				logDemeterChatBackendErrorCtx(logCtx, route, seq, "upstream_capacity_error", fields)
 			} else if attempt < demeterChatCompletionsMaxAttempts {
 				fields["next_attempt"] = attempt + 1
 				logDemeterChatStageCtx(logCtx, route, seq, "upstream_retry", fields)

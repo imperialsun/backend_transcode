@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"log"
 	"os"
 	"path/filepath"
@@ -11,6 +12,9 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"demeter-backend/internal/backendperformance"
+	"demeter-backend/internal/store"
 )
 
 func captureTestLogOutput(t *testing.T) *bytes.Buffer {
@@ -113,6 +117,17 @@ func (p *fakeBackendErrorEventPurger) PurgeExpiredBackendErrorEvents(context.Con
 	return p.purged, p.err
 }
 
+type fakeDemeterTranscriptionOperationPurger struct {
+	purged int64
+	err    error
+}
+
+// fakeDemeterTranscriptionOperationPurger lets the boot cleanup test exercise
+// the new completed-job purge path without a real database.
+func (p fakeDemeterTranscriptionOperationPurger) PurgeCompletedDemeterAudioTranscriptionOperations(context.Context) (int64, error) {
+	return p.purged, p.err
+}
+
 // These tests assert that the lifecycle cleanup helpers emit the expected
 // structured log entries for both successful and partial-failure cases.
 func TestRunMeetingFinalizeOperationCleanupOnce_LogsTraceSteps(t *testing.T) {
@@ -150,6 +165,63 @@ func TestRunBackendErrorCleanupOnce_LogsTraceSteps(t *testing.T) {
 		if !strings.Contains(logged, needle) {
 			t.Fatalf("expected %q in logs, got %q", needle, logged)
 		}
+	}
+}
+
+func TestRunDemeterAudioTranscriptionOperationCleanupOnce_LogsPerformanceEvent(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "lifecycle-performance.sqlite")
+	st, err := store.Open(ctx, dbPath)
+	if err != nil {
+		t.Fatalf("failed to open store: %v", err)
+	}
+	t.Cleanup(func() {
+		backendperformance.RegisterSink(nil)
+		_ = st.Close()
+	})
+	backendperformance.RegisterSink(st)
+
+	runDemeterAudioTranscriptionOperationCleanupOnce(ctx, "server-trace", fakeDemeterTranscriptionOperationPurger{purged: 4})
+
+	deadline := time.Now().Add(250 * time.Millisecond)
+	var metaJSON string
+	for {
+		if err := st.DB.QueryRowContext(ctx, `
+			SELECT meta_json
+			FROM performance_events
+			WHERE trace_id = ? AND task = ?
+			ORDER BY occurred_at DESC
+			LIMIT 1
+		`, "server-trace", "purge_completed_transcription_operations").Scan(&metaJSON); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("expected completed transcription cleanup performance event")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(metaJSON), &payload); err != nil {
+		t.Fatalf("failed to decode performance payload: %v", err)
+	}
+	if payload["cleanup_scope"] != "boot" {
+		t.Fatalf("unexpected cleanup scope: %#v", payload)
+	}
+	switch got := payload["purged_count"].(type) {
+	case float64:
+		if int(got) != 4 {
+			t.Fatalf("unexpected purged count: %#v", payload)
+		}
+	case string:
+		if got != "4" {
+			t.Fatalf("unexpected purged count: %#v", payload)
+		}
+	default:
+		t.Fatalf("unexpected purged count: %#v", payload)
+	}
+	if payload["status"] != "success" {
+		t.Fatalf("unexpected cleanup status: %#v", payload)
 	}
 }
 
@@ -239,6 +311,56 @@ func TestPurgeManagedBackendTmpDirs_RemovesManagedTargets(t *testing.T) {
 		if !strings.Contains(logged, needle) {
 			t.Fatalf("expected %q in logs, got %q", needle, logged)
 		}
+	}
+}
+
+func TestPurgeManagedBackendTmpDirs_LogsPerformanceEvent(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "tmp-purge-performance.sqlite")
+	st, err := store.Open(ctx, dbPath)
+	if err != nil {
+		t.Fatalf("failed to open store: %v", err)
+	}
+	t.Cleanup(func() {
+		backendperformance.RegisterSink(nil)
+		_ = st.Close()
+	})
+	backendperformance.RegisterSink(st)
+
+	baseDir := filepath.Join(t.TempDir(), "managed-performance")
+	if err := os.MkdirAll(filepath.Join(baseDir, "demeter-audio-001"), 0o755); err != nil {
+		t.Fatalf("failed to create managed path: %v", err)
+	}
+
+	purgeManagedBackendTmpDirs(baseDir, "server-trace", "boot")
+
+	deadline := time.Now().Add(250 * time.Millisecond)
+	var metaJSON string
+	for {
+		if err := st.DB.QueryRowContext(ctx, `
+			SELECT meta_json
+			FROM performance_events
+			WHERE trace_id = ? AND task = ?
+			ORDER BY occurred_at DESC
+			LIMIT 1
+		`, "server-trace", "purge_managed_tmp_dirs").Scan(&metaJSON); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("expected tmp purge performance event")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(metaJSON), &payload); err != nil {
+		t.Fatalf("failed to decode performance payload: %v", err)
+	}
+	if payload["cleanup_scope"] != "boot" {
+		t.Fatalf("unexpected cleanup scope: %#v", payload)
+	}
+	if payload["status"] != "success" {
+		t.Fatalf("unexpected cleanup status: %#v", payload)
 	}
 }
 

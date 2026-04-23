@@ -24,6 +24,8 @@ func resolveTableInfoQuery(tableName string) (string, error) {
 		return `PRAGMA table_info(refresh_sessions)`, nil
 	case "backend_error_events":
 		return `PRAGMA table_info(backend_error_events)`, nil
+	case "demeter_audio_transcription_operations":
+		return `PRAGMA table_info(demeter_audio_transcription_operations)`, nil
 	default:
 		return "", fmt.Errorf("%w: %s", errUnsupportedTableInfoTarget, strings.TrimSpace(tableName))
 	}
@@ -60,6 +62,48 @@ func ensureColumnExists(ctx context.Context, tx *sql.Tx, tableName string, colum
 	}
 	if err := rows.Err(); err != nil {
 		return err
+	}
+
+	_, err = tx.ExecContext(ctx, alterStmt)
+	return err
+}
+
+// ensureColumnMissing drops a legacy column when the current database schema
+// is newer than the stored structure.
+func ensureColumnMissing(ctx context.Context, tx *sql.Tx, tableName string, columnName string, alterStmt string) error {
+	query, err := resolveTableInfoQuery(tableName)
+	if err != nil {
+		return err
+	}
+	rows, err := tx.QueryContext(ctx, query)
+	if err != nil {
+		return err
+	}
+	defer closeRows(rows)
+
+	found := false
+	for rows.Next() {
+		var (
+			cid       int
+			name      string
+			valueType string
+			notNull   int
+			defaultV  sql.NullString
+			primaryK  int
+		)
+		if err := rows.Scan(&cid, &name, &valueType, &notNull, &defaultV, &primaryK); err != nil {
+			return err
+		}
+		if name == columnName {
+			found = true
+			break
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if !found {
+		return nil
 	}
 
 	_, err = tx.ExecContext(ctx, alterStmt)

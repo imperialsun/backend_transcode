@@ -59,7 +59,7 @@ func TestUpdateDemeterAudioTranscriptionOperationByID_IgnoresOwnership(t *testin
 		ChunkIndex:     2,
 		ChunkCount:     2,
 		Progress:       1,
-		PartialText:    sql.NullString{String: "hello", Valid: true},
+		ResponseJSON:   sql.NullString{String: `{"text":"hello"}`, Valid: true},
 		StatusCode:     200,
 		UpdatedAt:      time.Now().UTC(),
 		FinishedAt:     sql.NullTime{Time: time.Now().UTC(), Valid: true},
@@ -77,11 +77,135 @@ func TestUpdateDemeterAudioTranscriptionOperationByID_IgnoresOwnership(t *testin
 	if updated.Stage != "completed" {
 		t.Fatalf("unexpected stage: %+v", updated)
 	}
-	if updated.PartialText.String != "hello" {
-		t.Fatalf("unexpected partial text: %+v", updated)
+	if !updated.ResponseJSON.Valid || updated.ResponseJSON.String != `{"text":"hello"}` {
+		t.Fatalf("unexpected response json: %+v", updated)
 	}
 	if !updated.FinishedAt.Valid {
 		t.Fatalf("expected finished at to be set: %+v", updated)
+	}
+}
+
+func TestPurgeCompletedDemeterAudioTranscriptionOperationsRemovesOnlyCompletedRows(t *testing.T) {
+	ctx := context.Background()
+	st, err := Open(ctx, filepath.Join(t.TempDir(), "demeter-purge.sqlite"))
+	if err != nil {
+		t.Fatalf("failed to open store: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = st.Close()
+	})
+
+	org, err := st.CreateOrganization(ctx, "Org", "org", "active")
+	if err != nil {
+		t.Fatalf("failed to create org: %v", err)
+	}
+	user, err := st.CreateUser(ctx, org.ID, "u@example.com", "hash", "active")
+	if err != nil {
+		t.Fatalf("failed to create user: %v", err)
+	}
+	now := time.Now().UTC()
+	completedID := "demeter-audio-completed-purge"
+	runningID := "demeter-audio-running-purge"
+	for _, record := range []*DemeterAudioTranscriptionOperationRecord{
+		{
+			OperationID:    completedID,
+			OrganizationID: org.ID,
+			UserID:         user.ID,
+			Status:         DemeterAudioTranscriptionOperationStatusCompleted,
+			Stage:          "completed",
+			ChunkIndex:     1,
+			ChunkCount:     1,
+			Progress:       1,
+			StatusCode:     200,
+			CreatedAt:      now,
+			UpdatedAt:      now,
+			FinishedAt:     sql.NullTime{Time: now, Valid: true},
+		},
+		{
+			OperationID:    runningID,
+			OrganizationID: org.ID,
+			UserID:         user.ID,
+			Status:         DemeterAudioTranscriptionOperationStatusRunning,
+			Stage:          "queued",
+			ChunkIndex:     0,
+			ChunkCount:     2,
+			Progress:       0.5,
+			StatusCode:     202,
+			CreatedAt:      now,
+			UpdatedAt:      now,
+		},
+	} {
+		if err := st.CreateDemeterAudioTranscriptionOperation(ctx, record); err != nil {
+			t.Fatalf("failed to create record %s: %v", record.OperationID, err)
+		}
+	}
+
+	purged, err := st.PurgeCompletedDemeterAudioTranscriptionOperations(ctx)
+	if err != nil {
+		t.Fatalf("purge completed operations failed: %v", err)
+	}
+	if purged != 1 {
+		t.Fatalf("unexpected purge count: got %d want 1", purged)
+	}
+
+	if _, err := st.GetDemeterAudioTranscriptionOperation(ctx, completedID, org.ID, user.ID); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("expected completed record to be removed, got %v", err)
+	}
+	running, err := st.GetDemeterAudioTranscriptionOperation(ctx, runningID, org.ID, user.ID)
+	if err != nil {
+		t.Fatalf("failed to load running record: %v", err)
+	}
+	if running.Status != DemeterAudioTranscriptionOperationStatusRunning {
+		t.Fatalf("expected running record to remain, got %+v", running)
+	}
+}
+
+func TestDeleteDemeterAudioTranscriptionOperationRemovesRow(t *testing.T) {
+	ctx := context.Background()
+	st, err := Open(ctx, filepath.Join(t.TempDir(), "demeter-delete.sqlite"))
+	if err != nil {
+		t.Fatalf("failed to open store: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = st.Close()
+	})
+
+	org, err := st.CreateOrganization(ctx, "Org", "org", "active")
+	if err != nil {
+		t.Fatalf("failed to create org: %v", err)
+	}
+	user, err := st.CreateUser(ctx, org.ID, "u@example.com", "hash", "active")
+	if err != nil {
+		t.Fatalf("failed to create user: %v", err)
+	}
+	opID := "demeter-audio-delete-one"
+	now := time.Now().UTC()
+	if err := st.CreateDemeterAudioTranscriptionOperation(ctx, &DemeterAudioTranscriptionOperationRecord{
+		OperationID:    opID,
+		OrganizationID: org.ID,
+		UserID:         user.ID,
+		Status:         DemeterAudioTranscriptionOperationStatusCompleted,
+		Stage:          "completed",
+		ChunkIndex:     1,
+		ChunkCount:     1,
+		Progress:       1,
+		StatusCode:     200,
+		CreatedAt:      now,
+		UpdatedAt:      now,
+		FinishedAt:     sql.NullTime{Time: now, Valid: true},
+	}); err != nil {
+		t.Fatalf("failed to create record: %v", err)
+	}
+
+	deleted, err := st.DeleteDemeterAudioTranscriptionOperation(ctx, opID)
+	if err != nil {
+		t.Fatalf("delete operation failed: %v", err)
+	}
+	if deleted != 1 {
+		t.Fatalf("unexpected delete count: got %d want 1", deleted)
+	}
+	if _, err := st.GetDemeterAudioTranscriptionOperation(ctx, opID, org.ID, user.ID); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("expected record to be removed, got %v", err)
 	}
 }
 

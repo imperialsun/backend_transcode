@@ -106,7 +106,7 @@ func (s *Store) peekDemeterAudioTranscriptionOperation(ctx context.Context, oper
 	}
 
 	row := s.DB.QueryRowContext(ctx, `
-		SELECT operation_id, organization_id, user_id, status, stage, chunk_index, chunk_count, progress, partial_text, response_json, last_error, status_code, created_at, updated_at, finished_at
+		SELECT operation_id, organization_id, user_id, status, stage, chunk_index, chunk_count, progress, response_json, last_error, status_code, created_at, updated_at, finished_at
 		FROM demeter_audio_transcription_operations
 		WHERE operation_id = ?
 	`, operationID)

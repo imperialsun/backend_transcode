@@ -424,7 +424,6 @@ func (s *Store) Migrate(ctx context.Context) error {
 			chunk_index INTEGER NOT NULL DEFAULT 0,
 			chunk_count INTEGER NOT NULL DEFAULT 0,
 			progress REAL NOT NULL DEFAULT 0,
-			partial_text TEXT NOT NULL DEFAULT '',
 			response_json TEXT,
 			last_error TEXT,
 			status_code INTEGER NOT NULL DEFAULT 0,
@@ -501,6 +500,10 @@ func (s *Store) Migrate(ctx context.Context) error {
 		return err
 	}
 	if err := ensureColumnExists(ctx, tx, "backend_error_events", "recovery_status", `ALTER TABLE backend_error_events ADD COLUMN recovery_status TEXT`); err != nil {
+		logStoreStep(ctx, "migrate_error", "schema", map[string]any{"error": err})
+		return err
+	}
+	if err := ensureColumnMissing(ctx, tx, "demeter_audio_transcription_operations", "partial_text", `ALTER TABLE demeter_audio_transcription_operations DROP COLUMN partial_text`); err != nil {
 		logStoreStep(ctx, "migrate_error", "schema", map[string]any{"error": err})
 		return err
 	}

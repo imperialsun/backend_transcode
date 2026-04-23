@@ -144,15 +144,17 @@ type demeterAudioTransportSession struct {
 	cleanupOnce           sync.Once
 }
 
-// cleanup removes the temporary files that belong to the session.
-func (s *demeterAudioTransportSession) cleanup() {
-	if s == nil {
+// cleanupDemeterAudioTransportSession removes a transport session directory
+// exactly once and records the cleanup as a performance event.
+func cleanupDemeterAudioTransportSession(logCtx demeterAudioLogContext, route string, seq uint64, cleanupScope string, session *demeterAudioTransportSession) {
+	if session == nil {
 		return
 	}
-	s.cleanupOnce.Do(func() {
-		if strings.TrimSpace(s.tempDir) != "" {
-			_ = os.RemoveAll(s.tempDir)
-		}
+	session.cleanupOnce.Do(func() {
+		cleanupDemeterAudioTempPath(logCtx, route, seq, cleanupScope, "transport_session_dir", session.tempDir, map[string]any{
+			"operation_id": session.uploadID,
+			"slice_count":  session.sliceCount,
+		})
 	})
 }
 
@@ -220,7 +222,7 @@ func isDemeterAudioSliceTransport(c *fiber.Ctx) bool {
 
 // cleanupExpiredDemeterAudioTransportSessions removes sessions that have not
 // been updated within the retention window.
-func cleanupExpiredDemeterAudioTransportSessions(now time.Time) {
+func cleanupExpiredDemeterAudioTransportSessions(logCtx demeterAudioLogContext, now time.Time) {
 	demeterAudioTransportSessions.Range(func(key, value any) bool {
 		session, ok := value.(*demeterAudioTransportSession)
 		if !ok || session == nil {
@@ -232,7 +234,7 @@ func cleanupExpiredDemeterAudioTransportSessions(now time.Time) {
 		expired := !session.finalized && !session.finalizing && now.Sub(session.updatedAt) > demeterAudioTransportSessionRetention
 		session.mu.Unlock()
 		if expired {
-			session.cleanup()
+			cleanupDemeterAudioTransportSession(logCtx, session.route, 0, "expired_session", session)
 			demeterAudioTransportSessions.Delete(key)
 		}
 		return true
@@ -381,7 +383,7 @@ func getOrCreateDemeterAudioTransportSession(
 
 // storeDemeterAudioTransportSlice writes one slice to disk and updates the
 // session bookkeeping.
-func storeDemeterAudioTransportSlice(session *demeterAudioTransportSession, req *demeterAudioTransportSliceRequest, fileHeader *multipart.FileHeader) (int64, error) {
+func storeDemeterAudioTransportSlice(logCtx demeterAudioLogContext, route string, seq uint64, session *demeterAudioTransportSession, req *demeterAudioTransportSliceRequest, fileHeader *multipart.FileHeader) (int64, error) {
 	if session == nil {
 		return 0, fmt.Errorf("missing transport session")
 	}
@@ -440,20 +442,36 @@ func storeDemeterAudioTransportSlice(session *demeterAudioTransportSession, req 
 	slicePath := demeterAudioTransportSlicePath(session.tempDir, req.SliceIndex)
 	output, err := os.Create(slicePath)
 	if err != nil {
+		cleanupDemeterAudioTempPath(logCtx, route, seq, "slice_write_error", "transport_slice_file", slicePath, map[string]any{
+			"operation_id": session.uploadID,
+			"slice_index":  req.SliceIndex,
+		})
 		return 0, fmt.Errorf("failed to create transport slice file: %w", err)
 	}
 	sizeCopied, copyErr := io.Copy(output, input)
 	closeErr := output.Close()
 	if copyErr != nil {
-		_ = os.Remove(slicePath)
+		cleanupDemeterAudioTempPath(logCtx, route, seq, "slice_write_error", "transport_slice_file", slicePath, map[string]any{
+			"operation_id": session.uploadID,
+			"slice_index":  req.SliceIndex,
+			"reason":       "copy_error",
+		})
 		return 0, fmt.Errorf("failed to persist transport slice: %w", copyErr)
 	}
 	if closeErr != nil {
-		_ = os.Remove(slicePath)
+		cleanupDemeterAudioTempPath(logCtx, route, seq, "slice_write_error", "transport_slice_file", slicePath, map[string]any{
+			"operation_id": session.uploadID,
+			"slice_index":  req.SliceIndex,
+			"reason":       "close_error",
+		})
 		return 0, fmt.Errorf("failed to close transport slice file: %w", closeErr)
 	}
 	if sizeCopied <= 0 {
-		_ = os.Remove(slicePath)
+		cleanupDemeterAudioTempPath(logCtx, route, seq, "slice_validation_error", "transport_slice_file", slicePath, map[string]any{
+			"operation_id": session.uploadID,
+			"slice_index":  req.SliceIndex,
+			"reason":       "empty_audio_file",
+		})
 		return 0, &demeterAudioValidationError{
 			code:    "empty_audio_file",
 			message: "fichier audio vide",
@@ -466,7 +484,10 @@ func storeDemeterAudioTransportSlice(session *demeterAudioTransportSession, req 
 	}
 
 	if previousPath, ok := session.receivedPaths[req.SliceIndex]; ok && previousPath != slicePath {
-		_ = os.Remove(previousPath)
+		cleanupDemeterAudioTempPath(logCtx, route, seq, "slice_replaced", "transport_slice_file", previousPath, map[string]any{
+			"operation_id": session.uploadID,
+			"slice_index":  req.SliceIndex,
+		})
 	}
 	session.receivedPaths[req.SliceIndex] = slicePath
 	session.receivedSizes[req.SliceIndex] = sizeCopied
@@ -649,6 +670,7 @@ func buildDemeterBackendAudioUploadFromTransportSession(
 	if totalBytes > 0 {
 		loggedUpload.SizeBytes = totalBytes
 	}
+	loggedUpload.cleanup = func() {}
 	logDemeterAudioPerformanceTaskCtx(logCtx, route, seq, "audio_processing_completed", "backend_audio_transcription", demeterAudioRequestBaseFields(routeMode, audioDurationSec, audioDurationProvided, map[string]any{
 		"operation_id":    session.uploadID,
 		"file_name":       loggedUpload.FileName,
@@ -709,7 +731,6 @@ func (a *App) startDemeterAudioTransportTranscriptionOperation(
 		ChunkIndex:     0,
 		ChunkCount:     0,
 		Progress:       0,
-		PartialText:    sql.NullString{String: "", Valid: false},
 		StatusCode:     fiber.StatusAccepted,
 		CreatedAt:      now,
 		UpdatedAt:      now,
@@ -793,21 +814,20 @@ func (a *App) runDemeterAudioTransportTranscriptionOperation(
 	requestBytes int,
 	startedAt time.Time,
 ) {
-	defer demeterAudioTranscriptionOperationCancels.Delete(session.uploadID)
-	defer cancel()
-	defer func() {
-		if session != nil {
-			demeterAudioTransportSessions.Delete(session.uploadID)
-			session.cleanup()
-		}
-	}()
-
 	logCtx := demeterAudioLogContext{
 		ctx:     ctx,
 		traceID: baseLogCtx.traceID,
 		userID:  baseLogCtx.userID,
 		orgID:   baseLogCtx.orgID,
 	}
+	defer demeterAudioTranscriptionOperationCancels.Delete(session.uploadID)
+	defer cancel()
+	defer func() {
+		if session != nil {
+			demeterAudioTransportSessions.Delete(session.uploadID)
+			cleanupDemeterAudioTransportSession(logCtx, route, seq, "transport_worker_exit", session)
+		}
+	}()
 	logDemeterAudioStageCtx(logCtx, route, seq, "operation_worker_start", demeterAudioRequestBaseFields(routeMode, audioDurationSec, audioDurationProvided, map[string]any{
 		"operation_id":      session.uploadID,
 		"stage":             demeterAudioTransportFinalizationStage,
@@ -1206,7 +1226,7 @@ func (a *App) demeterAudioTranscriptionsTransportSlice(
 		})
 	}
 
-	cleanupExpiredDemeterAudioTransportSessions(time.Now().UTC())
+	cleanupExpiredDemeterAudioTransportSessions(logCtx, time.Now().UTC())
 
 	if req.Final {
 		if existing, loadErr := a.Store.GetDemeterAudioTranscriptionOperation(requestContext(c), req.UploadID, claims.OrgID, claims.UserID); loadErr == nil {
@@ -1306,7 +1326,7 @@ func (a *App) demeterAudioTranscriptionsTransportSlice(
 			Path:    route,
 		})
 	}
-	storedBytes, err := storeDemeterAudioTransportSlice(session, req, fileHeaders[0])
+	storedBytes, err := storeDemeterAudioTransportSlice(logCtx, route, seq, session, req, fileHeaders[0])
 	if err != nil {
 		var validationErr *demeterAudioValidationError
 		if errors.As(err, &validationErr) {
@@ -1402,7 +1422,7 @@ func (a *App) demeterAudioTranscriptionsTransportSlice(
 			session.finalizing = false
 			session.mu.Unlock()
 		}
-		session.cleanup()
+		cleanupDemeterAudioTransportSession(logCtx, route, seq, "transport_start_failed", session)
 		demeterAudioTransportSessions.Delete(req.UploadID)
 		return err
 	}

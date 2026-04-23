@@ -32,7 +32,6 @@ type demeterAudioTranscriptionOperationResponse struct {
 	ChunkIndex  int                                  `json:"chunkIndex"`
 	ChunkCount  int                                  `json:"chunkCount"`
 	Progress    float64                              `json:"progress"`
-	PartialText string                               `json:"partialText,omitempty"`
 	LastError   string                               `json:"lastError,omitempty"`
 	UpdatedAt   string                               `json:"updatedAt,omitempty"`
 	FinishedAt  string                               `json:"finishedAt,omitempty"`
@@ -60,9 +59,6 @@ func demeterAudioTranscriptionOperationResponseFromRecord(record *store.DemeterA
 	response.ChunkCount = record.ChunkCount
 	response.Progress = record.Progress
 	response.UpdatedAt = record.UpdatedAt.UTC().Format(time.RFC3339)
-	if strings.TrimSpace(record.PartialText.String) != "" {
-		response.PartialText = strings.TrimSpace(record.PartialText.String)
-	}
 	if record.LastError.Valid && strings.TrimSpace(record.LastError.String) != "" {
 		response.LastError = strings.TrimSpace(record.LastError.String)
 	}
@@ -139,7 +135,6 @@ func (a *App) startDemeterAudioTranscriptionOperation(
 		ChunkIndex:     0,
 		ChunkCount:     len(chunkPlans),
 		Progress:       0,
-		PartialText:    sql.NullString{String: "", Valid: false},
 		StatusCode:     fiber.StatusAccepted,
 		CreatedAt:      now,
 		UpdatedAt:      now,
@@ -298,7 +293,30 @@ func (a *App) getDemeterAudioTranscriptionOperationStatus(c *fiber.Ctx) error {
 		"chunk_index":  record.ChunkIndex,
 		"chunk_count":  record.ChunkCount,
 	})
-	return c.Status(fiber.StatusOK).JSON(demeterAudioTranscriptionOperationResponseFromRecord(record))
+	response := demeterAudioTranscriptionOperationResponseFromRecord(record)
+	if err := c.Status(fiber.StatusOK).JSON(response); err != nil {
+		return err
+	}
+
+	if record.Status == store.DemeterAudioTranscriptionOperationStatusCompleted {
+		deleteStartedAt := time.Now()
+		deletedCount, deleteErr := a.Store.DeleteDemeterAudioTranscriptionOperation(requestContext(c), record.OperationID)
+		deleteFields := map[string]any{
+			"operation_id":     operationID,
+			"deleted_count":    deletedCount,
+			"cleanup_scope":    "completed_get",
+			"duration_ms":      time.Since(deleteStartedAt).Milliseconds(),
+			"operation_status": record.Status,
+		}
+		if deleteErr != nil {
+			deleteFields["message"] = deleteErr.Error()
+			logDemeterAudioPerformanceTaskCtx(logCtx, route, 0, "operation_cleanup_failed", "suppression_operation_transcription", deleteFields)
+		} else {
+			logDemeterAudioPerformanceTaskCtx(logCtx, route, 0, "operation_cleanup_completed", "suppression_operation_transcription", deleteFields)
+		}
+	}
+
+	return nil
 }
 
 // cancelDemeterAudioTranscriptionOperation cancels the in-flight transcription
@@ -358,7 +376,6 @@ func (a *App) cancelDemeterAudioTranscriptionOperation(c *fiber.Ctx) error {
 		ChunkIndex:  record.ChunkIndex,
 		ChunkCount:  record.ChunkCount,
 		Progress:    record.Progress,
-		PartialText: strings.TrimSpace(record.PartialText.String),
 		LastError:   strings.TrimSpace(record.LastError.String),
 		UpdatedAt:   record.UpdatedAt.UTC().Format(time.RFC3339),
 		FinishedAt: func() string {
@@ -408,7 +425,6 @@ func (a *App) runDemeterAudioTranscriptionOperation(
 			return
 		}
 		lastResponse = *response
-		text := strings.TrimSpace(response.Text)
 		progress := 0.0
 		if chunkCount > 0 {
 			progress = math.Min(1, math.Max(0, float64(completedChunks)/float64(chunkCount)))
@@ -422,7 +438,6 @@ func (a *App) runDemeterAudioTranscriptionOperation(
 			ChunkIndex:     completedChunks,
 			ChunkCount:     chunkCount,
 			Progress:       progress,
-			PartialText:    sql.NullString{String: text, Valid: text != ""},
 			StatusCode:     fiber.StatusAccepted,
 			UpdatedAt:      time.Now().UTC(),
 		}
@@ -503,7 +518,6 @@ func (a *App) runDemeterAudioTranscriptionOperation(
 					ChunkIndex:     len(lastResponse.Chunks),
 					ChunkCount:     len(chunkPlans),
 					Progress:       progress,
-					PartialText:    sql.NullString{String: strings.TrimSpace(lastResponse.Text), Valid: strings.TrimSpace(lastResponse.Text) != ""},
 					ResponseJSON:   sql.NullString{String: string(raw), Valid: true},
 					LastError:      sql.NullString{String: lastError, Valid: true},
 					StatusCode:     statusCode,
@@ -572,7 +586,6 @@ func (a *App) runDemeterAudioTranscriptionOperation(
 			ChunkIndex:     len(response.Chunks),
 			ChunkCount:     len(chunkPlans),
 			Progress:       1,
-			PartialText:    sql.NullString{String: strings.TrimSpace(response.Text), Valid: strings.TrimSpace(response.Text) != ""},
 			ResponseJSON:   sql.NullString{String: string(raw), Valid: true},
 			StatusCode:     fiber.StatusOK,
 			UpdatedAt:      now,

@@ -3,8 +3,10 @@ package api
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -251,6 +253,67 @@ func TestDemeterChatCompletions_ProxiesJSONBody(t *testing.T) {
 		if !strings.Contains(logged, needle) {
 			t.Fatalf("expected %q in chat completion logs, got %q", needle, logged)
 		}
+	}
+}
+
+func TestDemeterChatCompletions_PersistsSinglePerformanceEvent(t *testing.T) {
+	app, token, appCtx := setupDemeterRoutesApp(t, []store.UserPermissionOverrideInput{
+		{PermissionCode: "feature.llmapi", Effect: "allow"},
+		{PermissionCode: "provider.llm.demeter_sante", Effect: "allow"},
+	}, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/chat/completions" {
+			t.Fatalf("unexpected upstream path: %s", r.URL.Path)
+		}
+		w.Header().Set(fiber.HeaderContentType, fiber.MIMEApplicationJSON)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"rapport ok"}}]}`))
+	}))
+
+	backendperformance.RegisterSink(appCtx.Store)
+	t.Cleanup(func() {
+		backendperformance.RegisterSink(nil)
+	})
+
+	traceID := "demeter-chat-single-performance"
+	resp := performJSONRequestWithHeaders(
+		t,
+		app,
+		http.MethodPost,
+		"/api/v1/providers/demeter-sante/chat/completions",
+		map[string]any{"model": "test-model", "messages": []map[string]string{{"role": "user", "content": "hello"}}},
+		nil,
+		map[string]string{
+			fiber.HeaderAuthorization: "Bearer " + token,
+			"X-Trace-Id":              traceID,
+		},
+	)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 for chat completion, got %d", resp.StatusCode)
+	}
+
+	waitForPerformanceTaskCountExactly(t, appCtx.Store, "demeter_report_generation", 1)
+
+	summary, err := appCtx.Store.GetPerformanceSummary(context.Background(), store.PerformanceSummaryFilters{
+		From:        time.Now().Add(-1 * time.Hour),
+		To:          time.Now().Add(1 * time.Hour),
+		Task:        "demeter_report_generation",
+		TopLimit:    10,
+		RecentLimit: 10,
+	})
+	if err != nil {
+		t.Fatalf("failed to load performance summary: %v", err)
+	}
+	if summary.Totals.Events != 1 {
+		t.Fatalf("expected one demeter performance event, got %+v", summary.Totals)
+	}
+	if len(summary.RecentEvents) != 1 {
+		t.Fatalf("expected one recent demeter event, got %+v", summary.RecentEvents)
+	}
+	if summary.RecentEvents[0].TraceID != traceID {
+		t.Fatalf("unexpected trace id in performance summary: %+v", summary.RecentEvents[0])
+	}
+	if summary.RecentEvents[0].Route != "/api/v1/providers/demeter-sante/chat/completions" {
+		t.Fatalf("unexpected route in performance summary: %+v", summary.RecentEvents[0])
 	}
 }
 
@@ -615,7 +678,6 @@ func TestDemeterAudioTranscriptions_BackendRouteChunksServerSideAndLogsDurationA
 		ChunkIndex  int     `json:"chunkIndex"`
 		ChunkCount  int     `json:"chunkCount"`
 		Progress    float64 `json:"progress"`
-		PartialText string  `json:"partialText"`
 		Response    struct {
 			Text     string  `json:"text"`
 			Duration float64 `json:"duration"`
@@ -686,6 +748,21 @@ func TestDemeterAudioTranscriptions_BackendRouteChunksServerSideAndLogsDurationA
 	if finalPayload.Response.Chunks[1].Segments[0].ChunkID != finalPayload.Response.Chunks[1].ChunkID {
 		t.Fatalf("expected nested segment chunk id to match parent chunk, got %+v", finalPayload.Response.Chunks[1])
 	}
+	secondStatusReq := httptest.NewRequest(http.MethodGet, "/api/v1/providers/demeter-sante/audio/transcriptions/operations/"+startPayload.OperationID, nil)
+	secondStatusReq.Header.Set(fiber.HeaderAuthorization, "Bearer "+token)
+	secondStatusResp, secondStatusErr := app.Test(secondStatusReq, 5_000)
+	if secondStatusErr != nil {
+		t.Fatalf("second status request failed: %v", secondStatusErr)
+	}
+	if secondStatusResp.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected 404 after completed operation cleanup, got %d", secondStatusResp.StatusCode)
+	}
+	closeHTTPResponse(t, secondStatusResp)
+	if _, err := appCtx.Store.GetDemeterAudioTranscriptionOperation(context.Background(), startPayload.OperationID, claims.OrgID, claims.UserID); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("expected completed operation to be deleted from the table, got %v", err)
+	}
+	waitForPerformanceTaskCountAtLeast(t, appCtx.Store, "suppression_operation_transcription", 1)
+	waitForPerformanceTaskCountAtLeast(t, appCtx.Store, "suppression_fichiers_transcription", 1)
 	waitForPerformanceTaskCountAtLeast(t, appCtx.Store, "reception_de_slice", 2)
 	waitForPerformanceTaskCountAtLeast(t, appCtx.Store, "reconstruction_fichier", 1)
 	waitForPerformanceTaskCountAtLeast(t, appCtx.Store, "validation_ffprobe", 1)
@@ -1038,7 +1115,6 @@ type demeterAudioTranscriptionOperationStatusTestResponse struct {
 	ChunkIndex  int     `json:"chunkIndex"`
 	ChunkCount  int     `json:"chunkCount"`
 	Progress    float64 `json:"progress"`
-	PartialText string  `json:"partialText"`
 	LastError   string  `json:"lastError"`
 	Response    struct {
 		Text     string  `json:"text"`
@@ -1116,6 +1192,40 @@ func waitForPerformanceTaskCountAtLeast(t *testing.T, st *store.Store, task stri
 	}
 	t.Fatalf("timed out waiting for at least %d performance events with task %q", minCount, task)
 	return 0
+}
+
+func waitForPerformanceTaskCountExactly(t *testing.T, st *store.Store, task string, expected int) {
+	t.Helper()
+	if expected < 0 {
+		expected = 0
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	stableSince := time.Time{}
+	lastCount := -1
+	for time.Now().Before(deadline) {
+		var count int
+		if err := st.DB.QueryRowContext(context.Background(), `
+			SELECT COUNT(*)
+			FROM performance_events
+			WHERE task = ?
+		`, task).Scan(&count); err != nil {
+			t.Fatalf("failed to count performance events for %q: %v", task, err)
+		}
+		if count == expected {
+			if lastCount != expected {
+				stableSince = time.Now()
+			}
+			if !stableSince.IsZero() && time.Since(stableSince) >= 200*time.Millisecond {
+				return
+			}
+		} else {
+			stableSince = time.Time{}
+		}
+		lastCount = count
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %d performance events with task %q", expected, task)
 }
 
 func waitForBackendErrorTitleCountAtLeast(t *testing.T, st *store.Store, title string, minCount int) int {

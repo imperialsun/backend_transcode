@@ -79,11 +79,22 @@ type backendErrorEventPurger interface {
 	PurgeExpiredBackendErrorEvents(context.Context, time.Time) (int64, error)
 }
 
+type demeterTranscriptionOperationPurger interface {
+	PurgeCompletedDemeterAudioTranscriptionOperations(context.Context) (int64, error)
+}
+
 // serverLogStep emits lifecycle events both to stdout and to the structured
 // backend-error pipeline so startup and shutdown problems remain visible.
 func serverLogStep(traceID, step, title string, fields map[string]any) {
 	log.Print(observability.FormatStepLine("server", "lifecycle", step, traceID, observability.DefaultTraceID, observability.DefaultTraceID, title, fields))
 	backenderrors.RecordLog(observability.WithTraceID(context.Background(), traceID), "server", "lifecycle", step, title, fields)
+}
+
+// serverLogPerformanceStep emits a structured lifecycle event into the
+// backend performance pipeline.
+func serverLogPerformanceStep(traceID, step, task string, fields map[string]any) {
+	log.Print(observability.FormatStepLine("server", "lifecycle", step, traceID, observability.DefaultTraceID, observability.DefaultTraceID, task, fields))
+	backendperformance.RecordLog(observability.WithTraceID(context.Background(), traceID), "server", "lifecycle", step, task, fields)
 }
 
 // run wires the database, bootstrap data, background cleanup loops, and HTTP
@@ -121,6 +132,7 @@ func run(ctx context.Context, cfg config.Config) error {
 	runMeetingFinalizeOperationCleanup(ctx, processTraceID, st)
 	runPerformanceCleanup(ctx, processTraceID, st)
 	runBackendErrorCleanup(ctx, processTraceID, st)
+	runDemeterAudioTranscriptionOperationCleanup(ctx, processTraceID, st)
 
 	app := buildApp(cfg, st, mistral.NewClient(
 		cfg.MistralAPIBaseURL,
@@ -238,6 +250,42 @@ func runPerformanceCleanupOnce(ctx context.Context, traceID string, purger perfo
 	serverLogStep(traceID, "performance_cleanup_success", "server", map[string]any{"purged": purged})
 }
 
+// runDemeterAudioTranscriptionOperationCleanup performs one immediate sweep so
+// completed transcription rows do not linger after a restart.
+func runDemeterAudioTranscriptionOperationCleanup(ctx context.Context, traceID string, purger demeterTranscriptionOperationPurger) {
+	runDemeterAudioTranscriptionOperationCleanupOnce(ctx, traceID, purger)
+}
+
+// runDemeterAudioTranscriptionOperationCleanupOnce removes completed
+// transcription rows and records the purge as a performance event.
+func runDemeterAudioTranscriptionOperationCleanupOnce(ctx context.Context, traceID string, purger demeterTranscriptionOperationPurger) {
+	if purger == nil {
+		return
+	}
+	startedAt := time.Now()
+	purged, err := purger.PurgeCompletedDemeterAudioTranscriptionOperations(ctx)
+	fields := map[string]any{
+		"cleanup_scope": "boot",
+		"duration_ms":   time.Since(startedAt).Milliseconds(),
+		"purged_count":  purged,
+	}
+	if err != nil {
+		fields["status"] = "error"
+		fields["message"] = err.Error()
+		serverLogStep(traceID, "demeter_audio_transcription_cleanup_error", "server", map[string]any{
+			"purged_count": purged,
+			"error":        err,
+		})
+		serverLogPerformanceStep(traceID, "demeter_audio_transcription_cleanup_error", "purge_completed_transcription_operations", fields)
+		return
+	}
+	fields["status"] = "success"
+	serverLogStep(traceID, "demeter_audio_transcription_cleanup_success", "server", map[string]any{
+		"purged_count": purged,
+	})
+	serverLogPerformanceStep(traceID, "demeter_audio_transcription_cleanup_success", "purge_completed_transcription_operations", fields)
+}
+
 // runBackendErrorCleanup performs one immediate purge of expired backend
 // error rows so startup does not leave old operational noise behind.
 func runBackendErrorCleanup(ctx context.Context, traceID string, purger backendErrorEventPurger) {
@@ -330,6 +378,7 @@ func purgeManagedBackendTmpDirs(baseDir, traceID, phase string) managedBackendTm
 	}
 	baseDir = filepath.Clean(baseDir)
 
+	startedAt := time.Now()
 	summary := managedBackendTmpPurgeSummary{
 		TargetCount: len(managedBackendTmpPurgeTargets),
 	}
@@ -365,6 +414,19 @@ func purgeManagedBackendTmpDirs(baseDir, traceID, phase string) managedBackendTm
 		"removed_count": summary.RemovedCount,
 		"error_count":   summary.ErrorCount,
 	})
+	performanceFields := map[string]any{
+		"cleanup_scope": phase,
+		"target_count":  summary.TargetCount,
+		"removed_count": summary.RemovedCount,
+		"error_count":   summary.ErrorCount,
+		"duration_ms":   time.Since(startedAt).Milliseconds(),
+	}
+	if summary.ErrorCount > 0 {
+		performanceFields["status"] = "error"
+	} else {
+		performanceFields["status"] = "success"
+	}
+	serverLogPerformanceStep(traceID, "tmp_purge_complete", "purge_managed_tmp_dirs", performanceFields)
 
 	return summary
 }

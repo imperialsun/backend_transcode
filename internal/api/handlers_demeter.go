@@ -103,7 +103,7 @@ func (a *App) demeterChatCompletions(c *fiber.Ctx) error {
 
 	if !a.MistralClient.IsConfigured() {
 		logDemeterChatRelayIssue(c, route, fiber.StatusServiceUnavailable, "mistral client is not configured")
-		logDemeterChatStage(c, route, seq, "sequence_end", map[string]any{
+		logDemeterChatPerformanceTaskCtx(newDemeterChatLogContextFromFiber(c), route, seq, "sequence_end", map[string]any{
 			"result":            "mistral_not_configured",
 			"request_bytes":     requestBytes,
 			"status_code":       fiber.StatusServiceUnavailable,
@@ -118,12 +118,12 @@ func (a *App) demeterChatCompletions(c *fiber.Ctx) error {
 	result, err := a.demeterChatCompletionsWithRetry(newDemeterChatLogContextFromFiber(c), route, seq, requestBody)
 	if err != nil {
 		logDemeterChatRelayIssue(c, route, fiber.StatusBadGateway, err.Error())
-		logDemeterChatStage(c, route, seq, "upstream_transport_error", map[string]any{
+		logDemeterChatBackendErrorCtx(newDemeterChatLogContextFromFiber(c), route, seq, "upstream_transport_error", map[string]any{
 			"upstream":      demeterChatCompletionsUpstreamPath,
 			"request_bytes": requestBytes,
 			"message":       err.Error(),
 		})
-		logDemeterChatStage(c, route, seq, "sequence_end", map[string]any{
+		logDemeterChatPerformanceTaskCtx(newDemeterChatLogContextFromFiber(c), route, seq, "sequence_end", map[string]any{
 			"result":            "upstream_transport_error",
 			"request_bytes":     requestBytes,
 			"status_code":       fiber.StatusBadGateway,
@@ -140,7 +140,7 @@ func (a *App) demeterChatCompletions(c *fiber.Ctx) error {
 		"attempts":             result.attempts,
 		"upstream_duration_ms": result.upstreamDurationMs,
 	})
-	logDemeterChatStage(c, route, seq, "sequence_end", map[string]any{
+	logDemeterChatPerformanceTaskCtx(newDemeterChatLogContextFromFiber(c), route, seq, "sequence_end", map[string]any{
 		"result":            "completed",
 		"request_bytes":     requestBytes,
 		"status_code":       result.statusCode,
