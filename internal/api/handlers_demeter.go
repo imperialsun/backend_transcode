@@ -93,40 +93,65 @@ func (a *App) demeterModels(c *fiber.Ctx) error {
 // demeterChatCompletions proxies the upstream chat-completions endpoint.
 func (a *App) demeterChatCompletions(c *fiber.Ctx) error {
 	route := requestRoutePath(c)
+	startedAt := time.Now()
+	seq := nextDemeterChatCompletionsSequenceID()
 	requestBody := c.Body()
 	requestBytes := len(requestBody)
-	logAPIStep(c, "demeter", route, "request_received", "chat_completions", map[string]any{
+	logDemeterChatStage(c, route, seq, "request_received", map[string]any{
 		"request_bytes": requestBytes,
 	})
 
 	if !a.MistralClient.IsConfigured() {
-		logDemeterRelayIssue(c, route, fiber.StatusServiceUnavailable, "mistral client is not configured")
+		logDemeterChatRelayIssue(c, route, fiber.StatusServiceUnavailable, "mistral client is not configured")
+		logDemeterChatStage(c, route, seq, "sequence_end", map[string]any{
+			"result":            "mistral_not_configured",
+			"request_bytes":     requestBytes,
+			"status_code":       fiber.StatusServiceUnavailable,
+			"total_duration_ms": time.Since(startedAt).Milliseconds(),
+		})
 		return c.Status(fiber.StatusServiceUnavailable).JSON(ErrorResponse{Error: "mistral is not configured"})
 	}
-	logAPIStep(c, "demeter", route, "upstream_start", "chat_completions", map[string]any{
+	logDemeterChatStage(c, route, seq, "upstream_start", map[string]any{
 		"upstream":      demeterChatCompletionsUpstreamPath,
 		"request_bytes": requestBytes,
 	})
-	statusCode, body, err := a.MistralClient.DoJSON(requestContext(c), fiber.MethodPost, demeterChatCompletionsUpstreamPath, requestBody)
+	result, err := a.demeterChatCompletionsWithRetry(newDemeterChatLogContextFromFiber(c), route, seq, requestBody)
 	if err != nil {
-		logDemeterRelayIssue(c, route, fiber.StatusBadGateway, err.Error())
-		logAPIStep(c, "demeter", route, "upstream_transport_error", "chat_completions", map[string]any{
+		logDemeterChatRelayIssue(c, route, fiber.StatusBadGateway, err.Error())
+		logDemeterChatStage(c, route, seq, "upstream_transport_error", map[string]any{
 			"upstream":      demeterChatCompletionsUpstreamPath,
 			"request_bytes": requestBytes,
 			"message":       err.Error(),
 		})
+		logDemeterChatStage(c, route, seq, "sequence_end", map[string]any{
+			"result":            "upstream_transport_error",
+			"request_bytes":     requestBytes,
+			"status_code":       fiber.StatusBadGateway,
+			"total_duration_ms": time.Since(startedAt).Milliseconds(),
+		})
 		return c.Status(fiber.StatusBadGateway).JSON(ErrorResponse{Error: "failed to reach mistral"})
 	}
-	logDemeterUpstreamStatus(c, route, statusCode)
-	logAPIStep(c, "demeter", route, "response_ready", "chat_completions", map[string]any{
-		"upstream":        demeterChatCompletionsUpstreamPath,
-		"upstream_status": statusCode,
-		"request_bytes":   requestBytes,
-		"response_bytes":  len(body),
+	logDemeterChatUpstreamStatus(c, route, result.statusCode)
+	logDemeterChatStage(c, route, seq, "response_ready", map[string]any{
+		"upstream":             demeterChatCompletionsUpstreamPath,
+		"upstream_status":      result.statusCode,
+		"request_bytes":        requestBytes,
+		"response_bytes":       len(result.responseBody),
+		"attempts":             result.attempts,
+		"upstream_duration_ms": result.upstreamDurationMs,
 	})
-	c.Status(statusCode)
+	logDemeterChatStage(c, route, seq, "sequence_end", map[string]any{
+		"result":            "completed",
+		"request_bytes":     requestBytes,
+		"status_code":       result.statusCode,
+		"upstream_status":   result.statusCode,
+		"response_bytes":    len(result.responseBody),
+		"attempts":          result.attempts,
+		"total_duration_ms": time.Since(startedAt).Milliseconds(),
+	})
+	c.Status(result.statusCode)
 	c.Type("json")
-	return c.Send(body)
+	return c.Send(result.responseBody)
 }
 
 // demeterAudioTranscriptions handles the front door for both slice transport

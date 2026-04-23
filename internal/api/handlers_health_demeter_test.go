@@ -254,6 +254,148 @@ func TestDemeterChatCompletions_ProxiesJSONBody(t *testing.T) {
 	}
 }
 
+func TestDemeterChatCompletions_RetriesTransientUpstreamResponses(t *testing.T) {
+	var buffer bytes.Buffer
+	originalWriter := log.Writer()
+	originalFlags := log.Flags()
+	originalDelay := demeterChatCompletionsRetryDelayForAttempt
+	log.SetOutput(&buffer)
+	log.SetFlags(0)
+	demeterChatCompletionsRetryDelayForAttempt = func(int) time.Duration {
+		return time.Millisecond
+	}
+	t.Cleanup(func() {
+		log.SetOutput(originalWriter)
+		log.SetFlags(originalFlags)
+		demeterChatCompletionsRetryDelayForAttempt = originalDelay
+	})
+
+	cases := []struct {
+		name        string
+		firstStatus int
+		reason      string
+	}{
+		{name: "429", firstStatus: http.StatusTooManyRequests, reason: "upstream_429"},
+		{name: "503", firstStatus: http.StatusServiceUnavailable, reason: "upstream_503"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			buffer.Reset()
+			var attempts int32
+
+			app, token, _ := setupDemeterRoutesApp(t, []store.UserPermissionOverrideInput{
+				{PermissionCode: "feature.llmapi", Effect: "allow"},
+				{PermissionCode: "provider.llm.demeter_sante", Effect: "allow"},
+			}, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				attempt := atomic.AddInt32(&attempts, 1)
+				if attempt == 1 {
+					w.Header().Set(fiber.HeaderContentType, fiber.MIMEApplicationJSON)
+					w.WriteHeader(tc.firstStatus)
+					_, _ = w.Write([]byte(`{"error":"retry please"}`))
+					return
+				}
+				w.Header().Set(fiber.HeaderContentType, fiber.MIMEApplicationJSON)
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"rapport ok"}}]}`))
+			}))
+
+			resp := performJSONRequestWithHeaders(
+				t,
+				app,
+				http.MethodPost,
+				"/api/v1/providers/demeter-sante/chat/completions",
+				map[string]any{"model": "test-model", "messages": []map[string]string{{"role": "user", "content": "hello"}}},
+				nil,
+				map[string]string{fiber.HeaderAuthorization: "Bearer " + token},
+			)
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("expected 200 after retry for %s, got %d", tc.name, resp.StatusCode)
+			}
+
+			var payload map[string]any
+			if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+				t.Fatalf("failed to decode chat retry response: %v", err)
+			}
+			if got := payload["choices"]; got == nil {
+				t.Fatalf("expected chat completion payload, got %+v", payload)
+			}
+			if got := atomic.LoadInt32(&attempts); got != 2 {
+				t.Fatalf("expected 2 upstream attempts for %s, got %d", tc.name, got)
+			}
+
+			logged := buffer.String()
+			for _, needle := range []string{
+				"step=upstream_capacity_error",
+				"retry_delay_ms=1",
+				"request_bytes=",
+				fmt.Sprintf("reason=%q", tc.reason),
+				"action=\"retry\"",
+			} {
+				if !strings.Contains(logged, needle) {
+					t.Fatalf("expected %q in retry logs for %s, got %q", needle, tc.name, logged)
+				}
+			}
+		})
+	}
+}
+
+func TestDemeterChatCompletions_ExhaustsRetriesOnRepeatedCapacityErrors(t *testing.T) {
+	var buffer bytes.Buffer
+	originalWriter := log.Writer()
+	originalFlags := log.Flags()
+	originalDelay := demeterChatCompletionsRetryDelayForAttempt
+	log.SetOutput(&buffer)
+	log.SetFlags(0)
+	demeterChatCompletionsRetryDelayForAttempt = func(int) time.Duration {
+		return time.Millisecond
+	}
+	t.Cleanup(func() {
+		log.SetOutput(originalWriter)
+		log.SetFlags(originalFlags)
+		demeterChatCompletionsRetryDelayForAttempt = originalDelay
+	})
+
+	var attempts int32
+	app, token, _ := setupDemeterRoutesApp(t, []store.UserPermissionOverrideInput{
+		{PermissionCode: "feature.llmapi", Effect: "allow"},
+		{PermissionCode: "provider.llm.demeter_sante", Effect: "allow"},
+	}, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&attempts, 1)
+		w.Header().Set(fiber.HeaderContentType, fiber.MIMEApplicationJSON)
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error":"capacity"}`))
+	}))
+
+	resp := performJSONRequestWithHeaders(
+		t,
+		app,
+		http.MethodPost,
+		"/api/v1/providers/demeter-sante/chat/completions",
+		map[string]any{"model": "test-model", "messages": []map[string]string{{"role": "user", "content": "hello"}}},
+		nil,
+		map[string]string{fiber.HeaderAuthorization: "Bearer " + token},
+	)
+	if resp.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("expected 429 after exhausting retries, got %d", resp.StatusCode)
+	}
+	if got := atomic.LoadInt32(&attempts); got != demeterChatCompletionsMaxAttempts {
+		t.Fatalf("expected %d upstream attempts, got %d", demeterChatCompletionsMaxAttempts, got)
+	}
+
+	logged := buffer.String()
+	for _, needle := range []string{
+		"step=upstream_capacity_error",
+		"action=\"exhausted\"",
+		fmt.Sprintf("attempt=%d", demeterChatCompletionsMaxAttempts),
+		"retry_delay_ms=1",
+	} {
+		if !strings.Contains(logged, needle) {
+			t.Fatalf("expected %q in exhaustion logs, got %q", needle, logged)
+		}
+	}
+}
+
 func TestDemeterModelsAndChatCompletions_ReturnBadGatewayOnUpstreamError(t *testing.T) {
 	app, token, appCtx := setupDemeterRoutesApp(t, []store.UserPermissionOverrideInput{
 		{PermissionCode: "provider.cloud.demeter_sante", Effect: "allow"},
