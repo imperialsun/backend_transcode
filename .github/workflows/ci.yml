@@ -43,9 +43,10 @@ jobs:
         run: go test ./... -race -coverprofile=coverage.out
 
       - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v6
+        uses: codecov/codecov-action@v6.0.0
         with:
           files: coverage.out
+          version: v11.2.7
           use_oidc: true
           fail_ci_if_error: true
           verbose: true
