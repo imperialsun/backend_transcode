@@ -19,6 +19,7 @@ const (
 	demeterAudioQueueDefaultParallelism = 1
 	demeterAudioQueueMaxParallelism     = 8
 	demeterAudioQueuePollInterval       = 250 * time.Millisecond
+	demeterAudioQueueIdleFallback       = 30 * time.Second
 	demeterAudioQueueCooldownDuration   = 5 * time.Second
 )
 
@@ -71,19 +72,19 @@ type demeterAudioQueueSummarySnapshot struct {
 }
 
 type demeterAudioQueueOperationSnapshot struct {
-	OperationID     string  `json:"operationId"`
+	OperationID      string  `json:"operationId"`
 	OrganizationID   string  `json:"organizationId,omitempty"`
 	UserID           string  `json:"userId,omitempty"`
 	QueueID          int     `json:"queueId"`
-	Status          string  `json:"status"`
-	Stage           string  `json:"stage"`
-	ChunkIndex      int     `json:"chunkIndex"`
-	ChunkCount      int     `json:"chunkCount"`
-	Progress        float64 `json:"progress"`
-	StatusCode      int     `json:"statusCode"`
-	CreatedAt       string  `json:"createdAt"`
-	UpdatedAt       string  `json:"updatedAt"`
-	FinishedAt      string  `json:"finishedAt,omitempty"`
+	Status           string  `json:"status"`
+	Stage            string  `json:"stage"`
+	ChunkIndex       int     `json:"chunkIndex"`
+	ChunkCount       int     `json:"chunkCount"`
+	Progress         float64 `json:"progress"`
+	StatusCode       int     `json:"statusCode"`
+	CreatedAt        string  `json:"createdAt"`
+	UpdatedAt        string  `json:"updatedAt"`
+	FinishedAt       string  `json:"finishedAt,omitempty"`
 	QueuePayloadJSON string  `json:"queuePayloadJson,omitempty"`
 	ResponseJSON     string  `json:"responseJson,omitempty"`
 	LastError        string  `json:"lastError,omitempty"`
@@ -112,7 +113,7 @@ type demeterAudioQueueSnapshot struct {
 	Summary       demeterAudioQueueSummarySnapshot     `json:"summary"`
 	Workers       []demeterAudioQueueLaneSnapshot      `json:"workers"`
 	Operations    []demeterAudioQueueOperationSnapshot `json:"operations"`
-	AllOperations  []demeterAudioQueueOperationSnapshot `json:"allOperations"`
+	AllOperations []demeterAudioQueueOperationSnapshot `json:"allOperations"`
 }
 
 func demeterAudioQueueOperationSnapshotFromRecord(record *store.DemeterAudioTranscriptionOperationRecord) demeterAudioQueueOperationSnapshot {
@@ -165,11 +166,13 @@ type DemeterAudioQueueManager struct {
 	cancel                 context.CancelFunc
 	parallelism            int
 	lanes                  map[int]*demeterAudioQueueLaneState
+	laneWakeCh             map[int]chan struct{}
 	retryPaused            bool
 	retryPausedLaneID      int
 	retryPausedOperationID string
 	retryPausedChunkIndex  int
 	retryPausedSince       time.Time
+	retryPauseDone         chan struct{}
 }
 
 func (a *App) ensureDemeterQueueManager() *DemeterAudioQueueManager {
@@ -178,8 +181,9 @@ func (a *App) ensureDemeterQueueManager() *DemeterAudioQueueManager {
 	}
 	if a.DemeterQueue == nil {
 		a.DemeterQueue = &DemeterAudioQueueManager{
-			app:   a,
-			lanes: map[int]*demeterAudioQueueLaneState{},
+			app:        a,
+			lanes:      map[int]*demeterAudioQueueLaneState{},
+			laneWakeCh: map[int]chan struct{}{},
 		}
 	}
 	return a.DemeterQueue
@@ -350,6 +354,7 @@ func (m *DemeterAudioQueueManager) startMistralRetryPause(laneID int, operationI
 	m.retryPausedOperationID = strings.TrimSpace(operationID)
 	m.retryPausedChunkIndex = chunkIndex
 	m.retryPausedSince = time.Now().UTC()
+	m.retryPauseDone = make(chan struct{})
 	return true
 }
 
@@ -358,19 +363,93 @@ func (m *DemeterAudioQueueManager) finishMistralRetryPause(laneID int, operation
 		return false
 	}
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	if !m.retryPaused {
+		m.mu.Unlock()
 		return false
 	}
 	if m.retryPausedLaneID != laneID || m.retryPausedOperationID != strings.TrimSpace(operationID) || m.retryPausedChunkIndex != chunkIndex {
+		m.mu.Unlock()
 		return false
 	}
+	done := m.retryPauseDone
 	m.retryPaused = false
 	m.retryPausedLaneID = 0
 	m.retryPausedOperationID = ""
 	m.retryPausedChunkIndex = 0
 	m.retryPausedSince = time.Time{}
+	m.retryPauseDone = nil
+	m.mu.Unlock()
+	if done != nil {
+		close(done)
+	}
+	m.notifyAllLaneWorkAvailable()
 	return true
+}
+
+func (m *DemeterAudioQueueManager) ensureMistralRetryPauseDoneLocked() chan struct{} {
+	if m.retryPauseDone == nil {
+		m.retryPauseDone = make(chan struct{})
+	}
+	return m.retryPauseDone
+}
+
+func (m *DemeterAudioQueueManager) ensureLaneWakeChLocked(laneID int) chan struct{} {
+	if laneID <= 0 {
+		laneID = 1
+	}
+	if m.laneWakeCh == nil {
+		m.laneWakeCh = map[int]chan struct{}{}
+	}
+	ch, ok := m.laneWakeCh[laneID]
+	if !ok {
+		ch = make(chan struct{}, 1)
+		m.laneWakeCh[laneID] = ch
+	}
+	return ch
+}
+
+func (m *DemeterAudioQueueManager) laneWakeChannel(laneID int) <-chan struct{} {
+	if m == nil {
+		return nil
+	}
+	m.mu.Lock()
+	ch := m.ensureLaneWakeChLocked(laneID)
+	m.mu.Unlock()
+	return ch
+}
+
+func (m *DemeterAudioQueueManager) notifyLaneWorkAvailable(laneID int) {
+	if m == nil || laneID <= 0 {
+		return
+	}
+	m.mu.Lock()
+	ch := m.ensureLaneWakeChLocked(laneID)
+	m.mu.Unlock()
+	select {
+	case ch <- struct{}{}:
+	default:
+	}
+}
+
+func (m *DemeterAudioQueueManager) notifyAllLaneWorkAvailable() {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	channels := make([]chan struct{}, 0, len(m.lanes))
+	for laneID, state := range m.lanes {
+		if state == nil || (!state.Open && !state.Draining) {
+			continue
+		}
+		channels = append(channels, m.ensureLaneWakeChLocked(laneID))
+	}
+	m.mu.Unlock()
+	for _, ch := range channels {
+		select {
+		case ch <- struct{}{}:
+		default:
+		}
+	}
 }
 
 func (m *DemeterAudioQueueManager) waitForMistralRetryPause(ctx context.Context, laneID int) bool {
@@ -380,16 +459,20 @@ func (m *DemeterAudioQueueManager) waitForMistralRetryPause(ctx context.Context,
 	for {
 		m.mu.Lock()
 		paused, ownerLaneID, _, _, _ := m.mistralRetryPauseStateLocked()
-		m.mu.Unlock()
 		if !paused || ownerLaneID == laneID {
+			m.mu.Unlock()
 			return true
 		}
+		done := m.ensureMistralRetryPauseDoneLocked()
+		m.mu.Unlock()
 		if ctx == nil {
-			time.Sleep(demeterAudioQueuePollInterval)
+			<-done
 			continue
 		}
-		if err := sleepContext(ctx, demeterAudioQueuePollInterval); err != nil {
+		select {
+		case <-ctx.Done():
 			return false
+		case <-done:
 		}
 	}
 }
@@ -398,22 +481,42 @@ func (m *DemeterAudioQueueManager) sleepWithMistralRetryPause(ctx context.Contex
 	if duration <= 0 {
 		return true
 	}
-	remaining := duration
-	for remaining > 0 {
-		if !m.waitForMistralRetryPause(ctx, laneID) {
-			return false
-		}
-		step := demeterAudioQueuePollInterval
-		if remaining < step {
-			step = remaining
-		}
-		startedAt := time.Now()
-		if err := sleepContext(ctx, step); err != nil {
-			return false
-		}
-		remaining -= time.Since(startedAt)
+	if !m.waitForMistralRetryPause(ctx, laneID) {
+		return false
+	}
+	if ctx == nil {
+		time.Sleep(duration)
+		return true
+	}
+	if err := sleepContext(ctx, duration); err != nil {
+		return false
 	}
 	return true
+}
+
+func (m *DemeterAudioQueueManager) waitForLaneWorkAvailable(ctx context.Context, laneID int, fallback time.Duration) bool {
+	if fallback <= 0 {
+		return true
+	}
+	ch := m.laneWakeChannel(laneID)
+	timer := time.NewTimer(fallback)
+	defer timer.Stop()
+	if ctx == nil {
+		select {
+		case <-ch:
+			return true
+		case <-timer.C:
+			return true
+		}
+	}
+	select {
+	case <-ctx.Done():
+		return false
+	case <-ch:
+		return true
+	case <-timer.C:
+		return true
+	}
 }
 
 func (m *DemeterAudioQueueManager) ensureLaneWorker(ctx context.Context, laneID int) bool {
@@ -496,7 +599,7 @@ func (m *DemeterAudioQueueManager) runLaneWorker(laneID int) {
 			if err := m.rebalancePendingOperations(m.ctx); err != nil && !m.isFatalQueueError(err) {
 				_ = err
 			}
-			if !m.sleepWithMistralRetryPause(m.ctx, laneID, demeterAudioQueuePollInterval) {
+			if !m.waitForLaneWorkAvailable(m.ctx, laneID, demeterAudioQueueIdleFallback) {
 				return
 			}
 			continue
@@ -776,6 +879,7 @@ func (m *DemeterAudioQueueManager) EnqueueOperation(ctx context.Context, record 
 		}
 		logDemeterAudioQueuePerformanceTaskCtx(logCtx, payload.Route, payload.Seq, "enqueue", "demeter_queue_enqueue", fields)
 		m.ensureLaneWorker(ctx, laneID)
+		m.notifyLaneWorkAvailable(laneID)
 	} else {
 		logDemeterAudioQueuePerformanceTaskCtx(logCtx, payload.Route, payload.Seq, "enqueue", "demeter_queue_enqueue", fields)
 	}
@@ -864,8 +968,8 @@ func (m *DemeterAudioQueueManager) Resize(ctx context.Context, route string, par
 
 func (m *DemeterAudioQueueManager) Snapshot(ctx context.Context, limit int) (demeterAudioQueueSnapshot, error) {
 	snapshot := demeterAudioQueueSnapshot{
-		Workers:      []demeterAudioQueueLaneSnapshot{},
-		Operations:   []demeterAudioQueueOperationSnapshot{},
+		Workers:       []demeterAudioQueueLaneSnapshot{},
+		Operations:    []demeterAudioQueueOperationSnapshot{},
 		AllOperations: []demeterAudioQueueOperationSnapshot{},
 	}
 	if m == nil || m.app == nil || m.app.Store == nil {
@@ -1201,6 +1305,7 @@ func (m *DemeterAudioQueueManager) rebalancePendingOperations(ctx context.Contex
 		}
 		loads[bestIndex].load += workload
 		m.ensureLaneWorker(ctx, laneID)
+		m.notifyLaneWorkAvailable(laneID)
 	}
 	return nil
 }

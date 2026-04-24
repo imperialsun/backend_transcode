@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"net/http"
 	"path/filepath"
 	"testing"
 	"time"
@@ -82,6 +83,71 @@ func TestUpdateDemeterAudioTranscriptionOperationByID_IgnoresOwnership(t *testin
 	}
 	if !updated.FinishedAt.Valid {
 		t.Fatalf("expected finished at to be set: %+v", updated)
+	}
+}
+
+func TestClaimNextPendingDemeterAudioTranscriptionOperationForQueueClaimsOnce(t *testing.T) {
+	ctx := context.Background()
+	st, err := Open(ctx, filepath.Join(t.TempDir(), "demeter-claim.sqlite"))
+	if err != nil {
+		t.Fatalf("failed to open store: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = st.Close()
+	})
+
+	org, err := st.CreateOrganization(ctx, "Org", "org", "active")
+	if err != nil {
+		t.Fatalf("failed to create org: %v", err)
+	}
+	user, err := st.CreateUser(ctx, org.ID, "u@example.com", "hash", "active")
+	if err != nil {
+		t.Fatalf("failed to create user: %v", err)
+	}
+
+	now := time.Now().UTC()
+	record := &DemeterAudioTranscriptionOperationRecord{
+		OperationID:      "demeter-audio-claim-once",
+		OrganizationID:   org.ID,
+		UserID:           user.ID,
+		QueueID:          2,
+		Status:           DemeterAudioTranscriptionOperationStatusPending,
+		Stage:            "queued",
+		ChunkCount:       1,
+		QueuePayloadJSON: sql.NullString{String: `{"traceId":"trace"}`, Valid: true},
+		StatusCode:       http.StatusAccepted,
+		CreatedAt:        now,
+		UpdatedAt:        now,
+	}
+	if err := st.CreateDemeterAudioTranscriptionOperation(ctx, record); err != nil {
+		t.Fatalf("failed to create operation: %v", err)
+	}
+
+	wrongLane, err := st.ClaimNextPendingDemeterAudioTranscriptionOperationForQueue(ctx, 1)
+	if err != nil {
+		t.Fatalf("claim from wrong lane failed: %v", err)
+	}
+	if wrongLane != nil {
+		t.Fatalf("expected no record on lane 1, got %+v", wrongLane)
+	}
+
+	claimed, err := st.ClaimNextPendingDemeterAudioTranscriptionOperationForQueue(ctx, 2)
+	if err != nil {
+		t.Fatalf("claim failed: %v", err)
+	}
+	if claimed == nil {
+		t.Fatal("expected record to be claimed")
+	}
+	if claimed.OperationID != record.OperationID || claimed.Status != DemeterAudioTranscriptionOperationStatusRunning || claimed.Stage != "running" {
+		t.Fatalf("unexpected claimed record: %+v", claimed)
+	}
+
+	claimedAgain, err := st.ClaimNextPendingDemeterAudioTranscriptionOperationForQueue(ctx, 2)
+	if err != nil {
+		t.Fatalf("second claim failed: %v", err)
+	}
+	if claimedAgain != nil {
+		t.Fatalf("expected second claim to return nil, got %+v", claimedAgain)
 	}
 }
 

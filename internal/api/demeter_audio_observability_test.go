@@ -353,6 +353,10 @@ func TestDemeterQueueSnapshotIncludesFullOperationTableRows(t *testing.T) {
 			StatusCode:     http.StatusOK,
 			CreatedAt:      now.Add(-2 * time.Minute),
 			UpdatedAt:      now.Add(-time.Minute),
+			QueuePayloadJSON: sql.NullString{
+				String: `{"sourceMode":"backend","chunkCount":4}`,
+				Valid:  true,
+			},
 			ResponseJSON: sql.NullString{
 				String: `{"text":"done","segments":[]}`,
 				Valid:  true,
