@@ -764,11 +764,9 @@ func (a *App) startDemeterAudioTransportTranscriptionOperation(
 		startedAt,
 	)
 
-	if session != nil {
-		session.mu.Lock()
-		session.finalized = true
-		session.mu.Unlock()
-	}
+	session.mu.Lock()
+	session.finalized = true
+	session.mu.Unlock()
 
 	record, loadErr := a.Store.GetDemeterAudioTranscriptionOperation(requestContext(c), session.uploadID, claims.OrgID, claims.UserID)
 	if loadErr != nil {
@@ -1619,11 +1617,9 @@ func (a *App) demeterAudioTranscriptionsTransportSlice(
 		return err
 	}
 
-	if session != nil {
-		session.mu.Lock()
-		session.finalized = true
-		session.mu.Unlock()
-	}
+	session.mu.Lock()
+	session.finalized = true
+	session.mu.Unlock()
 
 	return nil
 }

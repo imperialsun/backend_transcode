@@ -71,17 +71,22 @@ type demeterAudioQueueSummarySnapshot struct {
 }
 
 type demeterAudioQueueOperationSnapshot struct {
-	OperationID string  `json:"operationId"`
-	QueueID     int     `json:"queueId"`
-	Status      string  `json:"status"`
-	Stage       string  `json:"stage"`
-	ChunkIndex  int     `json:"chunkIndex"`
-	ChunkCount  int     `json:"chunkCount"`
-	Progress    float64 `json:"progress"`
-	StatusCode  int     `json:"statusCode"`
-	CreatedAt   string  `json:"createdAt"`
-	UpdatedAt   string  `json:"updatedAt"`
-	LastError   string  `json:"lastError,omitempty"`
+	OperationID     string  `json:"operationId"`
+	OrganizationID   string  `json:"organizationId,omitempty"`
+	UserID           string  `json:"userId,omitempty"`
+	QueueID          int     `json:"queueId"`
+	Status          string  `json:"status"`
+	Stage           string  `json:"stage"`
+	ChunkIndex      int     `json:"chunkIndex"`
+	ChunkCount      int     `json:"chunkCount"`
+	Progress        float64 `json:"progress"`
+	StatusCode      int     `json:"statusCode"`
+	CreatedAt       string  `json:"createdAt"`
+	UpdatedAt       string  `json:"updatedAt"`
+	FinishedAt      string  `json:"finishedAt,omitempty"`
+	QueuePayloadJSON string  `json:"queuePayloadJson,omitempty"`
+	ResponseJSON     string  `json:"responseJson,omitempty"`
+	LastError        string  `json:"lastError,omitempty"`
 }
 
 type demeterAudioQueueLaneSnapshot struct {
@@ -103,10 +108,50 @@ type demeterAudioQueueLaneSnapshot struct {
 }
 
 type demeterAudioQueueSnapshot struct {
-	Settings   demeterAudioQueueSettingsSnapshot    `json:"settings"`
-	Summary    demeterAudioQueueSummarySnapshot     `json:"summary"`
-	Workers    []demeterAudioQueueLaneSnapshot      `json:"workers"`
-	Operations []demeterAudioQueueOperationSnapshot `json:"operations"`
+	Settings      demeterAudioQueueSettingsSnapshot    `json:"settings"`
+	Summary       demeterAudioQueueSummarySnapshot     `json:"summary"`
+	Workers       []demeterAudioQueueLaneSnapshot      `json:"workers"`
+	Operations    []demeterAudioQueueOperationSnapshot `json:"operations"`
+	AllOperations  []demeterAudioQueueOperationSnapshot `json:"allOperations"`
+}
+
+func demeterAudioQueueOperationSnapshotFromRecord(record *store.DemeterAudioTranscriptionOperationRecord) demeterAudioQueueOperationSnapshot {
+	item := demeterAudioQueueOperationSnapshot{}
+	if record == nil {
+		return item
+	}
+
+	item.OperationID = strings.TrimSpace(record.OperationID)
+	item.OrganizationID = strings.TrimSpace(record.OrganizationID)
+	item.UserID = strings.TrimSpace(record.UserID)
+	item.QueueID = record.QueueID
+	item.Status = strings.TrimSpace(record.Status)
+	item.Stage = strings.TrimSpace(record.Stage)
+	item.ChunkIndex = record.ChunkIndex
+	item.ChunkCount = record.ChunkCount
+	item.Progress = record.Progress
+	item.StatusCode = record.StatusCode
+	item.CreatedAt = record.CreatedAt.UTC().Format(time.RFC3339)
+	item.UpdatedAt = record.UpdatedAt.UTC().Format(time.RFC3339)
+
+	if record.FinishedAt.Valid {
+		item.FinishedAt = record.FinishedAt.Time.UTC().Format(time.RFC3339)
+	}
+	if record.QueuePayloadJSON.Valid {
+		if trimmed := strings.TrimSpace(record.QueuePayloadJSON.String); trimmed != "" {
+			item.QueuePayloadJSON = trimmed
+		}
+	}
+	if record.ResponseJSON.Valid {
+		if trimmed := strings.TrimSpace(record.ResponseJSON.String); trimmed != "" {
+			item.ResponseJSON = trimmed
+		}
+	}
+	if record.LastError.Valid {
+		item.LastError = strings.TrimSpace(record.LastError.String)
+	}
+
+	return item
 }
 
 // DemeterAudioQueueManager serializes Demeter transcription operations into
@@ -819,8 +864,9 @@ func (m *DemeterAudioQueueManager) Resize(ctx context.Context, route string, par
 
 func (m *DemeterAudioQueueManager) Snapshot(ctx context.Context, limit int) (demeterAudioQueueSnapshot, error) {
 	snapshot := demeterAudioQueueSnapshot{
-		Workers:    []demeterAudioQueueLaneSnapshot{},
-		Operations: []demeterAudioQueueOperationSnapshot{},
+		Workers:      []demeterAudioQueueLaneSnapshot{},
+		Operations:   []demeterAudioQueueOperationSnapshot{},
+		AllOperations: []demeterAudioQueueOperationSnapshot{},
 	}
 	if m == nil || m.app == nil || m.app.Store == nil {
 		return snapshot, nil
@@ -839,6 +885,10 @@ func (m *DemeterAudioQueueManager) Snapshot(ctx context.Context, limit int) (dem
 		store.DemeterAudioTranscriptionOperationStatusPending,
 		store.DemeterAudioTranscriptionOperationStatusRunning,
 	}, limit)
+	if err != nil {
+		return snapshot, err
+	}
+	allOperations, err := m.app.Store.ListDemeterAudioTranscriptionOperations(ctx, nil, nil, limit)
 	if err != nil {
 		return snapshot, err
 	}
@@ -954,22 +1004,15 @@ func (m *DemeterAudioQueueManager) Snapshot(ctx context.Context, limit int) (dem
 		if op == nil {
 			continue
 		}
-		item := demeterAudioQueueOperationSnapshot{
-			OperationID: op.OperationID,
-			QueueID:     op.QueueID,
-			Status:      op.Status,
-			Stage:       op.Stage,
-			ChunkIndex:  op.ChunkIndex,
-			ChunkCount:  op.ChunkCount,
-			Progress:    op.Progress,
-			StatusCode:  op.StatusCode,
-			CreatedAt:   op.CreatedAt.UTC().Format(time.RFC3339),
-			UpdatedAt:   op.UpdatedAt.UTC().Format(time.RFC3339),
+		opsSnapshot = append(opsSnapshot, demeterAudioQueueOperationSnapshotFromRecord(op))
+	}
+
+	allOpsSnapshot := make([]demeterAudioQueueOperationSnapshot, 0, len(allOperations))
+	for _, op := range allOperations {
+		if op == nil {
+			continue
 		}
-		if op.LastError.Valid {
-			item.LastError = strings.TrimSpace(op.LastError.String)
-		}
-		opsSnapshot = append(opsSnapshot, item)
+		allOpsSnapshot = append(allOpsSnapshot, demeterAudioQueueOperationSnapshotFromRecord(op))
 	}
 
 	snapshot.Settings = demeterAudioQueueSettingsSnapshot{
@@ -994,6 +1037,7 @@ func (m *DemeterAudioQueueManager) Snapshot(ctx context.Context, limit int) (dem
 	}
 	snapshot.Workers = workers
 	snapshot.Operations = opsSnapshot
+	snapshot.AllOperations = allOpsSnapshot
 	return snapshot, nil
 }
 

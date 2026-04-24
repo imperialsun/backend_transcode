@@ -297,6 +297,138 @@ func TestDemeterQueueSnapshotUsesLiveOperationProgressAndRetryPauseState(t *test
 	}
 }
 
+func TestDemeterQueueSnapshotIncludesFullOperationTableRows(t *testing.T) {
+	st := openAPITestStore(t, "demeter-queue-snapshot-full-table.sqlite")
+	app := &App{Store: st}
+	manager := app.EnsureDemeterQueueManager()
+	t.Cleanup(manager.Stop)
+
+	now := time.Now().UTC()
+	org := createTestOrganization(t, st, "Demo Org", "demo-org-full", "active")
+	user := createTestUser(t, st, org.ID, "full@example.com", "hashed-password", "active")
+
+	records := []*store.DemeterAudioTranscriptionOperationRecord{
+		{
+			OperationID:    "op-pending",
+			OrganizationID: org.ID,
+			UserID:         user.ID,
+			QueueID:        1,
+			Status:         store.DemeterAudioTranscriptionOperationStatusPending,
+			Stage:          "queued",
+			ChunkIndex:     0,
+			ChunkCount:     4,
+			Progress:       0,
+			StatusCode:     http.StatusAccepted,
+			CreatedAt:      now.Add(-4 * time.Minute),
+			UpdatedAt:      now.Add(-4 * time.Minute),
+			QueuePayloadJSON: sql.NullString{
+				String: `{"sourceMode":"backend","chunkCount":4}`,
+				Valid:  true,
+			},
+		},
+		{
+			OperationID:    "op-running",
+			OrganizationID: org.ID,
+			UserID:         user.ID,
+			QueueID:        1,
+			Status:         store.DemeterAudioTranscriptionOperationStatusRunning,
+			Stage:          "chunk_completed",
+			ChunkIndex:     2,
+			ChunkCount:     4,
+			Progress:       0.5,
+			StatusCode:     http.StatusAccepted,
+			CreatedAt:      now.Add(-3 * time.Minute),
+			UpdatedAt:      now.Add(-2 * time.Minute),
+		},
+		{
+			OperationID:    "op-completed",
+			OrganizationID: org.ID,
+			UserID:         user.ID,
+			QueueID:        2,
+			Status:         store.DemeterAudioTranscriptionOperationStatusCompleted,
+			Stage:          "completed",
+			ChunkIndex:     4,
+			ChunkCount:     4,
+			Progress:       1,
+			StatusCode:     http.StatusOK,
+			CreatedAt:      now.Add(-2 * time.Minute),
+			UpdatedAt:      now.Add(-time.Minute),
+			ResponseJSON: sql.NullString{
+				String: `{"text":"done","segments":[]}`,
+				Valid:  true,
+			},
+			FinishedAt: sql.NullTime{Time: now.Add(-time.Minute), Valid: true},
+		},
+		{
+			OperationID:    "op-failed",
+			OrganizationID: org.ID,
+			UserID:         user.ID,
+			QueueID:        0,
+			Status:         store.DemeterAudioTranscriptionOperationStatusFailed,
+			Stage:          "failed",
+			ChunkIndex:     1,
+			ChunkCount:     4,
+			Progress:       0.25,
+			StatusCode:     http.StatusInternalServerError,
+			CreatedAt:      now.Add(-90 * time.Second),
+			UpdatedAt:      now.Add(-90 * time.Second),
+			LastError: sql.NullString{
+				String: "upstream unavailable",
+				Valid:  true,
+			},
+			FinishedAt: sql.NullTime{Time: now.Add(-90 * time.Second), Valid: true},
+		},
+	}
+	for _, record := range records {
+		if err := st.CreateDemeterAudioTranscriptionOperation(context.Background(), record); err != nil {
+			t.Fatalf("failed to create record %s: %v", record.OperationID, err)
+		}
+	}
+
+	snapshot, err := manager.Snapshot(context.Background(), 10)
+	if err != nil {
+		t.Fatalf("failed to load queue snapshot: %v", err)
+	}
+	if len(snapshot.Operations) != 2 {
+		t.Fatalf("expected 2 live queue operations, got %d", len(snapshot.Operations))
+	}
+	if len(snapshot.AllOperations) != 4 {
+		t.Fatalf("expected 4 operations in the full table snapshot, got %d", len(snapshot.AllOperations))
+	}
+
+	var completed, failed *demeterAudioQueueOperationSnapshot
+	for i := range snapshot.AllOperations {
+		op := &snapshot.AllOperations[i]
+		switch op.OperationID {
+		case "op-completed":
+			completed = op
+		case "op-failed":
+			failed = op
+		}
+	}
+	if completed == nil {
+		t.Fatal("expected completed operation to be exposed in the full table snapshot")
+	}
+	if completed.OrganizationID != org.ID || completed.UserID != user.ID {
+		t.Fatalf("expected completed operation ownership to be exposed, got %#v", completed)
+	}
+	if completed.QueuePayloadJSON == "" || completed.ResponseJSON == "" || completed.FinishedAt == "" {
+		t.Fatalf("expected completed operation details to include payload, response and finishedAt, got %#v", completed)
+	}
+	if !strings.Contains(completed.QueuePayloadJSON, `"sourceMode":"backend"`) {
+		t.Fatalf("expected completed payload json to be preserved, got %#v", completed.QueuePayloadJSON)
+	}
+	if !strings.Contains(completed.ResponseJSON, `"text":"done"`) {
+		t.Fatalf("expected completed response json to be preserved, got %#v", completed.ResponseJSON)
+	}
+	if failed == nil {
+		t.Fatal("expected failed operation to be exposed in the full table snapshot")
+	}
+	if failed.LastError != "upstream unavailable" {
+		t.Fatalf("expected failed last error to be exposed, got %#v", failed.LastError)
+	}
+}
+
 func withDemeterAudioRetryDelay(t *testing.T, delay time.Duration) {
 	t.Helper()
 
