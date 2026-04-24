@@ -144,6 +144,24 @@ func TestPerformanceSummaryIncludesBackendAndFrontendEvents(t *testing.T) {
 		t.Fatalf("expected most recent event first, got %#v", summary.RecentEvents[0])
 	}
 
+	paged, err := st.GetPerformanceSummary(ctx, store.PerformanceSummaryFilters{
+		OrganizationID: org.ID,
+		From:           now.Add(-24 * time.Hour),
+		To:             now,
+		TopLimit:       10,
+		RecentLimit:    2,
+		RecentOffset:   2,
+	})
+	if err != nil {
+		t.Fatalf("failed to load paged performance summary: %v", err)
+	}
+	if paged.Totals.Events != 4 {
+		t.Fatalf("expected paged totals to keep full event count, got %#v", paged.Totals)
+	}
+	if len(paged.RecentEvents) != 2 || paged.RecentEvents[0].TraceID != "trace-4" || paged.RecentEvents[1].TraceID != "trace-1" {
+		t.Fatalf("unexpected paged recent events: %#v", paged.RecentEvents)
+	}
+
 	filtered, err := st.GetPerformanceSummary(ctx, store.PerformanceSummaryFilters{
 		OrganizationID: org.ID,
 		UserID:         user.ID,

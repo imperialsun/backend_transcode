@@ -128,6 +128,30 @@ func TestAdminPerformanceSummary_RespectsTaskFilterAndTaskOptions(t *testing.T) 
 	if len(summary.RecentEvents) != 1 || summary.RecentEvents[0].TraceID != "trace-1" {
 		t.Fatalf("unexpected filtered recent events: %#v", summary.RecentEvents)
 	}
+
+	pagedResp := performJSONRequestWithHeaders(
+		t,
+		fixture.app,
+		http.MethodGet,
+		"/api/v1/admin/performance/summary?organizationId="+fixture.org.ID+"&from="+from+"&to="+to+"&page=2&pageSize=2",
+		nil,
+		nil,
+		adminHeaders(t, fixture.superAdminUser, fixture.appCtx.Config.JWTSecret),
+	)
+	if pagedResp.StatusCode != fiber.StatusOK {
+		t.Fatalf("expected 200 for paged performance summary, got %d", pagedResp.StatusCode)
+	}
+
+	var pagedSummary store.PerformanceSummary
+	if err := json.NewDecoder(pagedResp.Body).Decode(&pagedSummary); err != nil {
+		t.Fatalf("failed to decode paged summary: %v", err)
+	}
+	if pagedSummary.Totals.Events != 4 {
+		t.Fatalf("expected paged totals to keep full event count, got %#v", pagedSummary.Totals)
+	}
+	if len(pagedSummary.RecentEvents) != 2 || pagedSummary.RecentEvents[0].TraceID != "trace-3" || pagedSummary.RecentEvents[1].TraceID != "trace-4" {
+		t.Fatalf("unexpected paged recent events: %#v", pagedSummary.RecentEvents)
+	}
 }
 
 func TestDeletePerformanceEvents_RespectsFiltersAndWritesAudit(t *testing.T) {

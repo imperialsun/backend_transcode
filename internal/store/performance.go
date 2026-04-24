@@ -91,6 +91,7 @@ type PerformanceSummaryFilters struct {
 	Task           string
 	TopLimit       int
 	RecentLimit    int
+	RecentOffset   int
 }
 
 // InsertPerformanceEvent writes one backend performance event row.
@@ -279,6 +280,10 @@ func (s *Store) GetPerformanceSummary(ctx context.Context, filters PerformanceSu
 	scopeWhereSQL, scopeArgs := buildPerformanceScopeWhereClause(filters.OrganizationID, filters.UserID, fromTime, toTime)
 	topLimit := clampPositiveInt(filters.TopLimit, 10, 50)
 	recentLimit := clampPositiveInt(filters.RecentLimit, 20, 100)
+	recentOffset := filters.RecentOffset
+	if recentOffset < 0 {
+		recentOffset = 0
+	}
 
 	summary := &PerformanceSummary{
 		OrganizationID: strings.TrimSpace(filters.OrganizationID),
@@ -404,8 +409,8 @@ func (s *Store) GetPerformanceSummary(ctx context.Context, filters PerformanceSu
 		FROM performance_events
 		WHERE `+whereSQL+`
 		ORDER BY occurred_at DESC, event_id DESC
-		LIMIT ?
-	`, append(args, recentLimit)...)
+		LIMIT ? OFFSET ?
+	`, append(args, recentLimit, recentOffset)...)
 	if err != nil {
 		return nil, err
 	}

@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -140,6 +141,11 @@ func (a *App) adminPerformanceSummary(c *fiber.Ctx) error {
 	organizationID := strings.TrimSpace(c.Query("organizationId"))
 	userID := strings.TrimSpace(c.Query("userId"))
 	task := strings.TrimSpace(c.Query("task"))
+	page, pageSize, err := resolvePerformancePagination(c.Query("page"), c.Query("pageSize"))
+	if err != nil {
+		logAPIStep(c, "admin", route, "pagination_error", "performance_summary", map[string]any{"error": err})
+		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{Error: err.Error()})
+	}
 	if userID != "" && organizationID == "" {
 		logAPIStep(c, "admin", route, "range_error", "performance_summary", map[string]any{
 			"reason":  "user_id_requires_organization_id",
@@ -196,7 +202,8 @@ func (a *App) adminPerformanceSummary(c *fiber.Ctx) error {
 		To:             to,
 		Task:           task,
 		TopLimit:       10,
-		RecentLimit:    20,
+		RecentLimit:    pageSize,
+		RecentOffset:   (page - 1) * pageSize,
 	})
 	if err != nil {
 		logAPIStep(c, "admin", route, "load_error", "performance_summary", map[string]any{"error": err})
@@ -211,6 +218,8 @@ func (a *App) adminPerformanceSummary(c *fiber.Ctx) error {
 		"task_options":    len(summary.TaskOptions),
 		"top_tasks":       len(summary.TopTasks),
 		"recent_events":   len(summary.RecentEvents),
+		"page":            page,
+		"page_size":       pageSize,
 	})
 	return c.JSON(summary)
 }
@@ -386,6 +395,32 @@ func resolvePerformanceWindow(fromRaw string, toRaw string) (time.Time, time.Tim
 		to = from.Add(24 * time.Hour)
 	}
 	return from.UTC(), to.UTC(), nil
+}
+
+func resolvePerformancePagination(pageRaw string, pageSizeRaw string) (int, int, error) {
+	page := 1
+	pageSize := 20
+
+	if trimmed := strings.TrimSpace(pageRaw); trimmed != "" {
+		parsed, err := strconv.Atoi(trimmed)
+		if err != nil || parsed <= 0 {
+			return 0, 0, fmt.Errorf("invalid page")
+		}
+		page = parsed
+	}
+
+	if trimmed := strings.TrimSpace(pageSizeRaw); trimmed != "" {
+		parsed, err := strconv.Atoi(trimmed)
+		if err != nil || parsed <= 0 {
+			return 0, 0, fmt.Errorf("invalid page size")
+		}
+		if parsed > 100 {
+			parsed = 100
+		}
+		pageSize = parsed
+	}
+
+	return page, pageSize, nil
 }
 
 func parsePerformanceTimeValue(raw string, endOfDay bool) (time.Time, error) {
