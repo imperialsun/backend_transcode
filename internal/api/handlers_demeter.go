@@ -226,9 +226,20 @@ type demeterAudioTranscriptionRelayResult struct {
 
 // demeterAudioTranscriptionWithRetry executes the multipart relay with retry
 // logic and timing capture.
-func (a *App) demeterAudioTranscriptionWithRetry(logCtx demeterAudioLogContext, route string, seq uint64, routeMode string, audioDurationSec float64, audioDurationProvided bool, requestBody []byte, contentType string, requestBytes int) (demeterAudioTranscriptionRelayResult, error) {
+func (a *App) demeterAudioTranscriptionWithRetry(logCtx demeterAudioLogContext, route string, seq uint64, routeMode string, audioDurationSec float64, audioDurationProvided bool, queueManager *DemeterAudioQueueManager, queueID int, operationID string, chunkIndex int, requestBody []byte, contentType string, requestBytes int) (demeterAudioTranscriptionRelayResult, error) {
 	ctx := logCtx.ctx
+	retryPauseOwned := false
+	defer func() {
+		if queueManager != nil && retryPauseOwned {
+			_ = queueManager.finishMistralRetryPause(queueID, operationID, chunkIndex)
+		}
+	}()
+
 	for attempt := 1; attempt <= demeterAudioTranscriptionMaxAttempts; attempt++ {
+		if queueManager != nil && !queueManager.waitForMistralRetryPause(ctx, queueID) {
+			return demeterAudioTranscriptionRelayResult{}, ctx.Err()
+		}
+
 		upstreamStartedAt := time.Now()
 		statusCode, responseBody, err := a.MistralClient.DoMultipart(ctx, demeterAudioTranscriptionsUpstreamPath, requestBody, contentType)
 		upstreamDurationMs := time.Since(upstreamStartedAt).Milliseconds()
@@ -239,6 +250,9 @@ func (a *App) demeterAudioTranscriptionWithRetry(logCtx demeterAudioLogContext, 
 			delay := demeterAudioTranscriptionRetryDelayForAttempt(attempt)
 			fields := demeterAudioRequestBaseFields(routeMode, audioDurationSec, audioDurationProvided, map[string]any{
 				"upstream":             demeterAudioTranscriptionsUpstreamPath,
+				"queue_id":             queueID,
+				"operation_id":         operationID,
+				"chunk_index":          chunkIndex,
 				"attempt":              attempt,
 				"max_attempts":         demeterAudioTranscriptionMaxAttempts,
 				"request_bytes":        requestBytes,
@@ -253,17 +267,37 @@ func (a *App) demeterAudioTranscriptionWithRetry(logCtx demeterAudioLogContext, 
 				if attempt < demeterAudioTranscriptionMaxAttempts {
 					fields["action"] = "retry"
 					fields["next_attempt"] = attempt + 1
+					logDemeterAudioPerformanceTaskCtx(logCtx, route, seq, "upstream_retry", "mistral_audio_transcription_retry", fields)
 				} else {
 					fields["action"] = "exhausted"
+					logDemeterAudioPerformanceTaskCtx(logCtx, route, seq, "upstream_retry_exhausted", "mistral_audio_transcription_retry_exhausted", fields)
 				}
-				logDemeterAudioStageCtx(logCtx, route, seq, "upstream_capacity_error", fields)
 			} else if attempt < demeterAudioTranscriptionMaxAttempts {
 				fields["next_attempt"] = attempt + 1
 				fields["reason"] = demeterAudioTranscriptionRetryReason(statusCode)
-				logDemeterAudioStageCtx(logCtx, route, seq, "upstream_retry", fields)
+				logDemeterAudioPerformanceTaskCtx(logCtx, route, seq, "upstream_retry", "mistral_audio_transcription_retry", fields)
+			} else {
+				fields["reason"] = demeterAudioTranscriptionRetryReason(statusCode)
+				fields["action"] = "exhausted"
+				logDemeterAudioPerformanceTaskCtx(logCtx, route, seq, "upstream_retry_exhausted", "mistral_audio_transcription_retry_exhausted", fields)
 			}
+
+			if queueManager != nil {
+				if queueManager.startMistralRetryPause(queueID, operationID, chunkIndex) {
+					retryPauseOwned = true
+				} else if !retryPauseOwned {
+					if !queueManager.waitForMistralRetryPause(ctx, queueID) {
+						return demeterAudioTranscriptionRelayResult{}, ctx.Err()
+					}
+				}
+			}
+
 			if attempt < demeterAudioTranscriptionMaxAttempts {
-				if err := sleepContext(ctx, delay); err != nil {
+				if queueManager != nil {
+					if !queueManager.sleepWithMistralRetryPause(ctx, queueID, delay) {
+						return demeterAudioTranscriptionRelayResult{}, ctx.Err()
+					}
+				} else if err := sleepContext(ctx, delay); err != nil {
 					return demeterAudioTranscriptionRelayResult{}, err
 				}
 				continue
@@ -613,7 +647,7 @@ func demeterAudioTranscriptionResponseIsCapacityExceeded(status int, responseBod
 	return strings.Contains(normalizedBody, "service tier capacity exceeded")
 }
 
-func demeterAudioTranscriptionRetryDelayForAttempt(attempt int) time.Duration {
+var demeterAudioTranscriptionRetryDelayForAttempt = func(attempt int) time.Duration {
 	if attempt <= 1 {
 		return demeterAudioTranscriptionBaseDelay
 	}

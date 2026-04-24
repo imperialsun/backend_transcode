@@ -28,20 +28,22 @@ var ErrDemeterAudioTranscriptionOperationOwnership = errors.New("demeter audio t
 // DemeterAudioTranscriptionOperationRecord stores the state of one backend
 // audio transcription job.
 type DemeterAudioTranscriptionOperationRecord struct {
-	OperationID    string
-	OrganizationID string
-	UserID         string
-	Status         string
-	Stage          string
-	ChunkIndex     int
-	ChunkCount     int
-	Progress       float64
-	ResponseJSON   sql.NullString
-	LastError      sql.NullString
-	StatusCode     int
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
-	FinishedAt     sql.NullTime
+	OperationID      string
+	OrganizationID   string
+	UserID           string
+	QueueID          int
+	Status           string
+	Stage            string
+	ChunkIndex       int
+	ChunkCount       int
+	Progress         float64
+	QueuePayloadJSON sql.NullString
+	ResponseJSON     sql.NullString
+	LastError        sql.NullString
+	StatusCode       int
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
+	FinishedAt       sql.NullTime
 }
 
 // CreateDemeterAudioTranscriptionOperation inserts a new job record.
@@ -81,6 +83,8 @@ func (s *Store) CreateDemeterAudioTranscriptionOperation(ctx context.Context, re
 			operation_id,
 			organization_id,
 			user_id,
+			queue_id,
+			queue_payload_json,
 			status,
 			stage,
 			chunk_index,
@@ -92,8 +96,8 @@ func (s *Store) CreateDemeterAudioTranscriptionOperation(ctx context.Context, re
 			created_at,
 			updated_at,
 			finished_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, record.OperationID, record.OrganizationID, record.UserID, record.Status, record.Stage, record.ChunkIndex, record.ChunkCount, record.Progress, nullStringValue(record.ResponseJSON), nullStringValue(record.LastError), record.StatusCode, record.CreatedAt, record.UpdatedAt, nullTimeValue(record.FinishedAt))
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, record.OperationID, record.OrganizationID, record.UserID, record.QueueID, nullStringValue(record.QueuePayloadJSON), record.Status, record.Stage, record.ChunkIndex, record.ChunkCount, record.Progress, nullStringValue(record.ResponseJSON), nullStringValue(record.LastError), record.StatusCode, record.CreatedAt, record.UpdatedAt, nullTimeValue(record.FinishedAt))
 	if err != nil {
 		logStoreStep(ctx, "demeter_create_error", "demeter_audio_transcription_operation", map[string]any{
 			"operation_id": record.OperationID,
@@ -130,6 +134,7 @@ func (s *Store) UpdateDemeterAudioTranscriptionOperation(ctx context.Context, re
 		"operation_id": record.OperationID,
 		"status":       record.Status,
 		"stage":        record.Stage,
+		"queue_id":     record.QueueID,
 		"chunk_index":  record.ChunkIndex,
 		"chunk_count":  record.ChunkCount,
 	})
@@ -199,6 +204,7 @@ func (s *Store) UpdateDemeterAudioTranscriptionOperationByID(ctx context.Context
 		"operation_id": record.OperationID,
 		"status":       record.Status,
 		"stage":        record.Stage,
+		"queue_id":     record.QueueID,
 		"chunk_index":  record.ChunkIndex,
 		"chunk_count":  record.ChunkCount,
 	})
@@ -229,6 +235,7 @@ func (s *Store) UpdateDemeterAudioTranscriptionOperationByID(ctx context.Context
 		"operation_id": record.OperationID,
 		"status":       record.Status,
 		"stage":        record.Stage,
+		"queue_id":     record.QueueID,
 		"chunk_index":  record.ChunkIndex,
 		"chunk_count":  record.ChunkCount,
 	})
@@ -252,7 +259,7 @@ func (s *Store) GetDemeterAudioTranscriptionOperation(ctx context.Context, opera
 	})
 
 	row := s.DB.QueryRowContext(ctx, `
-		SELECT operation_id, organization_id, user_id, status, stage, chunk_index, chunk_count, progress, response_json, last_error, status_code, created_at, updated_at, finished_at
+		SELECT operation_id, organization_id, user_id, queue_id, queue_payload_json, status, stage, chunk_index, chunk_count, progress, response_json, last_error, status_code, created_at, updated_at, finished_at
 		FROM demeter_audio_transcription_operations
 		WHERE operation_id = ?
 	`, operationID)
@@ -332,6 +339,94 @@ func (s *Store) CancelDemeterAudioTranscriptionOperation(ctx context.Context, op
 	}
 
 	return s.GetDemeterAudioTranscriptionOperation(ctx, record.OperationID, record.OrganizationID, record.UserID)
+}
+
+// UpdateDemeterAudioTranscriptionOperationQueueByID updates the queue
+// assignment for one transcription by primary key only.
+func (s *Store) UpdateDemeterAudioTranscriptionOperationQueueByID(ctx context.Context, operationID string, queueID int, updatedAt time.Time) error {
+	operationID = strings.TrimSpace(operationID)
+	if operationID == "" {
+		return fmt.Errorf("operation_id is required")
+	}
+	updatedAt = updatedAt.UTC()
+
+	logStoreStep(ctx, "demeter_update_start", "demeter_audio_transcription_operation", map[string]any{
+		"operation_id": operationID,
+		"queue_id":     queueID,
+	})
+
+	res, err := s.DB.ExecContext(ctx, `
+		UPDATE demeter_audio_transcription_operations
+		SET queue_id = ?, updated_at = ?
+		WHERE operation_id = ?
+	`, queueID, updatedAt, operationID)
+	if err != nil {
+		logStoreStep(ctx, "demeter_update_error", "demeter_audio_transcription_operation", map[string]any{
+			"operation_id": operationID,
+			"queue_id":     queueID,
+			"error":        err,
+		})
+		return err
+	}
+	rows, _ := res.RowsAffected()
+	if rows == 0 {
+		logStoreStep(ctx, "demeter_update_error", "demeter_audio_transcription_operation", map[string]any{
+			"operation_id": operationID,
+			"queue_id":     queueID,
+			"error":        sql.ErrNoRows,
+		})
+		return sql.ErrNoRows
+	}
+
+	logStoreStep(ctx, "demeter_update_success", "demeter_audio_transcription_operation", map[string]any{
+		"operation_id": operationID,
+		"queue_id":     queueID,
+	})
+	return nil
+}
+
+// UpdateDemeterAudioTranscriptionOperationQueuePayloadByID updates the stored
+// queue payload for one transcription by primary key only.
+func (s *Store) UpdateDemeterAudioTranscriptionOperationQueuePayloadByID(ctx context.Context, operationID string, queuePayloadJSON string, updatedAt time.Time) error {
+	operationID = strings.TrimSpace(operationID)
+	if operationID == "" {
+		return fmt.Errorf("operation_id is required")
+	}
+	updatedAt = updatedAt.UTC()
+	queuePayloadJSON = strings.TrimSpace(queuePayloadJSON)
+	if queuePayloadJSON == "" {
+		queuePayloadJSON = "{}"
+	}
+
+	logStoreStep(ctx, "demeter_update_start", "demeter_audio_transcription_operation", map[string]any{
+		"operation_id": operationID,
+	})
+
+	res, err := s.DB.ExecContext(ctx, `
+		UPDATE demeter_audio_transcription_operations
+		SET queue_payload_json = ?, updated_at = ?
+		WHERE operation_id = ?
+	`, queuePayloadJSON, updatedAt, operationID)
+	if err != nil {
+		logStoreStep(ctx, "demeter_update_error", "demeter_audio_transcription_operation", map[string]any{
+			"operation_id": operationID,
+			"error":        err,
+		})
+		return err
+	}
+	rows, _ := res.RowsAffected()
+	if rows == 0 {
+		logStoreStep(ctx, "demeter_update_error", "demeter_audio_transcription_operation", map[string]any{
+			"operation_id": operationID,
+			"error":        sql.ErrNoRows,
+		})
+		return sql.ErrNoRows
+	}
+
+	logStoreStep(ctx, "demeter_update_success", "demeter_audio_transcription_operation", map[string]any{
+		"operation_id": operationID,
+	})
+	return nil
 }
 
 // DeleteDemeterAudioTranscriptionOperation removes one transcription job by
@@ -417,6 +512,8 @@ func scanDemeterAudioTranscriptionOperationRecord(row *sql.Row) (*DemeterAudioTr
 		&record.OperationID,
 		&record.OrganizationID,
 		&record.UserID,
+		&record.QueueID,
+		&record.QueuePayloadJSON,
 		&record.Status,
 		&record.Stage,
 		&record.ChunkIndex,

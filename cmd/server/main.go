@@ -28,12 +28,18 @@ func main() {
 // buildApp assembles the Fiber application with shared middleware, route
 // groups, and the dependency bundle used by every handler.
 func buildApp(cfg config.Config, st *store.Store, mistralClient *mistral.Client, appMailer mailer.Sender) *fiber.App {
+	app, _ := buildAppBundle(cfg, st, mistralClient, appMailer)
+	return app
+}
+
+func buildAppBundle(cfg config.Config, st *store.Store, mistralClient *mistral.Client, appMailer mailer.Sender) (*fiber.App, *api.App) {
 	appCtx := &api.App{
 		Config:        cfg,
 		Store:         st,
 		MistralClient: mistralClient,
 		Mailer:        appMailer,
 	}
+	appCtx.EnsureDemeterQueueManager()
 
 	app := fiber.New(fiber.Config{
 		AppName:               "Demeter Backend",
@@ -70,7 +76,7 @@ func buildApp(cfg config.Config, st *store.Store, mistralClient *mistral.Client,
 	appCtx.RegisterSupportRoutes(apiV1Long)
 	appCtx.RegisterAdminCoreRoutes(apiV1Short)
 	appCtx.RegisterAdminMailRoutes(apiV1Mail)
-	return app
+	return app, appCtx
 }
 
 // joinOrigins turns a list of allowed origins into the comma-separated format

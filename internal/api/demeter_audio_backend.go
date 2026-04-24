@@ -228,6 +228,9 @@ func (a *App) demeterBackendTranscribeChunks(
 	routeMode string,
 	audioDurationSec float64,
 	audioDurationProvided bool,
+	queueManager *DemeterAudioQueueManager,
+	queueID int,
+	operationID string,
 	upload *demeterBackendAudioUpload,
 	chunkPlans []demeterBackendChunkPlan,
 	onChunkComplete func(completedChunks int, chunkCount int, response *demeterBackendTranscriptionResponse),
@@ -244,13 +247,20 @@ func (a *App) demeterBackendTranscribeChunks(
 		if plan.Duration <= 0 {
 			continue
 		}
+		if queueManager != nil && !queueManager.waitForMistralRetryPause(ctx, queueID) {
+			return nil, fiber.StatusBadGateway, nil, totalUpstreamDurationMs, ctx.Err()
+		}
 		if len(chunkResponses) > 0 {
-			if err := sleepContext(ctx, demeterAudioTranscriptionBaseDelay); err != nil {
+			if queueManager != nil {
+				if !queueManager.sleepWithMistralRetryPause(ctx, queueID, demeterAudioTranscriptionBaseDelay) {
+					return nil, fiber.StatusBadGateway, nil, totalUpstreamDurationMs, ctx.Err()
+				}
+			} else if err := sleepContext(ctx, demeterAudioTranscriptionBaseDelay); err != nil {
 				return nil, fiber.StatusBadGateway, nil, totalUpstreamDurationMs, err
 			}
 		}
 
-		chunkResult, err := a.transcribeDemeterBackendChunk(logCtx, route, seq, routeMode, audioDurationSec, audioDurationProvided, upload, plan)
+		chunkResult, err := a.transcribeDemeterBackendChunk(logCtx, route, seq, routeMode, audioDurationSec, audioDurationProvided, queueManager, queueID, operationID, upload, plan)
 		totalUpstreamDurationMs += chunkResult.upstreamDurationMs
 		if err != nil {
 			return nil, chunkResult.statusCode, chunkResult.responseBody, totalUpstreamDurationMs, err
@@ -298,6 +308,9 @@ func (a *App) transcribeDemeterBackendChunk(
 	routeMode string,
 	audioDurationSec float64,
 	audioDurationProvided bool,
+	queueManager *DemeterAudioQueueManager,
+	queueID int,
+	operationID string,
 	upload *demeterBackendAudioUpload,
 	plan demeterBackendChunkPlan,
 ) (demeterChunkTranscriptionResult, error) {
@@ -524,9 +537,11 @@ func (a *App) transcribeDemeterBackendChunk(
 		return demeterChunkTranscriptionResult{statusCode: fiber.StatusInternalServerError}, err
 	}
 
-	result, err := a.demeterAudioTranscriptionWithRetry(logCtx, route, seq, routeMode, audioDurationSec, audioDurationProvided, body, contentType, len(body))
+	result, err := a.demeterAudioTranscriptionWithRetry(logCtx, route, seq, routeMode, audioDurationSec, audioDurationProvided, queueManager, queueID, operationID, plan.Index, body, contentType, len(body))
 	if err != nil {
 		logDemeterAudioBackendErrorTaskCtx(logCtx, route, seq, "chunk_transcription_failed", demeterAudioRequestBaseFields(routeMode, audioDurationSec, audioDurationProvided, map[string]any{
+			"queue_id":        queueID,
+			"operation_id":    operationID,
 			"chunk_index":     plan.Index,
 			"chunk_id":        plan.ChunkID,
 			"chunk_start_sec": plan.StartSec,
@@ -540,6 +555,8 @@ func (a *App) transcribeDemeterBackendChunk(
 	}
 	if result.statusCode == fiber.StatusUnprocessableEntity && upload.Diarize {
 		logDemeterAudioStageCtx(logCtx, route, seq, "upstream_retry", demeterAudioRequestBaseFields(routeMode, audioDurationSec, audioDurationProvided, map[string]any{
+			"queue_id":        queueID,
+			"operation_id":    operationID,
 			"chunk_index":     plan.Index,
 			"chunk_id":        plan.ChunkID,
 			"reason":          "diarization_validation",
@@ -552,7 +569,7 @@ func (a *App) transcribeDemeterBackendChunk(
 		if err != nil {
 			return demeterChunkTranscriptionResult{statusCode: fiber.StatusInternalServerError}, err
 		}
-		result, err = a.demeterAudioTranscriptionWithRetry(logCtx, route, seq, routeMode, audioDurationSec, audioDurationProvided, body, contentType, len(body))
+		result, err = a.demeterAudioTranscriptionWithRetry(logCtx, route, seq, routeMode, audioDurationSec, audioDurationProvided, queueManager, queueID, operationID, plan.Index, body, contentType, len(body))
 		if err != nil {
 			return demeterChunkTranscriptionResult{statusCode: fiber.StatusBadGateway}, err
 		}
@@ -560,6 +577,8 @@ func (a *App) transcribeDemeterBackendChunk(
 
 	if result.statusCode >= fiber.StatusBadRequest {
 		logDemeterAudioBackendErrorTaskCtx(logCtx, route, seq, "chunk_transcription_failed", demeterAudioRequestBaseFields(routeMode, audioDurationSec, audioDurationProvided, map[string]any{
+			"queue_id":        queueID,
+			"operation_id":    operationID,
 			"chunk_index":     plan.Index,
 			"chunk_id":        plan.ChunkID,
 			"chunk_start_sec": plan.StartSec,
@@ -581,6 +600,8 @@ func (a *App) transcribeDemeterBackendChunk(
 	var parsed demeterMistralTranscriptionResponse
 	if err := json.Unmarshal(result.responseBody, &parsed); err != nil {
 		logDemeterAudioBackendErrorTaskCtx(logCtx, route, seq, "chunk_transcription_failed", demeterAudioRequestBaseFields(routeMode, audioDurationSec, audioDurationProvided, map[string]any{
+			"queue_id":        queueID,
+			"operation_id":    operationID,
 			"chunk_index":     plan.Index,
 			"chunk_id":        plan.ChunkID,
 			"chunk_start_sec": plan.StartSec,
@@ -599,6 +620,8 @@ func (a *App) transcribeDemeterBackendChunk(
 	}
 
 	logDemeterAudioStageCtx(logCtx, route, seq, "upstream_response_received", demeterAudioRequestBaseFields(routeMode, audioDurationSec, audioDurationProvided, map[string]any{
+		"queue_id":             queueID,
+		"operation_id":         operationID,
 		"chunk_index":          plan.Index,
 		"chunk_id":             plan.ChunkID,
 		"chunk_start_sec":      plan.StartSec,

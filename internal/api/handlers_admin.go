@@ -105,6 +105,7 @@ func (a *App) RegisterAdminCoreRoutes(router fiber.Router) {
 	a.registerAdminActivityRoutes(group)
 	a.registerBackendErrorRoutes(group)
 	a.registerAdminPerformanceRoutes(group)
+	a.registerAdminDemeterQueueRoutes(group)
 	a.registerAdminUserSettingsRoutes(group)
 	group.Get("/organizations/:id/users", a.listOrganizationUsers)
 	group.Get("/users/:id/access", a.getUserAccess)

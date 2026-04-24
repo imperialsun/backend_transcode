@@ -134,7 +134,7 @@ func run(ctx context.Context, cfg config.Config) error {
 	runBackendErrorCleanup(ctx, processTraceID, st)
 	runDemeterAudioTranscriptionOperationCleanup(ctx, processTraceID, st)
 
-	app := buildApp(cfg, st, mistral.NewClient(
+	app, appCtx := buildAppBundle(cfg, st, mistral.NewClient(
 		cfg.MistralAPIBaseURL,
 		cfg.MistralAPIKey,
 		cfg.MistralRequestTimeout,
@@ -147,6 +147,13 @@ func run(ctx context.Context, cfg config.Config) error {
 		FromEmail: cfg.SMTPFromEmail,
 		FromName:  cfg.SMTPFromName,
 	}))
+	if appCtx != nil && appCtx.DemeterQueue != nil {
+		if err := appCtx.DemeterQueue.Start(ctx); err != nil {
+			serverLogStep(processTraceID, "boot_error", "server", map[string]any{"port": cfg.Port, "error": err})
+			return err
+		}
+		defer appCtx.DemeterQueue.Stop()
+	}
 
 	serverLogStep(processTraceID, "boot_success", "server", map[string]any{"port": cfg.Port})
 
@@ -391,6 +398,9 @@ func purgeManagedBackendTmpDirs(baseDir, traceID, phase string) managedBackendTm
 	})
 
 	for _, target := range managedBackendTmpPurgeTargets {
+		if phase == "boot" && target.name == "demeter-transport" {
+			continue
+		}
 		removedCount, err := purgeManagedBackendTmpTarget(baseDir, target)
 		summary.RemovedCount += removedCount
 		if err != nil {

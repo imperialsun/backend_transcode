@@ -654,17 +654,17 @@ func TestDemeterAudioTranscriptions_BackendRouteChunksServerSideAndLogsDurationA
 	if startPayload.OperationID != uploadID {
 		t.Fatalf("expected backend operation id %q, got %+v", uploadID, startPayload)
 	}
-	if startPayload.Stage != demeterAudioTransportFinalizationStage {
-		t.Fatalf("expected reconstructing stage in start payload, got %+v", startPayload)
+	if startPayload.Stage != "queued" {
+		t.Fatalf("expected queued stage in start payload, got %+v", startPayload)
 	}
-	if startPayload.ChunkCount != 0 {
-		t.Fatalf("expected zero chunks at transport start, got %+v", startPayload)
+	if startPayload.ChunkCount == 0 {
+		t.Fatalf("expected chunk count to be known at transport start, got %+v", startPayload)
 	}
 	if startPayload.ChunkIndex != 0 {
 		t.Fatalf("expected zero chunk index at transport start, got %+v", startPayload)
 	}
-	if startPayload.Status != store.DemeterAudioTranscriptionOperationStatusRunning {
-		t.Fatalf("expected running status at transport start, got %+v", startPayload)
+	if startPayload.Status != store.DemeterAudioTranscriptionOperationStatusPending {
+		t.Fatalf("expected pending status at transport start, got %+v", startPayload)
 	}
 	if startPayload.StatusCode != fiber.StatusAccepted {
 		t.Fatalf("expected accepted status code in start payload, got %+v", startPayload)

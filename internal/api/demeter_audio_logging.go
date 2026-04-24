@@ -78,6 +78,25 @@ func logDemeterAudioPerformanceTaskCtx(logCtx demeterAudioLogContext, route stri
 	backendperformance.RecordLog(logCtx.ctx, "demeter", route, stage, task, fields)
 }
 
+// logDemeterAudioQueuePerformanceTaskCtx records a queue or worker event and
+// keeps the payload eligible for performance capture without requiring every
+// caller to inject a synthetic duration explicitly.
+func logDemeterAudioQueuePerformanceTaskCtx(logCtx demeterAudioLogContext, route string, seq uint64, stage, task string, fields map[string]any) {
+	if fields == nil {
+		fields = map[string]any{}
+	}
+	if _, ok := fields["duration_ms"]; !ok {
+		if _, ok := fields["total_duration_ms"]; !ok {
+			if _, ok := fields["upstream_duration_ms"]; !ok {
+				if _, ok := fields["elapsed_ms"]; !ok {
+					fields["duration_ms"] = 0
+				}
+			}
+		}
+	}
+	logDemeterAudioPerformanceTaskCtx(logCtx, route, seq, stage, task, fields)
+}
+
 // logDemeterAudioBackendErrorTaskCtx records a backend-error event for the
 // Demeter audio path.
 func logDemeterAudioBackendErrorTaskCtx(logCtx demeterAudioLogContext, route string, seq uint64, stage string, fields map[string]any) {

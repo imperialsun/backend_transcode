@@ -17,6 +17,7 @@ type App struct {
 	Store         *store.Store
 	MistralClient *mistral.Client
 	Mailer        mailer.Sender
+	DemeterQueue  *DemeterAudioQueueManager
 }
 
 // ErrorResponse is the common JSON envelope returned for user-facing failures.

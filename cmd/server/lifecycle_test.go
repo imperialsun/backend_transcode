@@ -285,17 +285,20 @@ func TestPurgeManagedBackendTmpDirs_RemovesManagedTargets(t *testing.T) {
 	if summary.TargetCount != len(managedBackendTmpPurgeTargets) {
 		t.Fatalf("unexpected target count: got %d want %d", summary.TargetCount, len(managedBackendTmpPurgeTargets))
 	}
-	if summary.RemovedCount != len(managedPaths) {
-		t.Fatalf("unexpected removed count: got %d want %d", summary.RemovedCount, len(managedPaths))
+	if summary.RemovedCount != len(managedPaths)-1 {
+		t.Fatalf("unexpected removed count: got %d want %d", summary.RemovedCount, len(managedPaths)-1)
 	}
 	if summary.ErrorCount != 0 {
 		t.Fatalf("unexpected error count: got %d want 0", summary.ErrorCount)
 	}
 
-	for _, path := range managedPaths {
+	for _, path := range managedPaths[:len(managedPaths)-1] {
 		if _, err := os.Stat(path); !os.IsNotExist(err) {
 			t.Fatalf("expected managed path to be removed: %q err=%v", path, err)
 		}
+	}
+	if _, err := os.Stat(managedPaths[len(managedPaths)-1]); err != nil {
+		t.Fatalf("expected transport path to remain on boot: %v", err)
 	}
 	if _, err := os.Stat(keepDir); err != nil {
 		t.Fatalf("expected keep dir to remain: %v", err)
@@ -306,7 +309,7 @@ func TestPurgeManagedBackendTmpDirs_RemovesManagedTargets(t *testing.T) {
 		"step=tmp_purge_start",
 		"step=tmp_purge_complete",
 		"phase=\"boot\"",
-		"removed_count=5",
+		"removed_count=4",
 	} {
 		if !strings.Contains(logged, needle) {
 			t.Fatalf("expected %q in logs, got %q", needle, logged)

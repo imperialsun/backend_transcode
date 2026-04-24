@@ -26,6 +26,8 @@ func resolveTableInfoQuery(tableName string) (string, error) {
 		return `PRAGMA table_info(backend_error_events)`, nil
 	case "demeter_audio_transcription_operations":
 		return `PRAGMA table_info(demeter_audio_transcription_operations)`, nil
+	case "demeter_audio_queue_settings":
+		return `PRAGMA table_info(demeter_audio_queue_settings)`, nil
 	default:
 		return "", fmt.Errorf("%w: %s", errUnsupportedTableInfoTarget, strings.TrimSpace(tableName))
 	}

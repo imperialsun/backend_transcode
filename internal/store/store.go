@@ -419,6 +419,8 @@ func (s *Store) Migrate(ctx context.Context) error {
 			operation_id TEXT PRIMARY KEY,
 			organization_id TEXT NOT NULL,
 			user_id TEXT NOT NULL,
+			queue_id INTEGER NOT NULL DEFAULT 0,
+			queue_payload_json TEXT,
 			status TEXT NOT NULL,
 			stage TEXT NOT NULL,
 			chunk_index INTEGER NOT NULL DEFAULT 0,
@@ -432,6 +434,11 @@ func (s *Store) Migrate(ctx context.Context) error {
 			finished_at DATETIME,
 			FOREIGN KEY(organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
 			FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+		);`,
+		`CREATE TABLE IF NOT EXISTS demeter_audio_queue_settings (
+			id INTEGER PRIMARY KEY CHECK(id = 1),
+			parallelism INTEGER NOT NULL DEFAULT 1,
+			updated_at DATETIME NOT NULL
 		);`,
 		`CREATE INDEX IF NOT EXISTS idx_users_org ON users(organization_id);`,
 		`CREATE INDEX IF NOT EXISTS idx_refresh_user ON refresh_sessions(user_id);`,
@@ -504,6 +511,18 @@ func (s *Store) Migrate(ctx context.Context) error {
 		return err
 	}
 	if err := ensureColumnMissing(ctx, tx, "demeter_audio_transcription_operations", "partial_text", `ALTER TABLE demeter_audio_transcription_operations DROP COLUMN partial_text`); err != nil {
+		logStoreStep(ctx, "migrate_error", "schema", map[string]any{"error": err})
+		return err
+	}
+	if err := ensureColumnExists(ctx, tx, "demeter_audio_transcription_operations", "queue_id", `ALTER TABLE demeter_audio_transcription_operations ADD COLUMN queue_id INTEGER NOT NULL DEFAULT 0`); err != nil {
+		logStoreStep(ctx, "migrate_error", "schema", map[string]any{"error": err})
+		return err
+	}
+	if err := ensureColumnExists(ctx, tx, "demeter_audio_transcription_operations", "queue_payload_json", `ALTER TABLE demeter_audio_transcription_operations ADD COLUMN queue_payload_json TEXT`); err != nil {
+		logStoreStep(ctx, "migrate_error", "schema", map[string]any{"error": err})
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_demeter_audio_transcription_operations_queue ON demeter_audio_transcription_operations(queue_id, status, created_at);`); err != nil {
 		logStoreStep(ctx, "migrate_error", "schema", map[string]any{"error": err})
 		return err
 	}

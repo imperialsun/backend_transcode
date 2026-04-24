@@ -10,8 +10,6 @@ import (
 	"sync"
 	"time"
 
-	"demeter-backend/internal/observability"
-	"demeter-backend/internal/requestmeta"
 	"demeter-backend/internal/store"
 
 	"github.com/gofiber/fiber/v2"
@@ -126,20 +124,36 @@ func (a *App) startDemeterAudioTranscriptionOperation(
 		operationID = "demeter-audio-" + strings.ReplaceAll(uuid.NewString(), "-", "")
 	}
 	now := time.Now().UTC()
-	initialResponse := &store.DemeterAudioTranscriptionOperationRecord{
-		OperationID:    operationID,
-		OrganizationID: claims.OrgID,
-		UserID:         claims.UserID,
-		Status:         store.DemeterAudioTranscriptionOperationStatusRunning,
-		Stage:          "queued",
-		ChunkIndex:     0,
-		ChunkCount:     len(chunkPlans),
-		Progress:       0,
-		StatusCode:     fiber.StatusAccepted,
-		CreatedAt:      now,
-		UpdatedAt:      now,
+	queuePayload, err := buildDemeterAudioQueuePayload(requestTraceID(c), route, seq, routeMode, audioDurationSec, audioDurationProvided, requestBytes, startedAt, upload, chunkPlans)
+	if err != nil {
+		logDemeterRelayIssueCtx(logCtx, route, fiber.StatusInternalServerError, err.Error())
+		logDemeterAudioStageCtx(logCtx, route, seq, "sequence_end", demeterAudioRequestBaseFields(routeMode, audioDurationSec, audioDurationProvided, map[string]any{
+			"result":            "queue_payload_error",
+			"status_code":       fiber.StatusInternalServerError,
+			"operation_id":      operationID,
+			"total_duration_ms": time.Since(startedAt).Milliseconds(),
+			"request_bytes":     requestBytes,
+			"message":           err.Error(),
+		}))
+		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{Error: "failed to prepare backend transcription operation"})
 	}
-	if err := a.Store.CreateDemeterAudioTranscriptionOperation(requestContext(c), initialResponse); err != nil {
+
+	initialResponse := &store.DemeterAudioTranscriptionOperationRecord{
+		OperationID:      operationID,
+		OrganizationID:   claims.OrgID,
+		UserID:           claims.UserID,
+		Status:           store.DemeterAudioTranscriptionOperationStatusPending,
+		Stage:            "queued",
+		ChunkIndex:       0,
+		ChunkCount:       len(chunkPlans),
+		Progress:         0,
+		QueuePayloadJSON: sql.NullString{String: mustMarshalDemeterQueuePayload(queuePayload), Valid: true},
+		StatusCode:       fiber.StatusAccepted,
+		CreatedAt:        now,
+		UpdatedAt:        now,
+	}
+	finalRecord, createErr := a.createAndEnqueueDemeterAudioTranscriptionOperation(requestContext(c), initialResponse)
+	if createErr != nil {
 		if existingOwnershipErr != nil {
 			logDemeterOwnershipStageCtx(logCtx, route, seq, "ownership_start_error", demeterAudioRequestBaseFields(routeMode, audioDurationSec, audioDurationProvided, map[string]any{
 				"operation_id":      operationID,
@@ -150,7 +164,7 @@ func (a *App) startDemeterAudioTranscriptionOperation(
 				"request_org_id":    claims.OrgID,
 				"stored_user_id":    existingOwnershipErr.StoredUserID,
 				"stored_org_id":     existingOwnershipErr.StoredOrganizationID,
-				"message":           err.Error(),
+				"message":           createErr.Error(),
 				"total_duration_ms": time.Since(startedAt).Milliseconds(),
 				"request_bytes":     requestBytes,
 			}))
@@ -161,44 +175,25 @@ func (a *App) startDemeterAudioTranscriptionOperation(
 				"operation_id":      operationID,
 				"total_duration_ms": time.Since(startedAt).Milliseconds(),
 				"request_bytes":     requestBytes,
-				"message":           err.Error(),
+				"message":           createErr.Error(),
 			}))
 			return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{Error: "failed to create backend transcription operation"})
 		}
-		if existing, loadErr := a.Store.GetDemeterAudioTranscriptionOperation(requestContext(c), operationID, claims.OrgID, claims.UserID); loadErr == nil {
-			return c.Status(existing.StatusCode).JSON(demeterAudioTranscriptionOperationStartResponse{
-				demeterAudioTranscriptionOperationResponse: demeterAudioTranscriptionOperationResponseFromRecord(existing),
+		if finalRecord != nil {
+			return c.Status(finalRecord.StatusCode).JSON(demeterAudioTranscriptionOperationStartResponse{
+				demeterAudioTranscriptionOperationResponse: demeterAudioTranscriptionOperationResponseFromRecord(finalRecord),
 			})
 		}
-		logDemeterRelayIssueCtx(logCtx, route, fiber.StatusInternalServerError, err.Error())
+		logDemeterRelayIssueCtx(logCtx, route, fiber.StatusInternalServerError, createErr.Error())
 		logDemeterAudioStageCtx(logCtx, route, seq, "sequence_end", demeterAudioRequestBaseFields(routeMode, audioDurationSec, audioDurationProvided, map[string]any{
 			"result":            "operation_create_error",
 			"status_code":       fiber.StatusInternalServerError,
 			"total_duration_ms": time.Since(startedAt).Milliseconds(),
 			"request_bytes":     requestBytes,
-			"message":           err.Error(),
+			"message":           createErr.Error(),
 		}))
 		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{Error: "failed to create backend transcription operation"})
 	}
-
-	workerBaseCtx := requestmeta.WithActor(observability.WithTraceID(context.Background(), requestTraceID(c)), claims.UserID, claims.OrgID)
-	workerCtx, cancel := context.WithCancel(workerBaseCtx)
-	demeterAudioTranscriptionOperationCancels.Store(operationID, cancel)
-
-	go a.runDemeterAudioTranscriptionOperation(
-		workerCtx,
-		logCtx,
-		cancel,
-		operationID,
-		route,
-		seq,
-		routeMode,
-		audioDurationSec,
-		audioDurationProvided,
-		requestBytes,
-		upload,
-		chunkPlans,
-	)
 
 	logDemeterAudioStageCtx(logCtx, route, seq, "operation_started", demeterAudioRequestBaseFields(routeMode, audioDurationSec, audioDurationProvided, map[string]any{
 		"operation_id":      operationID,
@@ -215,17 +210,8 @@ func (a *App) startDemeterAudioTranscriptionOperation(
 		"request_bytes":     requestBytes,
 	}))
 
-	return c.Status(fiber.StatusAccepted).JSON(demeterAudioTranscriptionOperationStartResponse{
-		demeterAudioTranscriptionOperationResponse: demeterAudioTranscriptionOperationResponse{
-			OperationID: operationID,
-			Status:      store.DemeterAudioTranscriptionOperationStatusRunning,
-			StatusCode:  fiber.StatusAccepted,
-			Stage:       "queued",
-			ChunkIndex:  0,
-			ChunkCount:  len(chunkPlans),
-			Progress:    0,
-			UpdatedAt:   now.Format(time.RFC3339),
-		},
+	return c.Status(finalRecord.StatusCode).JSON(demeterAudioTranscriptionOperationStartResponse{
+		demeterAudioTranscriptionOperationResponse: demeterAudioTranscriptionOperationResponseFromRecord(finalRecord),
 	})
 }
 
@@ -393,6 +379,8 @@ func (a *App) runDemeterAudioTranscriptionOperation(
 	ctx context.Context,
 	baseLogCtx demeterAudioLogContext,
 	cancel context.CancelFunc,
+	queueManager *DemeterAudioQueueManager,
+	queueID int,
 	operationID string,
 	route string,
 	seq uint64,
@@ -466,6 +454,9 @@ func (a *App) runDemeterAudioTranscriptionOperation(
 			})
 			return
 		}
+		if queueManager != nil {
+			queueManager.setLaneCurrentOperation(queueID, operationID, record.Status, record.Stage, completedChunks, chunkCount, progress, "")
+		}
 		logDemeterAudioStageCtx(logCtx, route, seq, "operation_progress_update", demeterAudioRequestBaseFields(routeMode, audioDurationSec, audioDurationProvided, map[string]any{
 			"operation_id": operationID,
 			"chunk_index":  completedChunks,
@@ -481,6 +472,9 @@ func (a *App) runDemeterAudioTranscriptionOperation(
 		routeMode,
 		audioDurationSec,
 		audioDurationProvided,
+		queueManager,
+		queueID,
+		operationID,
 		upload,
 		chunkPlans,
 		progressUpdater,

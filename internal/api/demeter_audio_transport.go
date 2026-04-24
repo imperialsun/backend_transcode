@@ -15,8 +15,6 @@ import (
 	"sync"
 	"time"
 
-	"demeter-backend/internal/observability"
-	"demeter-backend/internal/requestmeta"
 	"demeter-backend/internal/store"
 
 	"github.com/gofiber/fiber/v2"
@@ -29,7 +27,7 @@ const (
 	demeterAudioTransportUploadIndexHeader     = "X-Demeter-Upload-Index"
 	demeterAudioTransportUploadCountHeader     = "X-Demeter-Upload-Count"
 	demeterAudioTransportUploadFinalHeader     = "X-Demeter-Upload-Final"
-	demeterAudioTransportSessionRetention      = 30 * time.Minute
+	demeterAudioTransportSessionRetention      = 24 * time.Hour
 	demeterAudioTransportSliceFileExt          = ".part"
 	demeterAudioTransportFinalizationStage     = "reconstructing"
 	demeterAudioTransportReconstructedStage    = "queued"
@@ -752,14 +750,10 @@ func (a *App) startDemeterAudioTransportTranscriptionOperation(
 		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{Error: "failed to create backend transcription operation"})
 	}
 
-	workerBaseCtx := requestmeta.WithActor(observability.WithTraceID(context.Background(), requestTraceID(c)), claims.UserID, claims.OrgID)
-	workerCtx, cancel := context.WithCancel(workerBaseCtx)
-	demeterAudioTranscriptionOperationCancels.Store(session.uploadID, cancel)
-
-	go a.runDemeterAudioTransportTranscriptionOperation(
-		workerCtx,
+	a.runDemeterAudioTransportTranscriptionOperation(
+		requestContext(c),
 		logCtx,
-		cancel,
+		nil,
 		session,
 		route,
 		seq,
@@ -770,32 +764,45 @@ func (a *App) startDemeterAudioTransportTranscriptionOperation(
 		startedAt,
 	)
 
+	if session != nil {
+		session.mu.Lock()
+		session.finalized = true
+		session.mu.Unlock()
+	}
+
+	record, loadErr := a.Store.GetDemeterAudioTranscriptionOperation(requestContext(c), session.uploadID, claims.OrgID, claims.UserID)
+	if loadErr != nil {
+		logDemeterRelayIssueCtx(logCtx, route, fiber.StatusInternalServerError, loadErr.Error())
+		logDemeterAudioStageCtx(logCtx, route, seq, "sequence_end", demeterAudioRequestBaseFields(routeMode, audioDurationSec, audioDurationProvided, map[string]any{
+			"result":            "operation_load_error",
+			"status_code":       fiber.StatusInternalServerError,
+			"operation_id":      session.uploadID,
+			"total_duration_ms": time.Since(startedAt).Milliseconds(),
+			"request_bytes":     requestBytes,
+			"message":           loadErr.Error(),
+		}))
+		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{Error: "failed to load backend transcription operation"})
+	}
+
 	logDemeterAudioStageCtx(logCtx, route, seq, "operation_started", demeterAudioRequestBaseFields(routeMode, audioDurationSec, audioDurationProvided, map[string]any{
 		"operation_id":      session.uploadID,
-		"stage":             demeterAudioTransportFinalizationStage,
+		"stage":             record.Stage,
+		"status":            record.Status,
+		"status_code":       record.StatusCode,
 		"total_duration_ms": time.Since(startedAt).Milliseconds(),
 		"request_bytes":     requestBytes,
 	}))
 	logDemeterAudioStageCtx(logCtx, route, seq, "sequence_end", demeterAudioRequestBaseFields(routeMode, audioDurationSec, audioDurationProvided, map[string]any{
-		"result":            "accepted",
-		"status_code":       fiber.StatusAccepted,
+		"result":            record.Status,
+		"status_code":       record.StatusCode,
 		"operation_id":      session.uploadID,
-		"stage":             demeterAudioTransportFinalizationStage,
+		"stage":             record.Stage,
 		"total_duration_ms": time.Since(startedAt).Milliseconds(),
 		"request_bytes":     requestBytes,
 	}))
 
-	return c.Status(fiber.StatusAccepted).JSON(demeterAudioTranscriptionOperationStartResponse{
-		demeterAudioTranscriptionOperationResponse: demeterAudioTranscriptionOperationResponse{
-			OperationID: session.uploadID,
-			Status:      store.DemeterAudioTranscriptionOperationStatusRunning,
-			StatusCode:  fiber.StatusAccepted,
-			Stage:       demeterAudioTransportFinalizationStage,
-			ChunkIndex:  0,
-			ChunkCount:  0,
-			Progress:    0,
-			UpdatedAt:   now.Format(time.RFC3339),
-		},
+	return c.Status(record.StatusCode).JSON(demeterAudioTranscriptionOperationStartResponse{
+		demeterAudioTranscriptionOperationResponse: demeterAudioTranscriptionOperationResponseFromRecord(record),
 	})
 }
 
@@ -820,12 +827,15 @@ func (a *App) runDemeterAudioTransportTranscriptionOperation(
 		userID:  baseLogCtx.userID,
 		orgID:   baseLogCtx.orgID,
 	}
-	defer demeterAudioTranscriptionOperationCancels.Delete(session.uploadID)
-	defer cancel()
+	var fallbackUsed bool
+	var updateErr error
+	keepSession := false
 	defer func() {
 		if session != nil {
-			demeterAudioTransportSessions.Delete(session.uploadID)
-			cleanupDemeterAudioTransportSession(logCtx, route, seq, "transport_worker_exit", session)
+			if !keepSession {
+				demeterAudioTransportSessions.Delete(session.uploadID)
+				cleanupDemeterAudioTransportSession(logCtx, route, seq, "transport_worker_exit", session)
+			}
 		}
 	}()
 	logDemeterAudioStageCtx(logCtx, route, seq, "operation_worker_start", demeterAudioRequestBaseFields(routeMode, audioDurationSec, audioDurationProvided, map[string]any{
@@ -844,7 +854,7 @@ func (a *App) runDemeterAudioTransportTranscriptionOperation(
 			statusCode = fiber.StatusRequestTimeout
 			lastError = "operation cancelled"
 		}
-		fallbackUsed, updateErr := a.updateDemeterAudioTranscriptionOperationStateWithFallback(ctx, &store.DemeterAudioTranscriptionOperationRecord{
+		fallbackUsed, updateErr = a.updateDemeterAudioTranscriptionOperationStateWithFallback(ctx, &store.DemeterAudioTranscriptionOperationRecord{
 			OperationID:    session.uploadID,
 			OrganizationID: baseLogCtx.orgID,
 			UserID:         baseLogCtx.userID,
@@ -890,7 +900,7 @@ func (a *App) runDemeterAudioTransportTranscriptionOperation(
 			"transport_bytes": session.totalBytes,
 			"message":         "missing reconstructed upload",
 		}))
-		fallbackUsed, updateErr := a.updateDemeterAudioTranscriptionOperationStateWithFallback(ctx, &store.DemeterAudioTranscriptionOperationRecord{
+		fallbackUsed, updateErr = a.updateDemeterAudioTranscriptionOperationStateWithFallback(ctx, &store.DemeterAudioTranscriptionOperationRecord{
 			OperationID:    session.uploadID,
 			OrganizationID: baseLogCtx.orgID,
 			UserID:         baseLogCtx.userID,
@@ -953,7 +963,7 @@ func (a *App) runDemeterAudioTransportTranscriptionOperation(
 				"message":         "mistral client is not configured",
 				"transport_bytes": session.totalBytes,
 			}))
-			fallbackUsed, updateErr := a.updateDemeterAudioTranscriptionOperationStateWithFallback(ctx, &store.DemeterAudioTranscriptionOperationRecord{
+			fallbackUsed, updateErr = a.updateDemeterAudioTranscriptionOperationStateWithFallback(ctx, &store.DemeterAudioTranscriptionOperationRecord{
 				OperationID:    session.uploadID,
 				OrganizationID: baseLogCtx.orgID,
 				UserID:         baseLogCtx.userID,
@@ -998,7 +1008,7 @@ func (a *App) runDemeterAudioTransportTranscriptionOperation(
 				"message":         loadErr.Error(),
 				"transport_bytes": session.totalBytes,
 			}))
-			fallbackUsed, updateErr := a.updateDemeterAudioTranscriptionOperationStateWithFallback(ctx, &store.DemeterAudioTranscriptionOperationRecord{
+			fallbackUsed, updateErr = a.updateDemeterAudioTranscriptionOperationStateWithFallback(ctx, &store.DemeterAudioTranscriptionOperationRecord{
 				OperationID:    session.uploadID,
 				OrganizationID: baseLogCtx.orgID,
 				UserID:         baseLogCtx.userID,
@@ -1045,7 +1055,7 @@ func (a *App) runDemeterAudioTransportTranscriptionOperation(
 				"message":         "fichier audio illisible",
 				"transport_bytes": session.totalBytes,
 			}))
-			fallbackUsed, updateErr := a.updateDemeterAudioTranscriptionOperationStateWithFallback(ctx, &store.DemeterAudioTranscriptionOperationRecord{
+			fallbackUsed, updateErr = a.updateDemeterAudioTranscriptionOperationStateWithFallback(ctx, &store.DemeterAudioTranscriptionOperationRecord{
 				OperationID:    session.uploadID,
 				OrganizationID: baseLogCtx.orgID,
 				UserID:         baseLogCtx.userID,
@@ -1101,7 +1111,7 @@ func (a *App) runDemeterAudioTransportTranscriptionOperation(
 		}))
 	}
 
-	fallbackUsed, updateErr := a.updateDemeterAudioTranscriptionOperationStateWithFallback(ctx, &store.DemeterAudioTranscriptionOperationRecord{
+	fallbackUsed, updateErr = a.updateDemeterAudioTranscriptionOperationStateWithFallback(ctx, &store.DemeterAudioTranscriptionOperationRecord{
 		OperationID:    session.uploadID,
 		OrganizationID: baseLogCtx.orgID,
 		UserID:         baseLogCtx.userID,
@@ -1136,20 +1146,202 @@ func (a *App) runDemeterAudioTransportTranscriptionOperation(
 		"transport_bytes": session.totalBytes,
 	}))
 
-	a.runDemeterAudioTranscriptionOperation(
-		ctx,
-		baseLogCtx,
-		cancel,
-		session.uploadID,
-		route,
-		seq,
-		routeMode,
-		audioDurationSec,
-		audioDurationProvided,
-		requestBytes,
-		upload,
-		chunkPlans,
-	)
+	queuePayload, payloadErr := buildDemeterAudioQueuePayload(baseLogCtx.traceID, route, seq, routeMode, audioDurationSec, audioDurationProvided, requestBytes, startedAt, upload, chunkPlans)
+	if payloadErr != nil {
+		fallbackUsed, updateErr = a.updateDemeterAudioTranscriptionOperationStateWithFallback(ctx, &store.DemeterAudioTranscriptionOperationRecord{
+			OperationID:    session.uploadID,
+			OrganizationID: baseLogCtx.orgID,
+			UserID:         baseLogCtx.userID,
+			Status:         store.DemeterAudioTranscriptionOperationStatusFailed,
+			Stage:          "failed",
+			ChunkIndex:     0,
+			ChunkCount:     len(chunkPlans),
+			Progress:       0,
+			LastError:      sql.NullString{String: payloadErr.Error(), Valid: true},
+			StatusCode:     fiber.StatusInternalServerError,
+			UpdatedAt:      time.Now().UTC(),
+			FinishedAt:     sql.NullTime{Time: time.Now().UTC(), Valid: true},
+		})
+		if fallbackUsed {
+			logDemeterOwnershipStageCtx(logCtx, route, seq, "ownership_fallback_used", demeterAudioRequestBaseFields(routeMode, audioDurationSec, audioDurationProvided, map[string]any{
+				"operation_id": session.uploadID,
+				"stage":        "failed",
+				"status":       store.DemeterAudioTranscriptionOperationStatusFailed,
+				"status_code":  fiber.StatusInternalServerError,
+				"chunk_index":  0,
+				"chunk_count":  len(chunkPlans),
+				"source":       "worker_update",
+			}))
+		}
+		_ = updateErr
+		logDemeterAudioStageCtx(logCtx, route, seq, "operation_failed", demeterAudioRequestBaseFields(routeMode, audioDurationSec, audioDurationProvided, map[string]any{
+			"operation_id":      session.uploadID,
+			"status_code":       fiber.StatusInternalServerError,
+			"total_duration_ms": time.Since(startedAt).Milliseconds(),
+			"request_bytes":     requestBytes,
+			"transport_bytes":   session.totalBytes,
+			"message":           payloadErr.Error(),
+		}))
+		return
+	}
+
+	payloadJSON := mustMarshalDemeterQueuePayload(queuePayload)
+	if payloadJSON == "" {
+		payloadErr = fmt.Errorf("failed to marshal queue payload")
+		fallbackUsed, updateErr = a.updateDemeterAudioTranscriptionOperationStateWithFallback(ctx, &store.DemeterAudioTranscriptionOperationRecord{
+			OperationID:    session.uploadID,
+			OrganizationID: baseLogCtx.orgID,
+			UserID:         baseLogCtx.userID,
+			Status:         store.DemeterAudioTranscriptionOperationStatusFailed,
+			Stage:          "failed",
+			ChunkIndex:     0,
+			ChunkCount:     len(chunkPlans),
+			Progress:       0,
+			LastError:      sql.NullString{String: payloadErr.Error(), Valid: true},
+			StatusCode:     fiber.StatusInternalServerError,
+			UpdatedAt:      time.Now().UTC(),
+			FinishedAt:     sql.NullTime{Time: time.Now().UTC(), Valid: true},
+		})
+		if fallbackUsed {
+			logDemeterOwnershipStageCtx(logCtx, route, seq, "ownership_fallback_used", demeterAudioRequestBaseFields(routeMode, audioDurationSec, audioDurationProvided, map[string]any{
+				"operation_id": session.uploadID,
+				"stage":        "failed",
+				"status":       store.DemeterAudioTranscriptionOperationStatusFailed,
+				"status_code":  fiber.StatusInternalServerError,
+				"chunk_index":  0,
+				"chunk_count":  len(chunkPlans),
+				"source":       "worker_update",
+			}))
+		}
+		_ = updateErr
+		logDemeterAudioStageCtx(logCtx, route, seq, "operation_failed", demeterAudioRequestBaseFields(routeMode, audioDurationSec, audioDurationProvided, map[string]any{
+			"operation_id":      session.uploadID,
+			"status_code":       fiber.StatusInternalServerError,
+			"total_duration_ms": time.Since(startedAt).Milliseconds(),
+			"request_bytes":     requestBytes,
+			"transport_bytes":   session.totalBytes,
+			"message":           payloadErr.Error(),
+		}))
+		return
+	}
+
+	if err := a.Store.UpdateDemeterAudioTranscriptionOperationQueuePayloadByID(ctx, session.uploadID, payloadJSON, time.Now().UTC()); err != nil {
+		fallbackUsed, updateErr = a.updateDemeterAudioTranscriptionOperationStateWithFallback(ctx, &store.DemeterAudioTranscriptionOperationRecord{
+			OperationID:    session.uploadID,
+			OrganizationID: baseLogCtx.orgID,
+			UserID:         baseLogCtx.userID,
+			Status:         store.DemeterAudioTranscriptionOperationStatusFailed,
+			Stage:          "failed",
+			ChunkIndex:     0,
+			ChunkCount:     len(chunkPlans),
+			Progress:       0,
+			LastError:      sql.NullString{String: err.Error(), Valid: true},
+			StatusCode:     fiber.StatusInternalServerError,
+			UpdatedAt:      time.Now().UTC(),
+			FinishedAt:     sql.NullTime{Time: time.Now().UTC(), Valid: true},
+		})
+		if fallbackUsed {
+			logDemeterOwnershipStageCtx(logCtx, route, seq, "ownership_fallback_used", demeterAudioRequestBaseFields(routeMode, audioDurationSec, audioDurationProvided, map[string]any{
+				"operation_id": session.uploadID,
+				"stage":        "failed",
+				"status":       store.DemeterAudioTranscriptionOperationStatusFailed,
+				"status_code":  fiber.StatusInternalServerError,
+				"chunk_index":  0,
+				"chunk_count":  len(chunkPlans),
+				"source":       "worker_update",
+			}))
+		}
+		_ = updateErr
+		logDemeterAudioStageCtx(logCtx, route, seq, "operation_failed", demeterAudioRequestBaseFields(routeMode, audioDurationSec, audioDurationProvided, map[string]any{
+			"operation_id":      session.uploadID,
+			"status_code":       fiber.StatusInternalServerError,
+			"total_duration_ms": time.Since(startedAt).Milliseconds(),
+			"request_bytes":     requestBytes,
+			"transport_bytes":   session.totalBytes,
+			"message":           err.Error(),
+		}))
+		return
+	}
+
+	fallbackUsed, updateErr = a.updateDemeterAudioTranscriptionOperationStateWithFallback(ctx, &store.DemeterAudioTranscriptionOperationRecord{
+		OperationID:    session.uploadID,
+		OrganizationID: baseLogCtx.orgID,
+		UserID:         baseLogCtx.userID,
+		Status:         store.DemeterAudioTranscriptionOperationStatusPending,
+		Stage:          "queued",
+		ChunkIndex:     0,
+		ChunkCount:     len(chunkPlans),
+		Progress:       0,
+		StatusCode:     fiber.StatusAccepted,
+		UpdatedAt:      time.Now().UTC(),
+	})
+	if fallbackUsed {
+		logDemeterOwnershipStageCtx(logCtx, route, seq, "ownership_fallback_used", demeterAudioRequestBaseFields(routeMode, audioDurationSec, audioDurationProvided, map[string]any{
+			"operation_id": session.uploadID,
+			"stage":        "queued",
+			"status":       store.DemeterAudioTranscriptionOperationStatusPending,
+			"status_code":  fiber.StatusAccepted,
+			"chunk_index":  0,
+			"chunk_count":  len(chunkPlans),
+			"source":       "worker_update",
+		}))
+	}
+	_ = updateErr
+
+	queueRecord := &store.DemeterAudioTranscriptionOperationRecord{
+		OperationID:      session.uploadID,
+		OrganizationID:   baseLogCtx.orgID,
+		UserID:           baseLogCtx.userID,
+		Status:           store.DemeterAudioTranscriptionOperationStatusPending,
+		Stage:            "queued",
+		ChunkIndex:       0,
+		ChunkCount:       len(chunkPlans),
+		Progress:         0,
+		QueuePayloadJSON: sql.NullString{String: payloadJSON, Valid: true},
+		StatusCode:       fiber.StatusAccepted,
+	}
+	queueManager := a.ensureDemeterQueueManager()
+	if queueManager != nil {
+		if _, err := queueManager.EnqueueOperation(ctx, queueRecord); err != nil {
+			fallbackUsed, updateErr = a.updateDemeterAudioTranscriptionOperationStateWithFallback(ctx, &store.DemeterAudioTranscriptionOperationRecord{
+				OperationID:    session.uploadID,
+				OrganizationID: baseLogCtx.orgID,
+				UserID:         baseLogCtx.userID,
+				Status:         store.DemeterAudioTranscriptionOperationStatusFailed,
+				Stage:          "failed",
+				ChunkIndex:     0,
+				ChunkCount:     len(chunkPlans),
+				Progress:       0,
+				LastError:      sql.NullString{String: err.Error(), Valid: true},
+				StatusCode:     fiber.StatusInternalServerError,
+				UpdatedAt:      time.Now().UTC(),
+				FinishedAt:     sql.NullTime{Time: time.Now().UTC(), Valid: true},
+			})
+			if fallbackUsed {
+				logDemeterOwnershipStageCtx(logCtx, route, seq, "ownership_fallback_used", demeterAudioRequestBaseFields(routeMode, audioDurationSec, audioDurationProvided, map[string]any{
+					"operation_id": session.uploadID,
+					"stage":        "failed",
+					"status":       store.DemeterAudioTranscriptionOperationStatusFailed,
+					"status_code":  fiber.StatusInternalServerError,
+					"chunk_index":  0,
+					"chunk_count":  len(chunkPlans),
+					"source":       "worker_update",
+				}))
+			}
+			_ = updateErr
+			logDemeterAudioStageCtx(logCtx, route, seq, "operation_failed", demeterAudioRequestBaseFields(routeMode, audioDurationSec, audioDurationProvided, map[string]any{
+				"operation_id":      session.uploadID,
+				"status_code":       fiber.StatusInternalServerError,
+				"total_duration_ms": time.Since(startedAt).Milliseconds(),
+				"request_bytes":     requestBytes,
+				"transport_bytes":   session.totalBytes,
+				"message":           err.Error(),
+			}))
+			return
+		}
+	}
+
+	keepSession = true
 }
 
 // demeterAudioTranscriptionsTransportSlice is the slice-transport entrypoint
