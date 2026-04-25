@@ -285,21 +285,7 @@ func (a *App) getDemeterAudioTranscriptionOperationStatus(c *fiber.Ctx) error {
 	}
 
 	if record.Status == store.DemeterAudioTranscriptionOperationStatusCompleted {
-		deleteStartedAt := time.Now()
-		deletedCount, deleteErr := a.Store.DeleteDemeterAudioTranscriptionOperation(requestContext(c), record.OperationID)
-		deleteFields := map[string]any{
-			"operation_id":     operationID,
-			"deleted_count":    deletedCount,
-			"cleanup_scope":    "completed_get",
-			"duration_ms":      time.Since(deleteStartedAt).Milliseconds(),
-			"operation_status": record.Status,
-		}
-		if deleteErr != nil {
-			deleteFields["message"] = deleteErr.Error()
-			logDemeterAudioPerformanceTaskCtx(logCtx, route, 0, "operation_cleanup_failed", "suppression_operation_transcription", deleteFields)
-		} else {
-			logDemeterAudioPerformanceTaskCtx(logCtx, route, 0, "operation_cleanup_completed", "suppression_operation_transcription", deleteFields)
-		}
+		a.cleanupConsumedDemeterAudioOperation(requestContext(c), route, 0, "completed_get", record)
 	}
 
 	return nil

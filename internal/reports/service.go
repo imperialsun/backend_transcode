@@ -53,6 +53,12 @@ func logReportStep(ctx context.Context, step, title string, fields map[string]an
 // GenerateReports renders one or more formats, retrying each format
 // independently so one bad format does not hide the others.
 func (g *Generator) GenerateReports(ctx context.Context, meetingTitle string, participants []string, sourceText string, formats []ReportFormat) (GeneratedReports, error) {
+	return g.GenerateReportsWithDetail(ctx, meetingTitle, participants, sourceText, formats, nil)
+}
+
+// GenerateReportsWithDetail renders one or more formats with per-format detail
+// controls.
+func (g *Generator) GenerateReportsWithDetail(ctx context.Context, meetingTitle string, participants []string, sourceText string, formats []ReportFormat, detailLevels map[ReportFormat]ReportDetailLevel) (GeneratedReports, error) {
 	if g == nil || g.Client == nil || !g.Client.IsConfigured() {
 		return nil, errors.New("mistral client is not configured")
 	}
@@ -77,6 +83,7 @@ func (g *Generator) GenerateReports(ctx context.Context, meetingTitle string, pa
 	if len(selectedFormats) == 0 {
 		selectedFormats = AllReportFormats()
 	}
+	normalizedDetailLevels := NormalizeReportDetailLevels(detailLevels)
 
 	logReportStep(ctx, "generate_start", "mistral_report_generation", map[string]any{
 		"meeting_title_present": strings.TrimSpace(meetingTitle) != "",
@@ -106,7 +113,7 @@ func (g *Generator) GenerateReports(ctx context.Context, meetingTitle string, pa
 		go func() {
 			defer wg.Done()
 
-			report, err := g.generateReportForFormat(ctx, modelID, meetingTitle, participants, sourceText, format, maxTokens, temperature, reportGenerationMaxAttempts)
+			report, err := g.generateReportForFormat(ctx, modelID, meetingTitle, participants, sourceText, format, normalizedDetailLevels[format], maxTokens, temperature, reportGenerationMaxAttempts)
 			if err != nil {
 				cancel()
 				resultsCh <- formatResult{format: format, err: err}
@@ -156,6 +163,7 @@ func (g *Generator) generateReportForFormat(
 	participants []string,
 	sourceText string,
 	format ReportFormat,
+	detailLevel ReportDetailLevel,
 	maxTokens int,
 	temperature float64,
 	maxAttempts int,
@@ -171,14 +179,16 @@ func (g *Generator) generateReportForFormat(
 
 		logReportStep(ctx, "generate_format_start", formatTask, map[string]any{
 			"format":       formatName,
+			"detail_level": string(detailLevel),
 			"attempt":      attempt,
 			"max_attempts": maxAttempts,
 		})
 
-		report, raw, statusCode, err := g.generateOne(ctx, modelID, meetingTitle, participants, sourceText, format, maxTokens, temperature)
+		report, raw, statusCode, err := g.generateOne(ctx, modelID, meetingTitle, participants, sourceText, format, detailLevel, maxTokens, temperature)
 		if err == nil {
 			logReportStep(ctx, "generate_format_success", formatTask, map[string]any{
 				"format":       formatName,
+				"detail_level": string(detailLevel),
 				"attempt":      attempt,
 				"max_attempts": maxAttempts,
 				"status_code":  statusCode,
@@ -198,6 +208,7 @@ func (g *Generator) generateReportForFormat(
 		lastStatusCode = statusCode
 		logFields := map[string]any{
 			"format":       formatName,
+			"detail_level": string(detailLevel),
 			"attempt":      attempt,
 			"max_attempts": maxAttempts,
 			"status_code":  statusCode,
@@ -210,6 +221,7 @@ func (g *Generator) generateReportForFormat(
 			delay := reportGenerationRetryDelay(attempt)
 			logReportStep(ctx, "generate_format_retry", formatTask, map[string]any{
 				"format":       formatName,
+				"detail_level": string(detailLevel),
 				"attempt":      attempt,
 				"next_attempt": nextAttempt,
 				"max_attempts": maxAttempts,
@@ -238,14 +250,15 @@ func (g *Generator) generateOne(
 	participants []string,
 	sourceText string,
 	format ReportFormat,
+	detailLevel ReportDetailLevel,
 	maxTokens int,
 	temperature float64,
 ) (ReportJson, string, int, error) {
 	body := map[string]any{
 		"model": modelID,
 		"messages": []map[string]string{
-			{"role": "system", "content": BuildReportSystemPrompt()},
-			{"role": "user", "content": BuildReportUserPrompt(format, sourceText, meetingTitle, participants)},
+			{"role": "system", "content": BuildReportSystemPromptWithDetail(detailLevel)},
+			{"role": "user", "content": BuildReportUserPromptWithDetail(format, detailLevel, sourceText, meetingTitle, participants)},
 		},
 		"temperature": temperature,
 		"max_tokens":  maxTokens,

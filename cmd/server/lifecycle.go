@@ -23,7 +23,7 @@ import (
 )
 
 const serverShutdownTimeout = 10 * time.Second
-const meetingFinalizeCleanupInterval = 15 * time.Minute
+const mobileOperationCleanupInterval = 15 * time.Minute
 const performanceCleanupInterval = 30 * time.Minute
 const backendErrorCleanupInterval = 30 * time.Minute
 
@@ -67,8 +67,8 @@ var managedBackendTmpPurgeTargets = []managedBackendTmpPurgeTarget{
 // assert boot and shutdown cleanup behavior without touching real temp data.
 var purgeManagedBackendTmpDirsFn = purgeManagedBackendTmpDirs
 
-type meetingFinalizeOperationPurger interface {
-	PurgeExpiredMeetingFinalizeOperations(context.Context, time.Time) (int64, error)
+type mobileOperationPurger interface {
+	PurgeExpiredMobileOperations(context.Context, time.Time) (int64, error)
 }
 
 type performanceEventPurger interface {
@@ -129,7 +129,7 @@ func run(ctx context.Context, cfg config.Config) error {
 		return err
 	}
 
-	runMeetingFinalizeOperationCleanup(ctx, processTraceID, st)
+	runMobileOperationCleanup(ctx, processTraceID, st)
 	runPerformanceCleanup(ctx, processTraceID, st)
 	runBackendErrorCleanup(ctx, processTraceID, st)
 	runDemeterAudioTranscriptionOperationCleanup(ctx, processTraceID, st)
@@ -172,7 +172,7 @@ func run(ctx context.Context, cfg config.Config) error {
 	}
 	cleanupCtx, cleanupCancel := context.WithCancel(ctx)
 	defer cleanupCancel()
-	go runMeetingFinalizeOperationCleanupLoop(cleanupCtx, processTraceID, st, meetingFinalizeCleanupInterval)
+	go runMobileOperationCleanupLoop(cleanupCtx, processTraceID, st, mobileOperationCleanupInterval)
 	go runPerformanceCleanupLoop(cleanupCtx, processTraceID, st, performanceCleanupInterval)
 	go runBackendErrorCleanupLoop(cleanupCtx, processTraceID, st, backendErrorCleanupInterval)
 
@@ -188,15 +188,15 @@ func runServerLifecycleWithManagedTmpCleanup(ctx context.Context, processTraceID
 	return runServerLifecycle(ctx, processTraceID, port, runtime)
 }
 
-// runMeetingFinalizeOperationCleanup performs one immediate pass so stale
-// finalize operations do not wait for the periodic loop.
-func runMeetingFinalizeOperationCleanup(ctx context.Context, traceID string, purger meetingFinalizeOperationPurger) {
-	runMeetingFinalizeOperationCleanupOnce(ctx, traceID, purger)
+// runMobileOperationCleanup performs one immediate pass so stale mobile
+// operations do not wait for the periodic loop.
+func runMobileOperationCleanup(ctx context.Context, traceID string, purger mobileOperationPurger) {
+	runMobileOperationCleanupOnce(ctx, traceID, purger)
 }
 
-// runMeetingFinalizeOperationCleanupLoop keeps expired finalize operations
-// bounded while the process stays alive.
-func runMeetingFinalizeOperationCleanupLoop(ctx context.Context, traceID string, purger meetingFinalizeOperationPurger, interval time.Duration) {
+// runMobileOperationCleanupLoop keeps expired mobile operations bounded while
+// the process stays alive.
+func runMobileOperationCleanupLoop(ctx context.Context, traceID string, purger mobileOperationPurger, interval time.Duration) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
@@ -204,23 +204,23 @@ func runMeetingFinalizeOperationCleanupLoop(ctx context.Context, traceID string,
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			runMeetingFinalizeOperationCleanupOnce(ctx, traceID, purger)
+			runMobileOperationCleanupOnce(ctx, traceID, purger)
 		}
 	}
 }
 
-// runMeetingFinalizeOperationCleanupOnce executes the purge and records the
-// outcome as a structured lifecycle event.
-func runMeetingFinalizeOperationCleanupOnce(ctx context.Context, traceID string, purger meetingFinalizeOperationPurger) {
+// runMobileOperationCleanupOnce executes the purge and records the outcome as a
+// structured lifecycle event.
+func runMobileOperationCleanupOnce(ctx context.Context, traceID string, purger mobileOperationPurger) {
 	if purger == nil {
 		return
 	}
-	purged, err := purger.PurgeExpiredMeetingFinalizeOperations(ctx, time.Now().UTC())
+	purged, err := purger.PurgeExpiredMobileOperations(ctx, time.Now().UTC())
 	if err != nil {
-		serverLogStep(traceID, "meeting_finalize_cleanup_error", "server", map[string]any{"error": err})
+		serverLogStep(traceID, "mobile_operation_cleanup_error", "server", map[string]any{"error": err})
 		return
 	}
-	serverLogStep(traceID, "meeting_finalize_cleanup_success", "server", map[string]any{"purged": purged})
+	serverLogStep(traceID, "mobile_operation_cleanup_success", "server", map[string]any{"purged": purged})
 }
 
 // runPerformanceCleanup performs one immediate sweep before the periodic loop

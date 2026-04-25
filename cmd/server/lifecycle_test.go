@@ -93,14 +93,14 @@ func TestRunServerLifecycle_LogsTraceSteps(t *testing.T) {
 	}
 }
 
-type fakeMeetingFinalizeOperationPurger struct {
+type fakeMobileOperationPurger struct {
 	purged int64
 	err    error
 }
 
-// fakeMeetingFinalizeOperationPurger lets the cleanup loop be tested without a
+// fakeMobileOperationPurger lets the cleanup loop be tested without a
 // database by returning a controlled purge result.
-func (p fakeMeetingFinalizeOperationPurger) PurgeExpiredMeetingFinalizeOperations(context.Context, time.Time) (int64, error) {
+func (p fakeMobileOperationPurger) PurgeExpiredMobileOperations(context.Context, time.Time) (int64, error) {
 	return p.purged, p.err
 }
 
@@ -130,16 +130,16 @@ func (p fakeDemeterTranscriptionOperationPurger) PurgeCompletedDemeterAudioTrans
 
 // These tests assert that the lifecycle cleanup helpers emit the expected
 // structured log entries for both successful and partial-failure cases.
-func TestRunMeetingFinalizeOperationCleanupOnce_LogsTraceSteps(t *testing.T) {
+func TestRunMobileOperationCleanupOnce_LogsTraceSteps(t *testing.T) {
 	buf := captureTestLogOutput(t)
 
-	runMeetingFinalizeOperationCleanupOnce(context.Background(), "server-trace", fakeMeetingFinalizeOperationPurger{purged: 3})
+	runMobileOperationCleanupOnce(context.Background(), "server-trace", fakeMobileOperationPurger{purged: 3})
 
 	logged := buf.String()
 	for _, needle := range []string{
 		"[server]",
 		"route=lifecycle",
-		"step=meeting_finalize_cleanup_success",
+		"step=mobile_operation_cleanup_success",
 		"trace_id=server-trace",
 		"purged=3",
 	} {

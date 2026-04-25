@@ -16,6 +16,16 @@ const (
 	ReportFormatCRS ReportFormat = "CRS"
 )
 
+// ReportDetailLevel controls how much source material the model should keep in
+// the generated report.
+type ReportDetailLevel string
+
+const (
+	ReportDetailStandard   ReportDetailLevel = "standard"
+	ReportDetailVerbose    ReportDetailLevel = "verbose"
+	ReportDetailExhaustive ReportDetailLevel = "exhaustive"
+)
+
 var ErrInvalidReport = errors.New("invalid report payload")
 
 // ReportSection is one section of a generated report draft.
@@ -79,6 +89,36 @@ func ParseReportFormat(value string) (ReportFormat, bool) {
 	default:
 		return "", false
 	}
+}
+
+// ParseReportDetailLevel normalizes a user-provided detail level.
+func ParseReportDetailLevel(value string) (ReportDetailLevel, bool) {
+	switch ReportDetailLevel(strings.ToLower(strings.TrimSpace(value))) {
+	case ReportDetailStandard:
+		return ReportDetailStandard, true
+	case ReportDetailVerbose:
+		return ReportDetailVerbose, true
+	case ReportDetailExhaustive:
+		return ReportDetailExhaustive, true
+	default:
+		return "", false
+	}
+}
+
+// NormalizeReportDetailLevels returns a complete detail-level map, defaulting
+// every missing or invalid format to the standard level.
+func NormalizeReportDetailLevels(values map[ReportFormat]ReportDetailLevel) map[ReportFormat]ReportDetailLevel {
+	out := map[ReportFormat]ReportDetailLevel{}
+	for _, format := range AllReportFormats() {
+		level := ReportDetailStandard
+		if candidate, ok := values[format]; ok {
+			if parsed, valid := ParseReportDetailLevel(string(candidate)); valid {
+				level = parsed
+			}
+		}
+		out[format] = level
+	}
+	return out
 }
 
 // NormalizeReportFormats filters invalid formats and preserves order.

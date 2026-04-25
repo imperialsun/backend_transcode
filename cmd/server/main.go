@@ -72,7 +72,7 @@ func buildAppBundle(cfg config.Config, st *store.Store, mistralClient *mistral.C
 	appCtx.RegisterActivityRoutes(apiV1Short)
 	appCtx.RegisterPerformanceRoutes(apiV1Short)
 	appCtx.RegisterDemeterRoutes(apiV1Long)
-	appCtx.RegisterMeetingRoutes(apiV1Long)
+	appCtx.RegisterMobileRoutes(apiV1Long)
 	appCtx.RegisterSupportRoutes(apiV1Long)
 	appCtx.RegisterAdminCoreRoutes(apiV1Short)
 	appCtx.RegisterAdminMailRoutes(apiV1Mail)

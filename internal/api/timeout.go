@@ -43,7 +43,7 @@ func shouldSkipRequestTimeout(path string) bool {
 	switch {
 	case strings.HasPrefix(normalized, "/api/v1/providers/demeter-sante/"):
 		return true
-	case strings.HasPrefix(normalized, "/api/v1/meetings/"):
+	case strings.HasPrefix(normalized, "/api/v1/mobile/"):
 		return true
 	case normalized == "/api/v1/auth/forgot-password":
 		return true

@@ -46,28 +46,88 @@ var formatStyleRules = map[ReportFormat][]string{
 	},
 }
 
+var detailLevelGuidelines = map[ReportDetailLevel]string{
+	ReportDetailStandard:   "standard = complet mais compact, sans superflu inutile.",
+	ReportDetailVerbose:    "verbeux = sensiblement plus developpe, avec davantage de contexte et de precisions.",
+	ReportDetailExhaustive: "exhaustif = le plus long et le plus detaille, avec expansion claire du contexte, des interlocuteurs nommes, des opinions et des points de vigilance.",
+}
+
+var detailLevelLabels = map[ReportDetailLevel]string{
+	ReportDetailStandard:   "Standard",
+	ReportDetailVerbose:    "Verbeux",
+	ReportDetailExhaustive: "Exhaustif",
+}
+
+var detailMinimumSourceRatios = map[ReportFormat]map[ReportDetailLevel]float64{
+	ReportFormatCRI: {
+		ReportDetailStandard:   0.05,
+		ReportDetailVerbose:    0.10,
+		ReportDetailExhaustive: 0.15,
+	},
+	ReportFormatCRO: {
+		ReportDetailStandard:   0.025,
+		ReportDetailVerbose:    0.05,
+		ReportDetailExhaustive: 0.075,
+	},
+	ReportFormatCRS: {
+		ReportDetailStandard:   0.0125,
+		ReportDetailVerbose:    0.025,
+		ReportDetailExhaustive: 0.0375,
+	},
+}
+
 // BuildReportSystemPrompt returns the system prompt that constrains report
 // generation to the backend's structured format.
 func BuildReportSystemPrompt() string {
+	return BuildReportSystemPromptWithDetail("")
+}
+
+// BuildReportSystemPromptWithDetail returns the system prompt with the same
+// detail-priority rules used by the frontend when a level is selected.
+func BuildReportSystemPromptWithDetail(detailLevel ReportDetailLevel) string {
 	lines := []string{
 		"Tu es un rédacteur expert des comptes rendus professionnels.",
 		"Ta mission: transformer une transcription brute en compte rendu structuré selon le format demandé.",
 	}
 	lines = append(lines, commonPromptRules...)
+	if parsed, ok := ParseReportDetailLevel(string(detailLevel)); ok {
+		lines = append(lines,
+			fmt.Sprintf("Niveau de detail actif: %s.", detailLevelLabels[parsed]),
+			"La contrainte de longueur associee est prioritaire: considere-la comme une base minimale, un minimum obligatoire, pas comme une moyenne ni un plafond.",
+			"Respecte cette contrainte avant toute recherche de concision.",
+		)
+	}
 	return strings.Join(lines, "\n")
 }
 
 // BuildReportUserPrompt assembles the user prompt that gives the model the
 // transcript context and the requested report format.
 func BuildReportUserPrompt(format ReportFormat, sourceText string, title string, participants []string) string {
+	return BuildReportUserPromptWithDetail(format, ReportDetailStandard, sourceText, title, participants)
+}
+
+// BuildReportUserPromptWithDetail assembles the user prompt with the requested
+// detail level, mirroring the frontend's standard/verbose/exhaustive behavior.
+func BuildReportUserPromptWithDetail(format ReportFormat, detailLevel ReportDetailLevel, sourceText string, title string, participants []string) string {
 	participantLine := "Aucun participant fourni."
 	if len(participants) > 0 {
 		participantLine = strings.Join(participants, ", ")
+	}
+	if parsed, ok := ParseReportDetailLevel(string(detailLevel)); ok {
+		detailLevel = parsed
+	} else {
+		detailLevel = ReportDetailStandard
+	}
+	minimumRatio := detailMinimumSourceRatios[format][detailLevel]
+	minimumWords := 0
+	if sourceWordCount := len(strings.Fields(strings.TrimSpace(sourceText))); sourceWordCount > 0 && minimumRatio > 0 {
+		minimumWords = int(float64(sourceWordCount)*minimumRatio + 0.5)
 	}
 
 	lines := []string{
 		fmt.Sprintf("Format cible: %s.", ReportFormatDisplayName(format)),
 		formatGuidelines[format],
+		detailLevelGuidelines[detailLevel],
 		"",
 		"Titre de la réunion:",
 		title,
@@ -93,6 +153,21 @@ func BuildReportUserPrompt(format ReportFormat, sourceText string, title string,
 		"- key_points: points saillants utiles à la lecture rapide.",
 		"- action_items: suites concrètes si explicites dans la source.",
 		"- caveats: zones d'incertitude / informations absentes.",
+	}
+	if minimumWords > 0 {
+		wordLabel := "mots"
+		if minimumWords == 1 {
+			wordLabel = "mot"
+		}
+		lines = append(lines,
+			"",
+			"Consigne prioritaire de longueur:",
+			fmt.Sprintf("- longueur minimale obligatoire (%s): vise au moins %d %s en prenant la quantite demandee comme base minimale sur la transcription source.", detailLevelLabels[detailLevel], minimumWords, wordLabel),
+			"- cette limite est un minimum, pas un plafond.",
+			"- tu peux depasser cette longueur sans probleme si cela ameliore la fidelite, le contexte, les noms cites ou les nuances; ne compresse pas le texte pour rester court.",
+			"- progression attendue: "+detailLevelGuidelines[detailLevel],
+			"- si des interlocuteurs sont nommes, cite leurs noms et leur avis ou position lorsqu'elle est exprimee.",
+		)
 	}
 	for _, rule := range formatStyleRules[format] {
 		lines = append(lines, "- "+rule)
