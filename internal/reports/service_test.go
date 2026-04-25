@@ -31,6 +31,25 @@ func TestParseReportJSON(t *testing.T) {
 	}
 }
 
+func TestReportGenerationRetryDelay(t *testing.T) {
+	tests := []struct {
+		attempt int
+		want    time.Duration
+	}{
+		{attempt: 1, want: 2 * time.Second},
+		{attempt: 2, want: 4 * time.Second},
+		{attempt: 3, want: 8 * time.Second},
+		{attempt: 5, want: 32 * time.Second},
+		{attempt: 9, want: 32 * time.Second},
+	}
+
+	for _, tt := range tests {
+		if got := reportGenerationRetryDelay(tt.attempt); got != tt.want {
+			t.Fatalf("attempt %d: expected %s, got %s", tt.attempt, tt.want, got)
+		}
+	}
+}
+
 func TestGeneratorGenerateReports(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/chat/completions" {
@@ -153,6 +172,8 @@ func TestGeneratorGenerateReportsRunsFormatsInParallel(t *testing.T) {
 }
 
 func TestGeneratorGenerateReportsCancelsRemainingFormatsAfterTerminalFailure(t *testing.T) {
+	stubReportGenerationSleep(t)
+
 	var mu sync.Mutex
 	attempts := map[ReportFormat]int{}
 	started := make(chan ReportFormat, 3)
@@ -314,4 +335,16 @@ func updateMaxInt32(max *int32, value int32) {
 			return
 		}
 	}
+}
+
+func stubReportGenerationSleep(t *testing.T) {
+	t.Helper()
+
+	previous := reportGenerationSleep
+	reportGenerationSleep = func(ctx context.Context, _ time.Duration) error {
+		return ctx.Err()
+	}
+	t.Cleanup(func() {
+		reportGenerationSleep = previous
+	})
 }

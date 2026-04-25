@@ -100,6 +100,8 @@ func TestGeneratorLogsSuccessWithoutTranscriptPayload(t *testing.T) {
 }
 
 func TestGeneratorLogsErrorForUpstreamFailure(t *testing.T) {
+	stubReportGenerationSleep(t)
+
 	var buf bytes.Buffer
 	previousWriter := log.Writer()
 	previousFlags := log.Flags()
@@ -144,6 +146,8 @@ func TestGeneratorLogsErrorForUpstreamFailure(t *testing.T) {
 }
 
 func TestGeneratorLogsRetriesAndSuccess(t *testing.T) {
+	stubReportGenerationSleep(t)
+
 	var attempts int32
 	var buf bytes.Buffer
 	previousWriter := log.Writer()
@@ -204,7 +208,7 @@ func TestGeneratorLogsRetriesAndSuccess(t *testing.T) {
 		"attempt=1",
 		"attempt=2",
 		"attempt=3",
-		"max_attempts=3",
+		"max_attempts=10",
 		"status_code=503",
 		"status_code=200",
 		"trace_id=reports-retry-trace",

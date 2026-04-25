@@ -21,8 +21,12 @@ const (
 	DefaultReportMaxTokens = 32768
 	DefaultReportTemp      = 0
 
-	reportGenerationMaxAttempts = 3
+	reportGenerationMaxAttempts = 10
+	reportGenerationBaseDelay   = 2 * time.Second
+	reportGenerationMaxDelay    = 32 * time.Second
 )
+
+var reportGenerationSleep = sleepContext
 
 // Generator holds the upstream model client and default generation parameters.
 type Generator struct {
@@ -229,7 +233,7 @@ func (g *Generator) generateReportForFormat(
 				"status_code":  statusCode,
 				"error":        err,
 			})
-			if err := sleepContext(ctx, delay); err != nil {
+			if err := reportGenerationSleep(ctx, delay); err != nil {
 				return GeneratedReport{}, err
 			}
 		}
@@ -291,17 +295,20 @@ func (g *Generator) generateOne(
 	return report, content, status, nil
 }
 
-// reportGenerationRetryDelay applies a small exponential backoff between model
+// reportGenerationRetryDelay applies capped exponential backoff between model
 // retries.
 func reportGenerationRetryDelay(attempt int) time.Duration {
-	switch attempt {
-	case 1:
-		return 250 * time.Millisecond
-	case 2:
-		return 500 * time.Millisecond
-	default:
+	if attempt <= 0 {
 		return 0
 	}
+	delay := reportGenerationBaseDelay
+	for i := 1; i < attempt; i++ {
+		delay *= 2
+		if delay >= reportGenerationMaxDelay {
+			return reportGenerationMaxDelay
+		}
+	}
+	return delay
 }
 
 // sleepContext waits for the retry delay while respecting cancellation.

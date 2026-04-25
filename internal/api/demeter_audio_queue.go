@@ -12,6 +12,8 @@ import (
 	"sync"
 	"time"
 
+	"demeter-backend/internal/observability"
+	"demeter-backend/internal/requestmeta"
 	"demeter-backend/internal/store"
 )
 
@@ -642,7 +644,9 @@ func (m *DemeterAudioQueueManager) processClaimedOperation(record *store.Demeter
 		return fmt.Errorf("queue manager is not configured")
 	}
 	jobStartedAt := time.Now().UTC()
-	workerCtx, cancel := context.WithCancel(m.ctx)
+	operationCtx := observability.WithTraceID(m.ctx, payload.TraceID)
+	operationCtx = requestmeta.WithActor(operationCtx, record.UserID, record.OrganizationID)
+	workerCtx, cancel := context.WithCancel(operationCtx)
 	logCtx := demeterAudioLogContext{
 		ctx:     workerCtx,
 		traceID: strings.TrimSpace(payload.TraceID),
@@ -685,7 +689,9 @@ func (m *DemeterAudioQueueManager) processClaimedOperation(record *store.Demeter
 		payload.ChunkPlans,
 	)
 
-	finalRecord, err := m.app.Store.GetDemeterAudioTranscriptionOperation(workerCtx, record.OperationID, record.OrganizationID, record.UserID)
+	finalLoadCtx := observability.WithTraceID(context.Background(), payload.TraceID)
+	finalLoadCtx = requestmeta.WithActor(finalLoadCtx, record.UserID, record.OrganizationID)
+	finalRecord, err := m.app.Store.GetDemeterAudioTranscriptionOperation(finalLoadCtx, record.OperationID, record.OrganizationID, record.UserID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			m.clearLaneCurrentOperation(laneID)
