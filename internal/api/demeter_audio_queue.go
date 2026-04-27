@@ -175,6 +175,7 @@ type DemeterAudioQueueManager struct {
 	retryPausedChunkIndex  int
 	retryPausedSince       time.Time
 	retryPauseDone         chan struct{}
+	snapshotSubscribers    map[chan struct{}]struct{}
 }
 
 func (a *App) ensureDemeterQueueManager() *DemeterAudioQueueManager {
@@ -183,9 +184,10 @@ func (a *App) ensureDemeterQueueManager() *DemeterAudioQueueManager {
 	}
 	if a.DemeterQueue == nil {
 		a.DemeterQueue = &DemeterAudioQueueManager{
-			app:        a,
-			lanes:      map[int]*demeterAudioQueueLaneState{},
-			laneWakeCh: map[int]chan struct{}{},
+			app:                 a,
+			lanes:               map[int]*demeterAudioQueueLaneState{},
+			laneWakeCh:          map[int]chan struct{}{},
+			snapshotSubscribers: map[chan struct{}]struct{}{},
 		}
 	}
 	return a.DemeterQueue
@@ -335,6 +337,42 @@ func (m *DemeterAudioQueueManager) ensureLaneStateLocked(laneID int) *demeterAud
 	return state
 }
 
+func (m *DemeterAudioQueueManager) subscribeSnapshotChanges() (<-chan struct{}, func()) {
+	ch := make(chan struct{}, 1)
+	if m == nil {
+		return ch, func() {}
+	}
+	m.mu.Lock()
+	if m.snapshotSubscribers == nil {
+		m.snapshotSubscribers = map[chan struct{}]struct{}{}
+	}
+	m.snapshotSubscribers[ch] = struct{}{}
+	m.mu.Unlock()
+	return ch, func() {
+		m.mu.Lock()
+		delete(m.snapshotSubscribers, ch)
+		m.mu.Unlock()
+	}
+}
+
+func (m *DemeterAudioQueueManager) notifySnapshotChanged() {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	subscribers := make([]chan struct{}, 0, len(m.snapshotSubscribers))
+	for ch := range m.snapshotSubscribers {
+		subscribers = append(subscribers, ch)
+	}
+	m.mu.Unlock()
+	for _, ch := range subscribers {
+		select {
+		case ch <- struct{}{}:
+		default:
+		}
+	}
+}
+
 func (m *DemeterAudioQueueManager) mistralRetryPauseStateLocked() (paused bool, laneID int, operationID string, chunkIndex int, since time.Time) {
 	if m == nil || !m.retryPaused {
 		return false, 0, "", 0, time.Time{}
@@ -347,8 +385,8 @@ func (m *DemeterAudioQueueManager) startMistralRetryPause(laneID int, operationI
 		return false
 	}
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	if m.retryPaused {
+		m.mu.Unlock()
 		return false
 	}
 	m.retryPaused = true
@@ -357,6 +395,8 @@ func (m *DemeterAudioQueueManager) startMistralRetryPause(laneID int, operationI
 	m.retryPausedChunkIndex = chunkIndex
 	m.retryPausedSince = time.Now().UTC()
 	m.retryPauseDone = make(chan struct{})
+	m.mu.Unlock()
+	m.notifySnapshotChanged()
 	return true
 }
 
@@ -385,6 +425,7 @@ func (m *DemeterAudioQueueManager) finishMistralRetryPause(laneID int, operation
 		close(done)
 	}
 	m.notifyAllLaneWorkAvailable()
+	m.notifySnapshotChanged()
 	return true
 }
 
@@ -532,6 +573,7 @@ func (m *DemeterAudioQueueManager) ensureLaneWorker(ctx context.Context, laneID 
 	draining := state.Draining
 	state.WorkerRunning = true
 	m.mu.Unlock()
+	m.notifySnapshotChanged()
 
 	logDemeterAudioQueuePerformanceTaskCtx(newDemeterAudioLogContext(ctx), "", 0, "worker_created", "demeter_worker_created", map[string]any{
 		"queue_id": laneID,
@@ -557,6 +599,7 @@ func (m *DemeterAudioQueueManager) runLaneWorker(laneID int) {
 			state.WorkerRunning = false
 		}
 		m.mu.Unlock()
+		m.notifySnapshotChanged()
 	}()
 
 	for {
@@ -795,6 +838,7 @@ func (m *DemeterAudioQueueManager) failClaimedOperation(ctx context.Context, rec
 	if cooldown {
 		m.setLaneCooldown(record.QueueID, demeterAudioQueueCooldownDuration)
 	}
+	m.notifySnapshotChanged()
 	return nil
 }
 
@@ -892,6 +936,7 @@ func (m *DemeterAudioQueueManager) EnqueueOperation(ctx context.Context, record 
 	if err := m.rebalancePendingOperations(ctx); err != nil {
 		return laneID, err
 	}
+	m.notifySnapshotChanged()
 	return laneID, nil
 }
 
@@ -969,6 +1014,7 @@ func (m *DemeterAudioQueueManager) Resize(ctx context.Context, route string, par
 		"draining_workers":     drainingWorkers,
 		"cooling_workers":      coolingWorkers,
 	})
+	m.notifySnapshotChanged()
 	return nil
 }
 
@@ -1288,6 +1334,7 @@ func (m *DemeterAudioQueueManager) rebalancePendingOperations(ctx context.Contex
 		return nil
 	}
 
+	assigned := false
 	for _, record := range pending {
 		if record == nil || record.QueueID > 0 {
 			continue
@@ -1312,6 +1359,10 @@ func (m *DemeterAudioQueueManager) rebalancePendingOperations(ctx context.Contex
 		loads[bestIndex].load += workload
 		m.ensureLaneWorker(ctx, laneID)
 		m.notifyLaneWorkAvailable(laneID)
+		assigned = true
+	}
+	if assigned {
+		m.notifySnapshotChanged()
 	}
 	return nil
 }
@@ -1324,6 +1375,7 @@ func (m *DemeterAudioQueueManager) setLaneCooldown(laneID int, duration time.Dur
 	state := m.ensureLaneStateLocked(laneID)
 	state.CooldownUntil = time.Now().UTC().Add(duration)
 	m.mu.Unlock()
+	m.notifySnapshotChanged()
 }
 
 func (m *DemeterAudioQueueManager) setLaneCurrentOperation(laneID int, operationID, status, stage string, chunkIndex, chunkCount int, progress float64, lastError string) {
@@ -1340,6 +1392,7 @@ func (m *DemeterAudioQueueManager) setLaneCurrentOperation(laneID int, operation
 	state.CurrentProgress = progress
 	state.LastError = strings.TrimSpace(lastError)
 	m.mu.Unlock()
+	m.notifySnapshotChanged()
 }
 
 func (m *DemeterAudioQueueManager) clearLaneCurrentOperation(laneID int) {

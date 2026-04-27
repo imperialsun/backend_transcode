@@ -54,12 +54,18 @@ func (a *App) updateDemeterAudioTranscriptionOperationStateWithFallback(ctx cont
 				})
 			}
 			if fallbackErr := a.Store.UpdateDemeterAudioTranscriptionOperationByID(ctx, record); fallbackErr == nil {
+				if a.DemeterQueue != nil {
+					a.DemeterQueue.notifySnapshotChanged()
+				}
 				return true, nil
 			} else {
 				return false, fallbackErr
 			}
 		}
 		return false, err
+	}
+	if a.DemeterQueue != nil {
+		a.DemeterQueue.notifySnapshotChanged()
 	}
 	return false, nil
 }
