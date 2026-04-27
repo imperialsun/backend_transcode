@@ -447,6 +447,31 @@ func (s *Store) Migrate(ctx context.Context) error {
 			parallelism INTEGER NOT NULL DEFAULT 1,
 			updated_at DATETIME NOT NULL
 		);`,
+		`CREATE TABLE IF NOT EXISTS demeter_report_operations (
+			operation_id TEXT PRIMARY KEY,
+			organization_id TEXT NOT NULL,
+			user_id TEXT NOT NULL,
+			queue_id INTEGER NOT NULL DEFAULT 0,
+			queue_payload_json TEXT,
+			status TEXT NOT NULL,
+			stage TEXT NOT NULL,
+			format_index INTEGER NOT NULL DEFAULT 0,
+			format_count INTEGER NOT NULL DEFAULT 0,
+			progress REAL NOT NULL DEFAULT 0,
+			response_json TEXT,
+			last_error TEXT,
+			status_code INTEGER NOT NULL DEFAULT 0,
+			created_at DATETIME NOT NULL,
+			updated_at DATETIME NOT NULL,
+			finished_at DATETIME,
+			FOREIGN KEY(organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
+			FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+		);`,
+		`CREATE TABLE IF NOT EXISTS demeter_report_queue_settings (
+			id INTEGER PRIMARY KEY CHECK(id = 1),
+			parallelism INTEGER NOT NULL DEFAULT 1,
+			updated_at DATETIME NOT NULL
+		);`,
 		`CREATE INDEX IF NOT EXISTS idx_users_org ON users(organization_id);`,
 		`CREATE INDEX IF NOT EXISTS idx_refresh_user ON refresh_sessions(user_id);`,
 		`CREATE INDEX IF NOT EXISTS idx_password_reset_user ON password_reset_tokens(user_id);`,
@@ -475,6 +500,9 @@ func (s *Store) Migrate(ctx context.Context) error {
 		`CREATE INDEX IF NOT EXISTS idx_mobile_operations_audio ON mobile_operations(audio_operation_id);`,
 		`CREATE INDEX IF NOT EXISTS idx_demeter_audio_transcription_operations_owner ON demeter_audio_transcription_operations(organization_id, user_id);`,
 		`CREATE INDEX IF NOT EXISTS idx_demeter_audio_transcription_operations_status ON demeter_audio_transcription_operations(status, updated_at);`,
+		`CREATE INDEX IF NOT EXISTS idx_demeter_report_operations_owner ON demeter_report_operations(organization_id, user_id);`,
+		`CREATE INDEX IF NOT EXISTS idx_demeter_report_operations_status ON demeter_report_operations(status, updated_at);`,
+		`CREATE INDEX IF NOT EXISTS idx_demeter_report_operations_queue ON demeter_report_operations(queue_id, status, created_at);`,
 	}
 	logStoreStep(ctx, "migrate_start", "schema", map[string]any{"statement_count": len(stmts)})
 	tx, err := s.DB.BeginTx(ctx, nil)

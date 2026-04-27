@@ -83,6 +83,10 @@ type demeterTranscriptionOperationPurger interface {
 	PurgeCompletedDemeterAudioTranscriptionOperations(context.Context) (int64, error)
 }
 
+type demeterReportOperationPurger interface {
+	PurgeCompletedDemeterReportOperations(context.Context) (int64, error)
+}
+
 // serverLogStep emits lifecycle events both to stdout and to the structured
 // backend-error pipeline so startup and shutdown problems remain visible.
 func serverLogStep(traceID, step, title string, fields map[string]any) {
@@ -133,6 +137,7 @@ func run(ctx context.Context, cfg config.Config) error {
 	runPerformanceCleanup(ctx, processTraceID, st)
 	runBackendErrorCleanup(ctx, processTraceID, st)
 	runDemeterAudioTranscriptionOperationCleanup(ctx, processTraceID, st)
+	runDemeterReportOperationCleanup(ctx, processTraceID, st)
 
 	app, appCtx := buildAppBundle(cfg, st, mistral.NewClient(
 		cfg.MistralAPIBaseURL,
@@ -153,6 +158,13 @@ func run(ctx context.Context, cfg config.Config) error {
 			return err
 		}
 		defer appCtx.DemeterQueue.Stop()
+	}
+	if appCtx != nil && appCtx.DemeterReportQueue != nil {
+		if err := appCtx.DemeterReportQueue.Start(ctx); err != nil {
+			serverLogStep(processTraceID, "boot_error", "server", map[string]any{"port": cfg.Port, "error": err})
+			return err
+		}
+		defer appCtx.DemeterReportQueue.Stop()
 	}
 
 	serverLogStep(processTraceID, "boot_success", "server", map[string]any{"port": cfg.Port})
@@ -291,6 +303,41 @@ func runDemeterAudioTranscriptionOperationCleanupOnce(ctx context.Context, trace
 		"purged_count": purged,
 	})
 	serverLogPerformanceStep(traceID, "demeter_audio_transcription_cleanup_success", "purge_completed_transcription_operations", fields)
+}
+
+// runDemeterReportOperationCleanup performs one immediate sweep so completed
+// report rows do not linger after a restart.
+func runDemeterReportOperationCleanup(ctx context.Context, traceID string, purger demeterReportOperationPurger) {
+	runDemeterReportOperationCleanupOnce(ctx, traceID, purger)
+}
+
+// runDemeterReportOperationCleanupOnce removes completed report rows.
+func runDemeterReportOperationCleanupOnce(ctx context.Context, traceID string, purger demeterReportOperationPurger) {
+	if purger == nil {
+		return
+	}
+	startedAt := time.Now()
+	purged, err := purger.PurgeCompletedDemeterReportOperations(ctx)
+	fields := map[string]any{
+		"cleanup_scope": "boot",
+		"duration_ms":   time.Since(startedAt).Milliseconds(),
+		"purged_count":  purged,
+	}
+	if err != nil {
+		fields["status"] = "error"
+		fields["message"] = err.Error()
+		serverLogStep(traceID, "demeter_report_cleanup_error", "server", map[string]any{
+			"purged_count": purged,
+			"error":        err,
+		})
+		serverLogPerformanceStep(traceID, "demeter_report_cleanup_error", "purge_completed_report_operations", fields)
+		return
+	}
+	fields["status"] = "success"
+	serverLogStep(traceID, "demeter_report_cleanup_success", "server", map[string]any{
+		"purged_count": purged,
+	})
+	serverLogPerformanceStep(traceID, "demeter_report_cleanup_success", "purge_completed_report_operations", fields)
 }
 
 // runBackendErrorCleanup performs one immediate purge of expired backend

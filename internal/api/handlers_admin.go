@@ -11,6 +11,7 @@ import (
 	"demeter-backend/internal/mailer"
 	"demeter-backend/internal/rbac"
 	"demeter-backend/internal/store"
+
 	"github.com/gofiber/fiber/v2"
 )
 
@@ -106,6 +107,7 @@ func (a *App) RegisterAdminCoreRoutes(router fiber.Router) {
 	a.registerBackendErrorRoutes(group)
 	a.registerAdminPerformanceRoutes(group)
 	a.registerAdminDemeterQueueRoutes(group)
+	a.registerAdminDemeterReportQueueRoutes(group)
 	a.registerAdminUserSettingsRoutes(group)
 	group.Get("/organizations/:id/users", a.listOrganizationUsers)
 	group.Get("/users/:id/access", a.getUserAccess)

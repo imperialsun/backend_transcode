@@ -40,6 +40,7 @@ func buildAppBundle(cfg config.Config, st *store.Store, mistralClient *mistral.C
 		Mailer:        appMailer,
 	}
 	appCtx.EnsureDemeterQueueManager()
+	appCtx.EnsureDemeterReportQueueManager()
 
 	app := fiber.New(fiber.Config{
 		AppName:               "Demeter Backend",

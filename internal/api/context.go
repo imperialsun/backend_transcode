@@ -13,11 +13,12 @@ import (
 
 // App bundles the dependencies shared by every API handler.
 type App struct {
-	Config        config.Config
-	Store         *store.Store
-	MistralClient *mistral.Client
-	Mailer        mailer.Sender
-	DemeterQueue  *DemeterAudioQueueManager
+	Config             config.Config
+	Store              *store.Store
+	MistralClient      *mistral.Client
+	Mailer             mailer.Sender
+	DemeterQueue       *DemeterAudioQueueManager
+	DemeterReportQueue *DemeterReportQueueManager
 }
 
 // ErrorResponse is the common JSON envelope returned for user-facing failures.

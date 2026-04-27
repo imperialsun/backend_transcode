@@ -62,6 +62,9 @@ func (a *App) RegisterDemeterRoutes(router fiber.Router) {
 	group.Get("/audio/transcriptions/operations/:operationId", RequirePermissions("feature.cloudupload", "provider.cloud.demeter_sante"), a.getDemeterAudioTranscriptionOperationStatus)
 	group.Delete("/audio/transcriptions/operations/:operationId", RequirePermissions("feature.cloudupload", "provider.cloud.demeter_sante"), a.cancelDemeterAudioTranscriptionOperation)
 	group.Post("/chat/completions", RequirePermissions("feature.llmapi", "provider.llm.demeter_sante"), a.demeterChatCompletions)
+	group.Post("/report/operations", RequirePermissions("feature.llmapi", "provider.llm.demeter_sante"), a.submitDemeterReportOperation)
+	group.Get("/report/operations/:operationId", RequirePermissions("feature.llmapi", "provider.llm.demeter_sante"), a.getDemeterReportOperationStatus)
+	group.Delete("/report/operations/:operationId", RequirePermissions("feature.llmapi", "provider.llm.demeter_sante"), a.cancelDemeterReportOperation)
 }
 
 // demeterModels proxies the upstream model listing endpoint.

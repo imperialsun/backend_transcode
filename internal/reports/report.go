@@ -14,6 +14,7 @@ const (
 	ReportFormatCRI ReportFormat = "CRI"
 	ReportFormatCRO ReportFormat = "CRO"
 	ReportFormatCRS ReportFormat = "CRS"
+	ReportFormatCRN ReportFormat = "CRN"
 )
 
 // ReportDetailLevel controls how much source material the model should keep in
@@ -84,7 +85,7 @@ func ParseReportJSON(rawOutput string, expectedFormat ReportFormat) (ReportJson,
 func ParseReportFormat(value string) (ReportFormat, bool) {
 	normalized := ReportFormat(strings.ToUpper(strings.TrimSpace(value)))
 	switch normalized {
-	case ReportFormatCRI, ReportFormatCRO, ReportFormatCRS:
+	case ReportFormatCRI, ReportFormatCRO, ReportFormatCRS, ReportFormatCRN:
 		return normalized, true
 	default:
 		return "", false
@@ -141,7 +142,7 @@ func NormalizeReportFormats(values []string) []ReportFormat {
 
 // AllReportFormats returns the full set of supported report formats.
 func AllReportFormats() []ReportFormat {
-	return []ReportFormat{ReportFormatCRI, ReportFormatCRO, ReportFormatCRS}
+	return []ReportFormat{ReportFormatCRI, ReportFormatCRO, ReportFormatCRS, ReportFormatCRN}
 }
 
 // ReportFormatKey returns the stable storage key for a report format.
@@ -158,6 +159,8 @@ func ReportFormatDisplayName(format ReportFormat) string {
 		return "CRO"
 	case ReportFormatCRS:
 		return "CRS"
+	case ReportFormatCRN:
+		return "CRN"
 	default:
 		return string(format)
 	}

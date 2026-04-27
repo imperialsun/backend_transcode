@@ -39,6 +39,7 @@ type demeterQueueWebSocketServerMessage struct {
 func (a *App) RegisterAdminWebSocketRoutes(router fiber.Router) {
 	group := a.adminWebSocketRouteGroup(router)
 	a.registerAdminDemeterQueueWebSocketRoutes(group)
+	a.registerAdminDemeterReportQueueWebSocketRoutes(group)
 }
 
 func (a *App) adminWebSocketRouteGroup(router fiber.Router) fiber.Router {
@@ -332,5 +333,5 @@ func demeterQueueWebSocketClaimsExpired(claims *auth.Claims) bool {
 	if claims == nil || claims.ExpiresAt == nil {
 		return false
 	}
-	return !claims.ExpiresAt.Time.After(time.Now().UTC())
+	return !claims.ExpiresAt.After(time.Now().UTC())
 }

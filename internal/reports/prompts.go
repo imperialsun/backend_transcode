@@ -19,6 +19,7 @@ var formatGuidelines = map[ReportFormat]string{
 	ReportFormatCRI: "CRI = restitution narrative fidèle, très détaillée, avec une rédaction textuelle longue et complète.",
 	ReportFormatCRO: "CRO = compte rendu opérationnel, axé décisions, actions, priorités et points à exécuter.",
 	ReportFormatCRS: "CRS = synthèse ultra concise, uniquement l'essentiel critique en format très court.",
+	ReportFormatCRN: "CRN = compte rendu narratif chronologique, proche d'un procès-verbal, avec ordre du jour, interventions attribuées, échanges, décisions et suites.",
 }
 
 var formatStyleRules = map[ReportFormat][]string{
@@ -43,6 +44,16 @@ var formatStyleRules = map[ReportFormat][]string{
 		"limite le résultat à 2-3 sections courtes maximum.",
 		"dans chaque section, 1 paragraphe bref (1-2 phrases) suffit.",
 		"key_points et action_items doivent rester très courts (3 items max chacun).",
+	},
+	ReportFormatCRN: {
+		"style procès-verbal narratif: raconte le déroulé de la réunion dans l'ordre chronologique.",
+		"si un ordre du jour, des points numérotés ou des titres de sujets sont détectables, conserve cette structure et ses numéros.",
+		"attribue les interventions aux personnes ou groupes mentionnés quand la source le permet: Mme X indique, M. Y précise, un représentant demande.",
+		"reformule en prose continue les échanges, positions, objections, réponses et décisions, sans transformer le compte rendu en liste de synthèse.",
+		"consigne les décisions, arbitrages, demandes de vérification et suites à donner dans le fil narratif du sujet concerné.",
+		"préserve les nuances, désaccords, incertitudes et formulations importantes; n'ajoute aucune position absente de la transcription.",
+		"utilise des paragraphes substantiels et évite les puces sauf pour restituer une liste explicitement énoncée dans la source.",
+		"vise un document long et exploitable comme compte rendu formel de réunion.",
 	},
 }
 
@@ -73,6 +84,11 @@ var detailMinimumSourceRatios = map[ReportFormat]map[ReportDetailLevel]float64{
 		ReportDetailStandard:   0.0125,
 		ReportDetailVerbose:    0.025,
 		ReportDetailExhaustive: 0.0375,
+	},
+	ReportFormatCRN: {
+		ReportDetailStandard:   0.4,
+		ReportDetailVerbose:    0.5,
+		ReportDetailExhaustive: 0.6,
 	},
 }
 
