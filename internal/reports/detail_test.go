@@ -21,6 +21,21 @@ func TestBuildReportUserPromptWithDetailUsesFrontendLevels(t *testing.T) {
 	}
 }
 
+func TestBuildReportUserPromptWithDetailAddsCRNChunkingGuards(t *testing.T) {
+	prompt := BuildReportUserPromptWithDetail(ReportFormatCRN, ReportDetailStandard, "source text", "Reunion mobile", []string{"A", "B"})
+
+	for _, needle := range []string{
+		"transcription potentiellement fragmentée en chunks",
+		"ne déduis jamais un début ou une fin de réunion",
+		"formules génériques d'ouverture ou de reprise",
+		"fusionne les répétitions entre chunks",
+	} {
+		if !strings.Contains(prompt, needle) {
+			t.Fatalf("expected CRN prompt to contain %q, got %q", needle, prompt)
+		}
+	}
+}
+
 func TestNormalizeReportDetailLevelsDefaultsInvalidValues(t *testing.T) {
 	levels := NormalizeReportDetailLevels(map[ReportFormat]ReportDetailLevel{
 		ReportFormatCRI: ReportDetailVerbose,

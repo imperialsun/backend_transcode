@@ -47,6 +47,9 @@ var formatStyleRules = map[ReportFormat][]string{
 	},
 	ReportFormatCRN: {
 		"style procès-verbal narratif: raconte le déroulé de la réunion dans l'ordre chronologique.",
+		"considère la source comme une transcription potentiellement fragmentée en chunks: ne déduis jamais un début ou une fin de réunion à partir d'une coupure.",
+		"n'utilise pas de formules génériques d'ouverture ou de reprise du type 'La réunion a débuté...' sauf si la source les formule explicitement.",
+		"enchaîne les idées avec des transitions naturelles et fusionne les répétitions entre chunks au lieu de les réintroduire.",
 		"si un ordre du jour, des points numérotés ou des titres de sujets sont détectables, conserve cette structure et ses numéros.",
 		"attribue les interventions aux personnes ou groupes mentionnés quand la source le permet: Mme X indique, M. Y précise, un représentant demande.",
 		"reformule en prose continue les échanges, positions, objections, réponses et décisions, sans transformer le compte rendu en liste de synthèse.",
