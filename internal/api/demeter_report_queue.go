@@ -306,6 +306,71 @@ func (m *DemeterReportQueueManager) notifySnapshotChanged() {
 	}
 }
 
+func (a *App) deleteAdminDemeterReportQueueOperations(c *fiber.Ctx) error {
+	route := requestRoutePath(c)
+	logAPIStep(c, "admin", route, "request_received", "purge_demeter_report_queue", nil)
+
+	claims := MustClaims(c)
+	if claims == nil {
+		logAPIStep(c, "admin", route, "request_unauthorized", "purge_demeter_report_queue", nil)
+		return c.Status(fiber.StatusUnauthorized).JSON(ErrorResponse{Error: "unauthorized"})
+	}
+	if !isSuperAdmin(claims) {
+		logAPIStep(c, "admin", route, "request_forbidden", "purge_demeter_report_queue", nil)
+		return c.Status(fiber.StatusForbidden).JSON(ErrorResponse{Error: "forbidden"})
+	}
+
+	scope, err := parseDemeterQueuePurgeScope(c.Query("scope"))
+	if err != nil {
+		logAPIStep(c, "admin", route, "request_validation_error", "purge_demeter_report_queue", map[string]any{
+			"reason": "invalid_scope",
+			"scope":  strings.TrimSpace(c.Query("scope")),
+		})
+		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{Error: "invalid scope"})
+	}
+
+	ctx := requestContext(c)
+	manager := a.EnsureDemeterReportQueueManager()
+	logFields := map[string]any{"scope": string(scope)}
+
+	switch scope {
+	case demeterQueuePurgeScopeAll:
+		logAPIStep(c, "admin", route, "delete_start", "purge_demeter_report_queue", logFields)
+		deletedCount, err := a.Store.PurgeAllDemeterReportOperations(ctx)
+		if err != nil {
+			logAPIStep(c, "admin", route, "delete_error", "purge_demeter_report_queue", map[string]any{"error": err, "scope": string(scope)})
+			return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{Error: "failed to purge demeter report queue"})
+		}
+		a.writeAdminAudit(ctx, claims, "admin.demeter_report_queue.purge", "demeter_report_queue", "", fiber.Map{
+			"scope":        string(scope),
+			"deletedCount": deletedCount,
+		})
+		manager.notifySnapshotChanged()
+		logAPIStep(c, "admin", route, "response_ready", "purge_demeter_report_queue", map[string]any{
+			"scope":        string(scope),
+			"deleted_count": deletedCount,
+		})
+		return c.SendStatus(fiber.StatusNoContent)
+	default:
+		logAPIStep(c, "admin", route, "delete_start", "purge_demeter_report_queue", logFields)
+		deletedCount, err := a.Store.PurgeCompletedDemeterReportOperations(ctx)
+		if err != nil {
+			logAPIStep(c, "admin", route, "delete_error", "purge_demeter_report_queue", map[string]any{"error": err, "scope": string(scope)})
+			return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{Error: "failed to purge demeter report queue"})
+		}
+		a.writeAdminAudit(ctx, claims, "admin.demeter_report_queue.purge", "demeter_report_queue", "", fiber.Map{
+			"scope":        string(scope),
+			"deletedCount": deletedCount,
+		})
+		manager.notifySnapshotChanged()
+		logAPIStep(c, "admin", route, "response_ready", "purge_demeter_report_queue", map[string]any{
+			"scope":        string(scope),
+			"deleted_count": deletedCount,
+		})
+		return c.SendStatus(fiber.StatusNoContent)
+	}
+}
+
 func (m *DemeterReportQueueManager) laneWakeChannel(laneID int) chan struct{} {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -333,15 +398,16 @@ func (m *DemeterReportQueueManager) notifyLaneWorkAvailable(laneID int) {
 
 func (m *DemeterReportQueueManager) notifyAllLaneWorkAvailable() {
 	m.mu.Lock()
-	channels := make([]chan struct{}, 0, len(m.lanes))
-	for laneID := range m.lanes {
-		ch, ok := m.laneWakeCh[laneID]
-		if ok {
-			channels = append(channels, ch)
+	laneIDs := make([]int, 0, len(m.lanes))
+	for laneID, state := range m.lanes {
+		if state == nil || (!state.Open && !state.Draining) {
+			continue
 		}
+		laneIDs = append(laneIDs, laneID)
 	}
 	m.mu.Unlock()
-	for _, ch := range channels {
+	for _, laneID := range laneIDs {
+		ch := m.laneWakeChannel(laneID)
 		select {
 		case ch <- struct{}{}:
 		default:
@@ -418,6 +484,20 @@ func (m *DemeterReportQueueManager) processClaimedOperation(record *store.Demete
 	m.setLaneCurrentOperation(laneID, record.OperationID, "running", "running", 0, 1, 0, "")
 	result, statusCode, err := m.generateReportWithRetry(opCtx, laneID, record.OperationID, payload)
 	if err != nil {
+		route := strings.TrimSpace(payload.Route)
+		if route == "" {
+			route = "/providers/demeter-sante/report/operations"
+		}
+		logDemeterChatBackendErrorCtx(newDemeterAudioLogContext(opCtx), route, payload.Seq, "generate_format_error", map[string]any{
+			"operation_id": record.OperationID,
+			"format":       string(payload.Format),
+			"detail_level": string(payload.DetailLevel),
+			"format_index": record.FormatIndex,
+			"format_count": record.FormatCount,
+			"status_code":  statusCode,
+			"error":        err,
+			"model_id":     strings.TrimSpace(payload.ModelID),
+		})
 		_ = m.failClaimedOperation(opCtx, record, err.Error(), statusCode)
 		m.clearLaneCurrentOperation(laneID)
 		return err
@@ -482,9 +562,7 @@ func (m *DemeterReportQueueManager) generateReportWithRetry(ctx context.Context,
 		}
 		result, status, err := m.generateReportOnce(ctx, payload)
 		if err == nil {
-			if m.finishMistralRetryPause(laneID, operationID, 0) {
-				m.notifyAllLaneWorkAvailable()
-			}
+			_ = m.finishMistralRetryPause(laneID, operationID, 0)
 			return result, fiber.StatusOK, nil
 		}
 		lastStatus = status
@@ -605,6 +683,9 @@ func shouldRetryDemeterReportResponse(status int, err error) bool {
 	if err == nil {
 		return false
 	}
+	if errors.Is(err, reports.ErrInvalidReport) {
+		return false
+	}
 	if status == http.StatusTooManyRequests || status >= 500 {
 		return true
 	}
@@ -616,10 +697,12 @@ func responseIsDemeterReportCapacityExceeded(status int, err error) bool {
 	if err == nil {
 		return false
 	}
-	if status != http.StatusTooManyRequests && status != http.StatusServiceUnavailable {
+	switch status {
+	case http.StatusTooManyRequests, http.StatusServiceUnavailable:
+		return true
+	default:
 		return false
 	}
-	return strings.Contains(strings.ToLower(err.Error()), "capacity")
 }
 
 func demeterReportRetryDelayForAttempt(attempt int) time.Duration {
@@ -677,6 +760,7 @@ func (m *DemeterReportQueueManager) finishMistralRetryPause(laneID int, operatio
 	if done != nil {
 		close(done)
 	}
+	m.notifyAllLaneWorkAvailable()
 	m.notifySnapshotChanged()
 	return true
 }
@@ -1306,6 +1390,7 @@ func (a *App) getAdminDemeterReportQueue(c *fiber.Ctx) error {
 func (a *App) registerAdminDemeterReportQueueRoutes(group fiber.Router) {
 	group.Get("/providers/demeter-sante/report-queue", RequireSuperAdminScope(), a.getAdminDemeterReportQueue)
 	group.Put("/providers/demeter-sante/report-queue/settings", RequireSuperAdminScope(), a.putAdminDemeterReportQueueSettings)
+	group.Delete("/providers/demeter-sante/report-queue", RequireSuperAdminScope(), a.deleteAdminDemeterReportQueueOperations)
 }
 
 func (a *App) putAdminDemeterReportQueueSettings(c *fiber.Ctx) error {

@@ -285,7 +285,7 @@ func normalizeReport(value any, expectedFormat ReportFormat) (ReportJson, error)
 			format = parsed
 		}
 	}
-	if format != ReportFormatCRI && format != ReportFormatCRO && format != ReportFormatCRS {
+	if format != ReportFormatCRI && format != ReportFormatCRO && format != ReportFormatCRS && format != ReportFormatCRN {
 		return ReportJson{}, fmt.Errorf("%w: invalid report format", ErrInvalidReport)
 	}
 

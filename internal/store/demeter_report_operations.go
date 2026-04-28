@@ -504,6 +504,40 @@ func (s *Store) PurgeCompletedDemeterReportOperations(ctx context.Context) (int6
 	return deleted, nil
 }
 
+// PurgeAllDemeterReportOperations removes every report job left in the
+// database.
+func (s *Store) PurgeAllDemeterReportOperations(ctx context.Context) (int64, error) {
+	logStoreStep(ctx, "demeter_purge_start", "demeter_report_report_operation", map[string]any{
+		"scope": "all",
+	})
+
+	result, err := s.DB.ExecContext(ctx, `
+		DELETE FROM demeter_report_operations
+	`)
+	if err != nil {
+		logStoreStep(ctx, "demeter_purge_error", "demeter_report_report_operation", map[string]any{
+			"scope": "all",
+			"error": err,
+		})
+		return 0, err
+	}
+
+	deleted, err := result.RowsAffected()
+	if err != nil {
+		logStoreStep(ctx, "demeter_purge_error", "demeter_report_report_operation", map[string]any{
+			"scope": "all",
+			"error": err,
+		})
+		return 0, err
+	}
+
+	logStoreStep(ctx, "demeter_purge_success", "demeter_report_report_operation", map[string]any{
+		"scope":        "all",
+		"deleted_count": deleted,
+	})
+	return deleted, nil
+}
+
 // scanDemeterReportOperationRecord converts one SQL row into the
 // strongly typed record used by the API layer.
 func scanDemeterReportOperationRecord(row *sql.Row) (*DemeterReportOperationRecord, error) {

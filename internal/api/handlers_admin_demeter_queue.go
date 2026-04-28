@@ -30,6 +30,7 @@ func (r demeterAudioQueueSettingsUpdateRequest) resolvedParallelism() (int, bool
 func (a *App) registerAdminDemeterQueueRoutes(group fiber.Router) {
 	group.Get("/providers/demeter-sante/queue", RequireSuperAdminScope(), a.getAdminDemeterQueue)
 	group.Put("/providers/demeter-sante/queue/settings", RequireSuperAdminScope(), a.putAdminDemeterQueueSettings)
+	group.Delete("/providers/demeter-sante/queue", RequireSuperAdminScope(), a.deleteAdminDemeterQueueOperations)
 }
 
 func (a *App) getAdminDemeterQueue(c *fiber.Ctx) error {
@@ -125,6 +126,71 @@ func (a *App) putAdminDemeterQueueSettings(c *fiber.Ctx) error {
 		"operations":  len(snapshot.Operations),
 	})
 	return c.JSON(snapshot)
+}
+
+func (a *App) deleteAdminDemeterQueueOperations(c *fiber.Ctx) error {
+	route := requestRoutePath(c)
+	logAPIStep(c, "admin", route, "request_received", "purge_demeter_audio_queue", nil)
+
+	claims := MustClaims(c)
+	if claims == nil {
+		logAPIStep(c, "admin", route, "request_unauthorized", "purge_demeter_audio_queue", nil)
+		return c.Status(fiber.StatusUnauthorized).JSON(ErrorResponse{Error: "unauthorized"})
+	}
+	if !isSuperAdmin(claims) {
+		logAPIStep(c, "admin", route, "request_forbidden", "purge_demeter_audio_queue", nil)
+		return c.Status(fiber.StatusForbidden).JSON(ErrorResponse{Error: "forbidden"})
+	}
+
+	scope, err := parseDemeterQueuePurgeScope(c.Query("scope"))
+	if err != nil {
+		logAPIStep(c, "admin", route, "request_validation_error", "purge_demeter_audio_queue", map[string]any{
+			"reason": "invalid_scope",
+			"scope":  strings.TrimSpace(c.Query("scope")),
+		})
+		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{Error: "invalid scope"})
+	}
+
+	ctx := requestContext(c)
+	manager := a.EnsureDemeterQueueManager()
+	logFields := map[string]any{"scope": string(scope)}
+
+	switch scope {
+	case demeterQueuePurgeScopeAll:
+		logAPIStep(c, "admin", route, "delete_start", "purge_demeter_audio_queue", logFields)
+		deletedCount, err := a.Store.PurgeAllDemeterAudioTranscriptionOperations(ctx)
+		if err != nil {
+			logAPIStep(c, "admin", route, "delete_error", "purge_demeter_audio_queue", map[string]any{"error": err, "scope": string(scope)})
+			return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{Error: "failed to purge demeter queue"})
+		}
+		a.writeAdminAudit(ctx, claims, "admin.demeter_audio_queue.purge", "demeter_audio_queue", "", fiber.Map{
+			"scope":        string(scope),
+			"deletedCount": deletedCount,
+		})
+		manager.notifySnapshotChanged()
+		logAPIStep(c, "admin", route, "response_ready", "purge_demeter_audio_queue", map[string]any{
+			"scope":        string(scope),
+			"deleted_count": deletedCount,
+		})
+		return c.SendStatus(fiber.StatusNoContent)
+	default:
+		logAPIStep(c, "admin", route, "delete_start", "purge_demeter_audio_queue", logFields)
+		deletedCount, err := a.Store.PurgeCompletedDemeterAudioTranscriptionOperations(ctx)
+		if err != nil {
+			logAPIStep(c, "admin", route, "delete_error", "purge_demeter_audio_queue", map[string]any{"error": err, "scope": string(scope)})
+			return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{Error: "failed to purge demeter queue"})
+		}
+		a.writeAdminAudit(ctx, claims, "admin.demeter_audio_queue.purge", "demeter_audio_queue", "", fiber.Map{
+			"scope":        string(scope),
+			"deletedCount": deletedCount,
+		})
+		manager.notifySnapshotChanged()
+		logAPIStep(c, "admin", route, "response_ready", "purge_demeter_audio_queue", map[string]any{
+			"scope":        string(scope),
+			"deleted_count": deletedCount,
+		})
+		return c.SendStatus(fiber.StatusNoContent)
+	}
 }
 
 // demeterAudioQueueSnapshotResponse ensures the compiler keeps the JSON shape

@@ -504,6 +504,40 @@ func (s *Store) PurgeCompletedDemeterAudioTranscriptionOperations(ctx context.Co
 	return deleted, nil
 }
 
+// PurgeAllDemeterAudioTranscriptionOperations removes every transcription job
+// left in the database.
+func (s *Store) PurgeAllDemeterAudioTranscriptionOperations(ctx context.Context) (int64, error) {
+	logStoreStep(ctx, "demeter_purge_start", "demeter_audio_transcription_operation", map[string]any{
+		"scope": "all",
+	})
+
+	result, err := s.DB.ExecContext(ctx, `
+		DELETE FROM demeter_audio_transcription_operations
+	`)
+	if err != nil {
+		logStoreStep(ctx, "demeter_purge_error", "demeter_audio_transcription_operation", map[string]any{
+			"scope": "all",
+			"error": err,
+		})
+		return 0, err
+	}
+
+	deleted, err := result.RowsAffected()
+	if err != nil {
+		logStoreStep(ctx, "demeter_purge_error", "demeter_audio_transcription_operation", map[string]any{
+			"scope": "all",
+			"error": err,
+		})
+		return 0, err
+	}
+
+	logStoreStep(ctx, "demeter_purge_success", "demeter_audio_transcription_operation", map[string]any{
+		"scope":        "all",
+		"deleted_count": deleted,
+	})
+	return deleted, nil
+}
+
 // scanDemeterAudioTranscriptionOperationRecord converts one SQL row into the
 // strongly typed record used by the API layer.
 func scanDemeterAudioTranscriptionOperationRecord(row *sql.Row) (*DemeterAudioTranscriptionOperationRecord, error) {

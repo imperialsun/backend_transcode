@@ -18,16 +18,36 @@ import (
 // These tests cover JSON parsing, concurrent format generation, and retry
 // cancellation behavior for the report generator.
 func TestParseReportJSON(t *testing.T) {
-	raw := "```json\n{\"format\":\"CRI\",\"title\":\"Test\",\"sections\":[{\"heading\":\"Contexte\",\"paragraphs\":[\"Un paragraphe\"]}],\"key_points\":[\"P1\"],\"action_items\":[\"A1\"],\"caveats\":[\"C1\"]}\n```"
-	report, err := ParseReportJSON(raw, ReportFormatCRI)
-	if err != nil {
-		t.Fatalf("ParseReportJSON failed: %v", err)
+	tests := []struct {
+		name   string
+		raw    string
+		format ReportFormat
+	}{
+		{
+			name:   "cri",
+			raw:    "```json\n{\"format\":\"CRI\",\"title\":\"Test\",\"sections\":[{\"heading\":\"Contexte\",\"paragraphs\":[\"Un paragraphe\"]}],\"key_points\":[\"P1\"],\"action_items\":[\"A1\"],\"caveats\":[\"C1\"]}\n```",
+			format: ReportFormatCRI,
+		},
+		{
+			name:   "crn",
+			raw:    "```json\n{\"format\":\"CRN\",\"title\":\"Test\",\"sections\":[{\"heading\":\"Contexte\",\"paragraphs\":[\"Un paragraphe\"]}],\"key_points\":[\"P1\"],\"action_items\":[\"A1\"],\"caveats\":[\"C1\"]}\n```",
+			format: ReportFormatCRN,
+		},
 	}
-	if report.Format != ReportFormatCRI {
-		t.Fatalf("unexpected format: %s", report.Format)
-	}
-	if len(report.Sections) != 1 {
-		t.Fatalf("unexpected section count: %d", len(report.Sections))
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			report, err := ParseReportJSON(tt.raw, tt.format)
+			if err != nil {
+				t.Fatalf("ParseReportJSON failed: %v", err)
+			}
+			if report.Format != tt.format {
+				t.Fatalf("unexpected format: %s", report.Format)
+			}
+			if len(report.Sections) != 1 {
+				t.Fatalf("unexpected section count: %d", len(report.Sections))
+			}
+		})
 	}
 }
 
@@ -75,6 +95,8 @@ func TestGeneratorGenerateReports(t *testing.T) {
 			format = "CRO"
 		case strings.Contains(content, "CRS"):
 			format = "CRS"
+		case strings.Contains(content, "CRN"):
+			format = "CRN"
 		}
 		w.Header().Set("Content-Type", "application/json")
 		reportJSON := fmt.Sprintf(`{"format":"%s","title":"%s","sections":[{"heading":"A","paragraphs":["B"]}]}`, format, format)
@@ -92,11 +114,11 @@ func TestGeneratorGenerateReports(t *testing.T) {
 
 	client := mistral.NewClient(server.URL, "key", time.Second, time.Second)
 	gen := &Generator{Client: client, ModelID: "mistral-medium-latest", MaxTokens: 1024, Temperature: 0}
-	reports, err := gen.GenerateReports(context.Background(), "Réunion", []string{"Alice", "Bob"}, "source text", []ReportFormat{ReportFormatCRI, ReportFormatCRO})
+	reports, err := gen.GenerateReports(context.Background(), "Réunion", []string{"Alice", "Bob"}, "source text", []ReportFormat{ReportFormatCRI, ReportFormatCRO, ReportFormatCRN})
 	if err != nil {
 		t.Fatalf("GenerateReports failed: %v", err)
 	}
-	if len(reports) != 2 {
+	if len(reports) != 3 {
 		t.Fatalf("unexpected report count: %d", len(reports))
 	}
 }

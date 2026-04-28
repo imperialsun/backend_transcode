@@ -275,6 +275,74 @@ func TestDeleteDemeterAudioTranscriptionOperationRemovesRow(t *testing.T) {
 	}
 }
 
+func TestPurgeAllDemeterAudioTranscriptionOperationsRemovesEveryRow(t *testing.T) {
+	ctx := context.Background()
+	st, err := Open(ctx, filepath.Join(t.TempDir(), "demeter-purge-all.sqlite"))
+	if err != nil {
+		t.Fatalf("failed to open store: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = st.Close()
+	})
+
+	org, err := st.CreateOrganization(ctx, "Org", "org", "active")
+	if err != nil {
+		t.Fatalf("failed to create org: %v", err)
+	}
+	user, err := st.CreateUser(ctx, org.ID, "u@example.com", "hash", "active")
+	if err != nil {
+		t.Fatalf("failed to create user: %v", err)
+	}
+	now := time.Now().UTC()
+	for _, record := range []*DemeterAudioTranscriptionOperationRecord{
+		{
+			OperationID:    "demeter-audio-completed-all-purge",
+			OrganizationID: org.ID,
+			UserID:         user.ID,
+			Status:         DemeterAudioTranscriptionOperationStatusCompleted,
+			Stage:          "completed",
+			ChunkIndex:     1,
+			ChunkCount:     1,
+			Progress:       1,
+			StatusCode:     200,
+			CreatedAt:      now,
+			UpdatedAt:      now,
+			FinishedAt:     sql.NullTime{Time: now, Valid: true},
+		},
+		{
+			OperationID:    "demeter-audio-running-all-purge",
+			OrganizationID: org.ID,
+			UserID:         user.ID,
+			Status:         DemeterAudioTranscriptionOperationStatusRunning,
+			Stage:          "running",
+			ChunkIndex:     0,
+			ChunkCount:     2,
+			Progress:       0.5,
+			StatusCode:     202,
+			CreatedAt:      now,
+			UpdatedAt:      now,
+		},
+	} {
+		if err := st.CreateDemeterAudioTranscriptionOperation(ctx, record); err != nil {
+			t.Fatalf("failed to create record %s: %v", record.OperationID, err)
+		}
+	}
+
+	deleted, err := st.PurgeAllDemeterAudioTranscriptionOperations(ctx)
+	if err != nil {
+		t.Fatalf("purge all operations failed: %v", err)
+	}
+	if deleted != 2 {
+		t.Fatalf("unexpected purge count: got %d want 2", deleted)
+	}
+
+	for _, opID := range []string{"demeter-audio-completed-all-purge", "demeter-audio-running-all-purge"} {
+		if _, err := st.GetDemeterAudioTranscriptionOperation(ctx, opID, org.ID, user.ID); !errors.Is(err, sql.ErrNoRows) {
+			t.Fatalf("expected record %s to be removed, got %v", opID, err)
+		}
+	}
+}
+
 func TestGetDemeterAudioTranscriptionOperation_PersistsOwnershipMismatchEvent(t *testing.T) {
 	ctx := context.Background()
 	dbPath := filepath.Join(t.TempDir(), "demeter-ownership.sqlite")
