@@ -169,7 +169,7 @@ func (a *App) deleteAdminDemeterQueueOperations(c *fiber.Ctx) error {
 		})
 		manager.notifySnapshotChanged()
 		logAPIStep(c, "admin", route, "response_ready", "purge_demeter_audio_queue", map[string]any{
-			"scope":        string(scope),
+			"scope":         string(scope),
 			"deleted_count": deletedCount,
 		})
 		return c.SendStatus(fiber.StatusNoContent)
@@ -186,7 +186,7 @@ func (a *App) deleteAdminDemeterQueueOperations(c *fiber.Ctx) error {
 		})
 		manager.notifySnapshotChanged()
 		logAPIStep(c, "admin", route, "response_ready", "purge_demeter_audio_queue", map[string]any{
-			"scope":        string(scope),
+			"scope":         string(scope),
 			"deleted_count": deletedCount,
 		})
 		return c.SendStatus(fiber.StatusNoContent)

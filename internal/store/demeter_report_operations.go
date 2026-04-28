@@ -532,7 +532,7 @@ func (s *Store) PurgeAllDemeterReportOperations(ctx context.Context) (int64, err
 	}
 
 	logStoreStep(ctx, "demeter_purge_success", "demeter_report_report_operation", map[string]any{
-		"scope":        "all",
+		"scope":         "all",
 		"deleted_count": deleted,
 	})
 	return deleted, nil

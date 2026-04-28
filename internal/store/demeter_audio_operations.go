@@ -532,7 +532,7 @@ func (s *Store) PurgeAllDemeterAudioTranscriptionOperations(ctx context.Context)
 	}
 
 	logStoreStep(ctx, "demeter_purge_success", "demeter_audio_transcription_operation", map[string]any{
-		"scope":        "all",
+		"scope":         "all",
 		"deleted_count": deleted,
 	})
 	return deleted, nil
