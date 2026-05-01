@@ -347,7 +347,7 @@ func (a *App) deleteAdminDemeterReportQueueOperations(c *fiber.Ctx) error {
 		})
 		manager.notifySnapshotChanged()
 		logAPIStep(c, "admin", route, "response_ready", "purge_demeter_report_queue", map[string]any{
-			"scope":        string(scope),
+			"scope":         string(scope),
 			"deleted_count": deletedCount,
 		})
 		return c.SendStatus(fiber.StatusNoContent)
@@ -364,7 +364,7 @@ func (a *App) deleteAdminDemeterReportQueueOperations(c *fiber.Ctx) error {
 		})
 		manager.notifySnapshotChanged()
 		logAPIStep(c, "admin", route, "response_ready", "purge_demeter_report_queue", map[string]any{
-			"scope":        string(scope),
+			"scope":         string(scope),
 			"deleted_count": deletedCount,
 		})
 		return c.SendStatus(fiber.StatusNoContent)
@@ -488,7 +488,7 @@ func (m *DemeterReportQueueManager) processClaimedOperation(record *store.Demete
 		if route == "" {
 			route = "/providers/demeter-sante/report/operations"
 		}
-		logDemeterChatBackendErrorCtx(newDemeterAudioLogContext(opCtx), route, payload.Seq, "generate_format_error", map[string]any{
+		logDemeterReportBackendErrorCtx(newDemeterAudioLogContext(opCtx), route, payload.Seq, "generate_format_error", map[string]any{
 			"operation_id": record.OperationID,
 			"format":       string(payload.Format),
 			"detail_level": string(payload.DetailLevel),
@@ -597,7 +597,7 @@ func (m *DemeterReportQueueManager) generateReportOnce(ctx context.Context, payl
 		"response_format": map[string]string{"type": "json_object"},
 	}
 	rawBody, _ := json.Marshal(body)
-	status, responseBody, err := m.app.MistralClient.DoJSON(ctx, http.MethodPost, demeterChatCompletionsUpstreamPath, rawBody)
+	status, responseBody, err := m.app.MistralClient.DoJSON(ctx, http.MethodPost, demeterReportGenerationUpstreamPath, rawBody)
 	if err != nil {
 		return nil, status, err
 	}
@@ -1257,7 +1257,7 @@ func (a *App) submitDemeterReportOperation(c *fiber.Ctx) error {
 	payload := demeterReportQueueOperationPayload{
 		TraceID:      requestTraceID(c),
 		Route:        requestRoutePath(c),
-		Seq:          nextDemeterChatCompletionsSequenceID(),
+		Seq:          nextDemeterReportOperationSequenceID(),
 		MeetingTitle: strings.TrimSpace(req.MeetingTitle),
 		Participants: append([]string(nil), req.Participants...),
 		SourceText:   sourceText,

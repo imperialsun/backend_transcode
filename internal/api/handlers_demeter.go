@@ -19,8 +19,6 @@ import (
 )
 
 const (
-	demeterModelsUpstreamPath               = "/v1/models"
-	demeterChatCompletionsUpstreamPath      = "/v1/chat/completions"
 	demeterAudioTranscriptionsUpstreamPath  = "/v1/audio/transcriptions"
 	demeterAudioTransportMaxRequestBytes    = 6 * 1024 * 1024
 	defaultDemeterAudioTranscriptionModelID = "voxtral-mini-latest"
@@ -53,108 +51,16 @@ func (e *demeterAudioValidationError) Error() string {
 	return e.message
 }
 
-// RegisterDemeterRoutes installs the upstream model and audio relay routes.
+// RegisterDemeterRoutes installs the Demeter audio and report routes.
 func (a *App) RegisterDemeterRoutes(router fiber.Router) {
 	group := router.Group("/providers/demeter-sante", a.AppAuthRequired())
-	group.Get("/models", RequireAnyPermission("provider.cloud.demeter_sante", "provider.llm.demeter_sante"), a.demeterModels)
 	group.Post("/audio/transcriptions", RequirePermissions("feature.cloudupload", "provider.cloud.demeter_sante"), a.demeterAudioTranscriptions)
 	group.Post("/audio/transcriptions/backend", RequirePermissions("feature.cloudupload", "provider.cloud.demeter_sante"), a.demeterAudioTranscriptions)
 	group.Get("/audio/transcriptions/operations/:operationId", RequirePermissions("feature.cloudupload", "provider.cloud.demeter_sante"), a.getDemeterAudioTranscriptionOperationStatus)
 	group.Delete("/audio/transcriptions/operations/:operationId", RequirePermissions("feature.cloudupload", "provider.cloud.demeter_sante"), a.cancelDemeterAudioTranscriptionOperation)
-	group.Post("/chat/completions", RequirePermissions("feature.llmapi", "provider.llm.demeter_sante"), a.demeterChatCompletions)
 	group.Post("/report/operations", RequirePermissions("feature.llmapi", "provider.llm.demeter_sante"), a.submitDemeterReportOperation)
 	group.Get("/report/operations/:operationId", RequirePermissions("feature.llmapi", "provider.llm.demeter_sante"), a.getDemeterReportOperationStatus)
 	group.Delete("/report/operations/:operationId", RequirePermissions("feature.llmapi", "provider.llm.demeter_sante"), a.cancelDemeterReportOperation)
-}
-
-// demeterModels proxies the upstream model listing endpoint.
-func (a *App) demeterModels(c *fiber.Ctx) error {
-	route := requestRoutePath(c)
-	logAPIStep(c, "demeter", route, "request_received", "models", nil)
-
-	if !a.MistralClient.IsConfigured() {
-		logDemeterRelayIssue(c, route, fiber.StatusServiceUnavailable, "mistral client is not configured")
-		return c.Status(fiber.StatusServiceUnavailable).JSON(ErrorResponse{Error: "mistral is not configured"})
-	}
-	logAPIStep(c, "demeter", route, "upstream_start", "models", map[string]any{"upstream": demeterModelsUpstreamPath})
-	statusCode, body, err := a.MistralClient.DoGet(requestContext(c), demeterModelsUpstreamPath)
-	if err != nil {
-		logDemeterRelayIssue(c, route, fiber.StatusBadGateway, err.Error())
-		return c.Status(fiber.StatusBadGateway).JSON(ErrorResponse{Error: "failed to reach mistral"})
-	}
-	logDemeterUpstreamStatus(c, route, statusCode)
-	logAPIStep(c, "demeter", route, "response_ready", "models", map[string]any{
-		"upstream":        demeterModelsUpstreamPath,
-		"upstream_status": statusCode,
-		"response_bytes":  len(body),
-	})
-	c.Status(statusCode)
-	c.Type("json")
-	return c.Send(body)
-}
-
-// demeterChatCompletions proxies the upstream chat-completions endpoint.
-func (a *App) demeterChatCompletions(c *fiber.Ctx) error {
-	route := requestRoutePath(c)
-	startedAt := time.Now()
-	seq := nextDemeterChatCompletionsSequenceID()
-	requestBody := c.Body()
-	requestBytes := len(requestBody)
-	logDemeterChatStage(c, route, seq, "request_received", map[string]any{
-		"request_bytes": requestBytes,
-	})
-
-	if !a.MistralClient.IsConfigured() {
-		logDemeterChatRelayIssue(c, route, fiber.StatusServiceUnavailable, "mistral client is not configured")
-		logDemeterChatPerformanceTaskCtx(newDemeterChatLogContextFromFiber(c), route, seq, "sequence_end", map[string]any{
-			"result":            "mistral_not_configured",
-			"request_bytes":     requestBytes,
-			"status_code":       fiber.StatusServiceUnavailable,
-			"total_duration_ms": time.Since(startedAt).Milliseconds(),
-		})
-		return c.Status(fiber.StatusServiceUnavailable).JSON(ErrorResponse{Error: "mistral is not configured"})
-	}
-	logDemeterChatStage(c, route, seq, "upstream_start", map[string]any{
-		"upstream":      demeterChatCompletionsUpstreamPath,
-		"request_bytes": requestBytes,
-	})
-	result, err := a.demeterChatCompletionsWithRetry(newDemeterChatLogContextFromFiber(c), route, seq, requestBody)
-	if err != nil {
-		logDemeterChatRelayIssue(c, route, fiber.StatusBadGateway, err.Error())
-		logDemeterChatBackendErrorCtx(newDemeterChatLogContextFromFiber(c), route, seq, "upstream_transport_error", map[string]any{
-			"upstream":      demeterChatCompletionsUpstreamPath,
-			"request_bytes": requestBytes,
-			"message":       err.Error(),
-		})
-		logDemeterChatPerformanceTaskCtx(newDemeterChatLogContextFromFiber(c), route, seq, "sequence_end", map[string]any{
-			"result":            "upstream_transport_error",
-			"request_bytes":     requestBytes,
-			"status_code":       fiber.StatusBadGateway,
-			"total_duration_ms": time.Since(startedAt).Milliseconds(),
-		})
-		return c.Status(fiber.StatusBadGateway).JSON(ErrorResponse{Error: "failed to reach mistral"})
-	}
-	logDemeterChatUpstreamStatus(c, route, result.statusCode)
-	logDemeterChatStage(c, route, seq, "response_ready", map[string]any{
-		"upstream":             demeterChatCompletionsUpstreamPath,
-		"upstream_status":      result.statusCode,
-		"request_bytes":        requestBytes,
-		"response_bytes":       len(result.responseBody),
-		"attempts":             result.attempts,
-		"upstream_duration_ms": result.upstreamDurationMs,
-	})
-	logDemeterChatPerformanceTaskCtx(newDemeterChatLogContextFromFiber(c), route, seq, "sequence_end", map[string]any{
-		"result":            "completed",
-		"request_bytes":     requestBytes,
-		"status_code":       result.statusCode,
-		"upstream_status":   result.statusCode,
-		"response_bytes":    len(result.responseBody),
-		"attempts":          result.attempts,
-		"total_duration_ms": time.Since(startedAt).Milliseconds(),
-	})
-	c.Status(result.statusCode)
-	c.Type("json")
-	return c.Send(result.responseBody)
 }
 
 // demeterAudioTranscriptions handles the front door for both slice transport

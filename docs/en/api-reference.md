@@ -125,9 +125,8 @@ Example ingest payload:
 
 | Method | Route | Auth | Permissions | Notes |
 | --- | --- | --- | --- | --- |
-| `GET` | `/api/v1/providers/demeter-sante/models` | app session | `provider.cloud.demeter_sante` or `provider.llm.demeter_sante` | proxies `GET /v1/models` |
 | `POST` | `/api/v1/providers/demeter-sante/audio/transcriptions/backend` | app session | `feature.cloudupload` + `provider.cloud.demeter_sante` | slice-only `slice-v1` transport in 5 MiB chunks; the backend reconstructs the source audio server-side and exposes the result through polling |
-| `POST` | `/api/v1/providers/demeter-sante/chat/completions` | app session | `feature.llmapi` + `provider.llm.demeter_sante` | proxies JSON to Mistral |
+| `POST` | `/api/v1/providers/demeter-sante/report/operations` | app session | `feature.llmapi` + `provider.llm.demeter_sante` | queues report generation and exposes progress through polling |
 
 ## Admin
 

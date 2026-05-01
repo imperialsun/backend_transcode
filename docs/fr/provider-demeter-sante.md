@@ -15,9 +15,8 @@ Le backend expose un provider nomme `Demeter Sante`, mais le transport reel pass
 
 | Route backend | Upstream | Permission |
 | --- | --- | --- |
-| `GET /api/v1/providers/demeter-sante/models` | `GET /v1/models` | `provider.cloud.demeter_sante` ou `provider.llm.demeter_sante` |
 | `POST /api/v1/providers/demeter-sante/audio/transcriptions/backend` | `POST /v1/audio/transcriptions` | `feature.cloudupload` + `provider.cloud.demeter_sante` |
-| `POST /api/v1/providers/demeter-sante/chat/completions` | `POST /v1/chat/completions` | `feature.llmapi` + `provider.llm.demeter_sante` |
+| `POST /api/v1/providers/demeter-sante/report/operations` | queue report interne | `feature.llmapi` + `provider.llm.demeter_sante` |
 
 ## Comportement de relay
 

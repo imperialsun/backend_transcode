@@ -15,9 +15,8 @@ The backend exposes a provider named `Demeter Sante`, but the actual transport g
 
 | Backend route | Upstream | Permission |
 | --- | --- | --- |
-| `GET /api/v1/providers/demeter-sante/models` | `GET /v1/models` | `provider.cloud.demeter_sante` or `provider.llm.demeter_sante` |
 | `POST /api/v1/providers/demeter-sante/audio/transcriptions/backend` | `POST /v1/audio/transcriptions` | `feature.cloudupload` + `provider.cloud.demeter_sante` |
-| `POST /api/v1/providers/demeter-sante/chat/completions` | `POST /v1/chat/completions` | `feature.llmapi` + `provider.llm.demeter_sante` |
+| `POST /api/v1/providers/demeter-sante/report/operations` | internal report queue | `feature.llmapi` + `provider.llm.demeter_sante` |
 
 ## Relay behavior
 

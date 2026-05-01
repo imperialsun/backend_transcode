@@ -44,6 +44,7 @@ type mobileReportEmailRequest struct {
 	OperationID          string                             `json:"operationId,omitempty"`
 	MeetingTitle         string                             `json:"meetingTitle,omitempty"`
 	Participants         []string                           `json:"participants,omitempty"`
+	SelectedFormats      []string                           `json:"selectedFormats,omitempty"`
 	RawTranscriptText    string                             `json:"rawTranscriptText,omitempty"`
 	EditedTranscriptText string                             `json:"editedTranscriptText,omitempty"`
 	TranscriptSegments   []meetingreports.TranscriptSegment `json:"transcriptSegments,omitempty"`
@@ -54,6 +55,7 @@ type mobileReportEmailRequest struct {
 type mobileAudioReportRequest struct {
 	MeetingTitle       string
 	Participants       []string
+	SelectedFormats    []string
 	ReportDetailLevels map[string]string
 }
 
@@ -170,7 +172,7 @@ func (a *App) postMobileReportEmail(c *fiber.Ctx) error {
 	actor := mobileActorFromClaims(claims)
 	job := req
 	job.OperationID = operationID
-	go a.runMobileReportEmailOperation(observability.WithTraceID(context.Background(), traceID), route, actor, job)
+	go a.runMobileReportEmailOperation(observability.WithTraceID(context.Background(), traceID), traceID, route, actor, job)
 
 	logMobileStage(c, route, traceID, "response_ready", title, map[string]any{
 		"operation_id":       operationID,
@@ -388,7 +390,7 @@ func (a *App) postMobileAudioReportsBackend(c *fiber.Ctx) error {
 	})
 
 	actor := mobileActorFromClaims(claims)
-	go a.runMobileAudioReportOperation(observability.WithTraceID(context.Background(), traceID), route, actor, operationID, audioRecord.OperationID, audioReq)
+	go a.runMobileAudioReportOperation(observability.WithTraceID(context.Background(), traceID), traceID, route, actor, operationID, audioRecord.OperationID, audioReq)
 
 	record, loadErr := a.Store.GetMobileOperation(requestContext(c), operationID, claims.OrgID, claims.UserID)
 	if loadErr != nil {
@@ -436,13 +438,13 @@ func (a *App) getMobileOperationStatus(c *fiber.Ctx) error {
 	return c.Status(fiber.StatusOK).JSON(mobileOperationResponseFromRecord(record))
 }
 
-func (a *App) runMobileReportEmailOperation(ctx context.Context, route string, actor mobileOperationActor, req mobileReportEmailRequest) {
+func (a *App) runMobileReportEmailOperation(ctx context.Context, traceID string, route string, actor mobileOperationActor, req mobileReportEmailRequest) {
 	operationID := strings.TrimSpace(req.OperationID)
 	title := normalizeMobileMeetingTitle(req.MeetingTitle)
 	logMobileStageCtx(ctx, route, "operation_worker_start", title, map[string]any{"operation_id": operationID, "kind": "report_email"})
 	_ = a.updateMobileOperationProgress(ctx, actor, operationID, "generation", 0.2, 0, 0, "generating reports", "")
 
-	response, err := a.generateAndSendMobileReports(ctx, route, actor, operationID, title, req.Participants, req.RawTranscriptText, req.EditedTranscriptText, req.SpeakerAssignments, req.TranscriptSegments, req.ReportDetailLevels)
+	response, err := a.generateAndSendMobileReports(ctx, traceID, route, actor, operationID, title, req.Participants, req.SelectedFormats, req.RawTranscriptText, req.EditedTranscriptText, req.SpeakerAssignments, req.TranscriptSegments, req.ReportDetailLevels)
 	if err != nil {
 		_ = a.recordMobileActivityEvent(actor, "report", mobileReportSourceMode, mobileReportProvider, "error", map[string]any{
 			"client":       "mobile",
@@ -464,7 +466,7 @@ func (a *App) runMobileReportEmailOperation(ctx context.Context, route string, a
 	})
 }
 
-func (a *App) runMobileAudioReportOperation(ctx context.Context, route string, actor mobileOperationActor, operationID string, audioOperationID string, req mobileAudioReportRequest) {
+func (a *App) runMobileAudioReportOperation(ctx context.Context, traceID string, route string, actor mobileOperationActor, operationID string, audioOperationID string, req mobileAudioReportRequest) {
 	title := normalizeMobileMeetingTitle(req.MeetingTitle)
 	logMobileStageCtx(ctx, route, "orchestration_start", title, map[string]any{
 		"operation_id":       operationID,
@@ -532,7 +534,7 @@ func (a *App) runMobileAudioReportOperation(ctx context.Context, route string, a
 					"chunk_count":        len(transcriptionResponse.Chunks),
 				})
 				_ = a.updateMobileOperationProgress(ctx, actor, operationID, "generation", 0.72, record.ChunkIndex, record.ChunkCount, "generating reports", audioOperationID)
-				response, err := a.generateAndSendMobileReports(ctx, route, actor, operationID, title, req.Participants, transcript, "", nil, nil, req.ReportDetailLevels)
+				response, err := a.generateAndSendMobileReports(ctx, traceID, route, actor, operationID, title, req.Participants, req.SelectedFormats, transcript, "", nil, nil, req.ReportDetailLevels)
 				if err != nil {
 					_ = a.recordMobileActivityEvent(actor, "report", mobileReportSourceMode, mobileReportProvider, "error", map[string]any{
 						"client":             "mobile",
@@ -626,11 +628,13 @@ func (a *App) startMobileDemeterAudioTransportOperation(
 
 func (a *App) generateAndSendMobileReports(
 	ctx context.Context,
+	traceID string,
 	route string,
 	actor mobileOperationActor,
 	operationID string,
 	title string,
 	participants []string,
+	selectedFormats []string,
 	rawTranscriptText string,
 	editedTranscriptText string,
 	speakerAssignments []meetingreports.SpeakerAssignment,
@@ -643,13 +647,16 @@ func (a *App) generateAndSendMobileReports(
 	if strings.TrimSpace(rawTranscript) == "" || strings.TrimSpace(reportSourceText) == "" {
 		return mobileReportEmailResponse{}, fmt.Errorf("transcript text is required")
 	}
+	formats, err := normalizeMobileSelectedReportFormats(selectedFormats)
+	if err != nil {
+		return mobileReportEmailResponse{}, err
+	}
 	participants = normalizeStringList(participants)
 	title = normalizeMobileMeetingTitle(title)
 	settings, err := a.loadMobileReportSettings(ctx, actor.UserID, detailOverrides)
 	if err != nil {
 		return mobileReportEmailResponse{}, err
 	}
-	formats := meetingreports.AllReportFormats()
 	logMobileStageCtx(ctx, route, "settings_resolved", title, map[string]any{
 		"operation_id":        operationID,
 		"model_id":            settings.ModelID,
@@ -659,7 +666,7 @@ func (a *App) generateAndSendMobileReports(
 		"format_count":        len(formats),
 	})
 
-	attachments, reportEnvelopes, generatedAt, err := a.buildMobileDocuments(ctx, settings, title, participants, rawTranscript, reportSourceText, transcriptSegments, formats)
+	attachments, reportEnvelopes, generatedAt, err := a.buildMobileDocuments(ctx, traceID, route, actor, operationID, settings, title, participants, rawTranscript, reportSourceText, transcriptSegments, formats)
 	if err != nil {
 		return mobileReportEmailResponse{}, err
 	}
@@ -676,7 +683,7 @@ func (a *App) generateAndSendMobileReports(
 			return mobileReportEmailResponse{}, fmt.Errorf("mailer unavailable")
 		}
 	}
-	textBody, htmlBody := buildMobileEmailBodies(title, reportEnvelopes)
+	textBody, htmlBody := buildMobileEmailBodies(title, formats, reportEnvelopes)
 	_ = a.updateMobileOperationProgress(ctx, actor, operationID, "email", 0.92, 0, len(formats), "sending email", "")
 	logMobileStageCtx(ctx, route, "email_send_start", title, map[string]any{
 		"operation_id": operationID,
@@ -721,6 +728,10 @@ func (a *App) generateAndSendMobileReports(
 
 func (a *App) buildMobileDocuments(
 	ctx context.Context,
+	traceID string,
+	route string,
+	actor mobileOperationActor,
+	operationID string,
 	settings mobileReportSettings,
 	title string,
 	participants []string,
@@ -732,33 +743,14 @@ func (a *App) buildMobileDocuments(
 	if a.MistralClient == nil || !a.MistralClient.IsConfigured() {
 		return nil, nil, "", fmt.Errorf("mistral client is not configured")
 	}
+	if len(formats) == 0 {
+		return nil, nil, "", fmt.Errorf("selected formats are required")
+	}
 	now := time.Now().UTC()
 	generatedAt := now.Format(time.RFC3339)
-	sourceTokenCount := approximateTokenCount(reportSourceText)
-	generator := &meetingreports.Generator{
-		Client:      a.MistralClient,
-		ModelID:     settings.ModelID,
-		MaxTokens:   settings.MaxTokens,
-		Temperature: settings.Temperature,
-	}
-	results, err := generator.GenerateReportsWithDetail(ctx, title, participants, reportSourceText, formats, settings.DetailLevels)
+	reportEnvelopes, err := a.generateMobileReportEnvelopesWithQueue(ctx, traceID, route, operationID, actor.OrgID, actor.UserID, settings, title, participants, reportSourceText, formats)
 	if err != nil {
 		return nil, nil, "", err
-	}
-	envelopes := make(map[meetingreports.ReportFormat]mobileReportEnvelope, len(results))
-	for format, generated := range results {
-		level := settings.DetailLevels[format]
-		envelopes[format] = mobileReportEnvelope{
-			Format:           string(format),
-			Report:           generated.Report,
-			Raw:              generated.Raw,
-			ModelID:          generatorModelID(generator),
-			GeneratedAt:      generatedAt,
-			SourceMode:       mobileReportSourceMode,
-			Provider:         mobileReportProvider,
-			SourceTokenCount: sourceTokenCount,
-			DetailLevel:      string(level),
-		}
 	}
 
 	attachments := make([]mailer.MailAttachment, 0, len(formats)+1)
@@ -777,7 +769,7 @@ func (a *App) buildMobileDocuments(
 		Data:        transcriptDocx,
 	})
 	for _, format := range formats {
-		envelope, ok := envelopes[format]
+		envelope, ok := reportEnvelopes[format]
 		if !ok {
 			return nil, nil, "", fmt.Errorf("missing report for format %s", meetingreports.ReportFormatDisplayName(format))
 		}
@@ -797,7 +789,7 @@ func (a *App) buildMobileDocuments(
 			Data:        docx,
 		})
 	}
-	return attachments, envelopes, generatedAt, nil
+	return attachments, reportEnvelopes, generatedAt, nil
 }
 
 func (a *App) loadMobileReportSettings(ctx context.Context, userID string, overrides map[string]string) (mobileReportSettings, error) {
@@ -1062,6 +1054,9 @@ func parseMobileAudioReportRequest(c *fiber.Ctx) mobileAudioReportRequest {
 		MeetingTitle: strings.TrimSpace(c.FormValue("meetingTitle")),
 	}
 	req.Participants = parseMobileParticipants(c.FormValue("participants"))
+	if raw := strings.TrimSpace(c.FormValue("selectedFormats")); raw != "" {
+		req.SelectedFormats = parseMobileParticipants(raw)
+	}
 	if raw := strings.TrimSpace(c.FormValue("reportDetailLevels")); raw != "" {
 		var parsed map[string]string
 		if err := json.Unmarshal([]byte(raw), &parsed); err == nil {
@@ -1172,14 +1167,18 @@ func buildMobileSubject(title string) string {
 	return "Compte rendu Demeter - " + title
 }
 
-func buildMobileEmailBodies(title string, reports map[meetingreports.ReportFormat]mobileReportEnvelope) (string, string) {
-	formats := extractMobileReportFormatsFromMap(reports)
+func buildMobileEmailBodies(title string, formats []meetingreports.ReportFormat, reports map[meetingreports.ReportFormat]mobileReportEnvelope) (string, string) {
+	selectedEnvelopes := buildMobileReportEnvelopeList(formats, reports)
+	selectedFormats := make([]string, 0, len(selectedEnvelopes))
+	for _, envelope := range selectedEnvelopes {
+		selectedFormats = append(selectedFormats, envelope.Format)
+	}
 	highlights := collectMobileHighlights(reports)
 	textLines := []string{
 		"Bonjour,",
 		"",
 		fmt.Sprintf("Les comptes rendus \"%s\" sont prets.", title),
-		fmt.Sprintf("Documents joints: transcription DOCX, %s.", strings.Join(formats, ", ")),
+		fmt.Sprintf("Documents joints: transcription DOCX, %s.", strings.Join(selectedFormats, ", ")),
 		"",
 		"Resume:",
 	}
@@ -1202,7 +1201,7 @@ func buildMobileEmailBodies(title string, reports map[meetingreports.ReportForma
 	htmlBody := "<html><body style=\"font-family:Arial,sans-serif;color:#1f2937;line-height:1.5\">" +
 		"<p>Bonjour,</p>" +
 		"<p>Les comptes rendus <strong>" + html.EscapeString(title) + "</strong> sont prets.</p>" +
-		"<p><strong>Documents joints :</strong> transcription DOCX, " + html.EscapeString(strings.Join(formats, ", ")) + ".</p>" +
+		"<p><strong>Documents joints :</strong> transcription DOCX, " + html.EscapeString(strings.Join(selectedFormats, ", ")) + ".</p>" +
 		"<p><strong>Resume :</strong></p><ul>" + strings.Join(htmlItems, "") + "</ul>" +
 		"<p>Cordialement,<br/>Demeter Sante</p>" +
 		"</body></html>"
@@ -1363,6 +1362,8 @@ func mobileFailureStatusCode(err error) int {
 		return fiber.StatusServiceUnavailable
 	case strings.Contains(msg, "not configured"):
 		return fiber.StatusServiceUnavailable
+	case strings.Contains(msg, "selected formats are required"), strings.Contains(msg, "invalid selected format"):
+		return fiber.StatusBadRequest
 	case strings.Contains(msg, "transcript text is required"), strings.Contains(msg, "invalid recipient"):
 		return fiber.StatusBadRequest
 	default:
