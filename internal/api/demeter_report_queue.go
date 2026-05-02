@@ -30,21 +30,34 @@ const (
 	demeterReportQueueCooldownDuration   = 5 * time.Second
 	demeterReportGenerationMaxAttempts   = 10
 	demeterReportGenerationBaseDelay     = 2 * time.Second
+	demeterReportQueueKindReport         = "report"
+	demeterReportQueueKindTemplateDraft  = "report_template_draft"
 )
 
+var errInvalidReportTemplateDraft = errors.New("invalid report template draft")
+
 type demeterReportQueueOperationPayload struct {
-	TraceID      string                    `json:"traceId"`
-	Route        string                    `json:"route"`
-	Seq          uint64                    `json:"seq"`
-	MeetingTitle string                    `json:"meetingTitle,omitempty"`
-	Participants []string                  `json:"participants,omitempty"`
-	SourceText   string                    `json:"sourceText"`
-	Format       reports.ReportFormat      `json:"format"`
-	DetailLevel  reports.ReportDetailLevel `json:"detailLevel"`
-	ModelID      string                    `json:"modelId"`
-	Temperature  float64                   `json:"temperature"`
-	MaxTokens    int                       `json:"maxTokens"`
-	CreatedAt    time.Time                 `json:"createdAt"`
+	TraceID          string                    `json:"traceId"`
+	Route            string                    `json:"route"`
+	Seq              uint64                    `json:"seq"`
+	Kind             string                    `json:"kind,omitempty"`
+	MeetingTitle     string                    `json:"meetingTitle,omitempty"`
+	Participants     []string                  `json:"participants,omitempty"`
+	SourceText       string                    `json:"sourceText"`
+	Format           reports.ReportFormat      `json:"format"`
+	DetailLevel      reports.ReportDetailLevel `json:"detailLevel"`
+	TemplateID       string                    `json:"templateId,omitempty"`
+	TemplateName     string                    `json:"templateName,omitempty"`
+	Instructions     string                    `json:"instructions,omitempty"`
+	ExampleOutline   string                    `json:"exampleOutline,omitempty"`
+	ModelID          string                    `json:"modelId"`
+	Temperature      float64                   `json:"temperature"`
+	MaxTokens        int                       `json:"maxTokens"`
+	DraftBrief       string                    `json:"draftBrief,omitempty"`
+	BaseFormatHint   string                    `json:"baseFormatHint,omitempty"`
+	Tone             string                    `json:"tone,omitempty"`
+	RequiredSections []string                  `json:"requiredSections,omitempty"`
+	CreatedAt        time.Time                 `json:"createdAt"`
 }
 
 type demeterReportRequest struct {
@@ -53,6 +66,7 @@ type demeterReportRequest struct {
 	Participants []string `json:"participants,omitempty"`
 	SourceText   string   `json:"sourceText"`
 	Format       string   `json:"format"`
+	TemplateID   string   `json:"templateId,omitempty"`
 	DetailLevel  string   `json:"detailLevel,omitempty"`
 	ModelID      string   `json:"modelId,omitempty"`
 	Temperature  float64  `json:"temperature,omitempty"`
@@ -60,26 +74,44 @@ type demeterReportRequest struct {
 }
 
 type demeterReportResult struct {
-	Format      string             `json:"format"`
-	Report      reports.ReportJson `json:"report"`
-	Raw         string             `json:"raw,omitempty"`
-	ModelID     string             `json:"modelId,omitempty"`
-	GeneratedAt string             `json:"generatedAt,omitempty"`
-	DetailLevel string             `json:"detailLevel,omitempty"`
+	Format       string             `json:"format"`
+	TemplateID   string             `json:"templateId,omitempty"`
+	TemplateName string             `json:"templateName,omitempty"`
+	Report       reports.ReportJson `json:"report"`
+	Raw          string             `json:"raw,omitempty"`
+	ModelID      string             `json:"modelId,omitempty"`
+	GeneratedAt  string             `json:"generatedAt,omitempty"`
+	DetailLevel  string             `json:"detailLevel,omitempty"`
+}
+
+type demeterReportTemplateDraft struct {
+	Name           string `json:"name"`
+	Description    string `json:"description"`
+	BaseFormat     string `json:"baseFormat"`
+	Instructions   string `json:"instructions"`
+	ExampleOutline string `json:"exampleOutline"`
+}
+
+type demeterReportTemplateDraftResult struct {
+	Kind        string                     `json:"kind"`
+	Draft       demeterReportTemplateDraft `json:"draft"`
+	Raw         string                     `json:"raw,omitempty"`
+	ModelID     string                     `json:"modelId,omitempty"`
+	GeneratedAt string                     `json:"generatedAt,omitempty"`
 }
 
 type demeterReportOperationResponse struct {
-	OperationID string               `json:"operationId"`
-	Status      string               `json:"status"`
-	StatusCode  int                  `json:"statusCode"`
-	Stage       string               `json:"stage"`
-	FormatIndex int                  `json:"formatIndex"`
-	FormatCount int                  `json:"formatCount"`
-	Progress    float64              `json:"progress"`
-	LastError   string               `json:"lastError,omitempty"`
-	UpdatedAt   string               `json:"updatedAt,omitempty"`
-	FinishedAt  string               `json:"finishedAt,omitempty"`
-	Response    *demeterReportResult `json:"response,omitempty"`
+	OperationID string  `json:"operationId"`
+	Status      string  `json:"status"`
+	StatusCode  int     `json:"statusCode"`
+	Stage       string  `json:"stage"`
+	FormatIndex int     `json:"formatIndex"`
+	FormatCount int     `json:"formatCount"`
+	Progress    float64 `json:"progress"`
+	LastError   string  `json:"lastError,omitempty"`
+	UpdatedAt   string  `json:"updatedAt,omitempty"`
+	FinishedAt  string  `json:"finishedAt,omitempty"`
+	Response    any     `json:"response,omitempty"`
 }
 
 type demeterReportQueueLaneState struct {
@@ -484,6 +516,10 @@ func (m *DemeterReportQueueManager) processClaimedOperation(record *store.Demete
 	opCtx = requestmeta.WithActor(opCtx, record.UserID, record.OrganizationID)
 
 	m.setLaneCurrentOperation(laneID, record.OperationID, "running", "running", 0, 1, 0, "")
+	if demeterReportPayloadKind(payload) == demeterReportQueueKindTemplateDraft {
+		return m.processClaimedTemplateDraftOperation(opCtx, record, payload, laneID)
+	}
+
 	result, statusCode, err := m.generateReportWithRetry(opCtx, laneID, record.OperationID, payload)
 	if err != nil {
 		route := strings.TrimSpace(payload.Route)
@@ -522,6 +558,37 @@ func (m *DemeterReportQueueManager) processClaimedOperation(record *store.Demete
 		FinishedAt:     sql.NullTime{Time: now, Valid: true},
 	}
 	if err := m.app.Store.UpdateDemeterReportOperationByID(opCtx, update); err != nil {
+		m.clearLaneCurrentOperation(laneID)
+		return err
+	}
+	m.clearLaneCurrentOperation(laneID)
+	return nil
+}
+
+func (m *DemeterReportQueueManager) processClaimedTemplateDraftOperation(ctx context.Context, record *store.DemeterReportOperationRecord, payload *demeterReportQueueOperationPayload, laneID int) error {
+	result, statusCode, err := m.generateReportTemplateDraftWithRetry(ctx, laneID, record.OperationID, payload)
+	if err != nil {
+		_ = m.failClaimedOperation(ctx, record, err.Error(), statusCode)
+		m.clearLaneCurrentOperation(laneID)
+		return err
+	}
+	raw, _ := json.Marshal(result)
+	now := time.Now().UTC()
+	update := &store.DemeterReportOperationRecord{
+		OperationID:    record.OperationID,
+		OrganizationID: record.OrganizationID,
+		UserID:         record.UserID,
+		Status:         store.DemeterReportOperationStatusCompleted,
+		Stage:          "completed",
+		FormatIndex:    1,
+		FormatCount:    1,
+		Progress:       1,
+		ResponseJSON:   sql.NullString{String: string(raw), Valid: true},
+		StatusCode:     fiber.StatusOK,
+		UpdatedAt:      now,
+		FinishedAt:     sql.NullTime{Time: now, Valid: true},
+	}
+	if err := m.app.Store.UpdateDemeterReportOperationByID(ctx, update); err != nil {
 		m.clearLaneCurrentOperation(laneID)
 		return err
 	}
@@ -589,12 +656,86 @@ func (m *DemeterReportQueueManager) generateReportWithRetry(ctx context.Context,
 	return nil, lastStatus, lastErr
 }
 
+func (m *DemeterReportQueueManager) generateReportTemplateDraftWithRetry(ctx context.Context, laneID int, operationID string, payload *demeterReportQueueOperationPayload) (*demeterReportTemplateDraftResult, int, error) {
+	if payload == nil {
+		return nil, fiber.StatusInternalServerError, fmt.Errorf("missing payload")
+	}
+	lastStatus := fiber.StatusBadGateway
+	var lastErr error
+	for attempt := 1; attempt <= demeterReportGenerationMaxAttempts; attempt++ {
+		if !m.waitForMistralRetryPause(ctx, laneID) {
+			return nil, fiber.StatusRequestTimeout, context.Canceled
+		}
+		result, status, err := m.generateReportTemplateDraftOnce(ctx, payload)
+		if err == nil {
+			_ = m.finishMistralRetryPause(laneID, operationID, 0)
+			return result, fiber.StatusOK, nil
+		}
+		lastStatus = status
+		lastErr = err
+		if !shouldRetryDemeterReportResponse(status, err) || attempt >= demeterReportGenerationMaxAttempts {
+			break
+		}
+		if responseIsDemeterReportCapacityExceeded(status, err) {
+			m.startMistralRetryPause(laneID, operationID, 0)
+		}
+		if !m.sleepWithMistralRetryPause(ctx, laneID, demeterReportRetryDelayForAttempt(attempt)) {
+			return nil, fiber.StatusRequestTimeout, context.Canceled
+		}
+	}
+	m.finishMistralRetryPause(laneID, operationID, 0)
+	if lastErr == nil {
+		lastErr = fmt.Errorf("report template draft generation failed")
+	}
+	return nil, lastStatus, lastErr
+}
+
+func (m *DemeterReportQueueManager) generateReportTemplateDraftOnce(ctx context.Context, payload *demeterReportQueueOperationPayload) (*demeterReportTemplateDraftResult, int, error) {
+	body := map[string]any{
+		"model": strings.TrimSpace(payload.ModelID),
+		"messages": []map[string]string{
+			{"role": "system", "content": buildReportTemplateDraftSystemPrompt()},
+			{"role": "user", "content": buildReportTemplateDraftUserPrompt(payload)},
+		},
+		"temperature":     payload.Temperature,
+		"max_tokens":      payload.MaxTokens,
+		"response_format": map[string]string{"type": "json_object"},
+	}
+	rawBody, _ := json.Marshal(body)
+	status, responseBody, err := m.app.MistralClient.DoJSON(ctx, http.MethodPost, demeterReportGenerationUpstreamPath, rawBody)
+	if err != nil {
+		return nil, status, err
+	}
+	if status < 200 || status >= 300 {
+		return nil, status, fmt.Errorf("mistral api (%d): %s", status, strings.TrimSpace(string(responseBody)))
+	}
+	content := extractDemeterReportChatContent(responseBody)
+	if strings.TrimSpace(content) == "" {
+		return nil, fiber.StatusBadGateway, fmt.Errorf("empty model response")
+	}
+	draft, err := parseReportTemplateDraft(content)
+	if err != nil {
+		return nil, fiber.StatusBadGateway, err
+	}
+	return &demeterReportTemplateDraftResult{
+		Kind:        demeterReportQueueKindTemplateDraft,
+		Draft:       *draft,
+		Raw:         content,
+		ModelID:     strings.TrimSpace(payload.ModelID),
+		GeneratedAt: time.Now().UTC().Format(time.RFC3339),
+	}, status, nil
+}
+
 func (m *DemeterReportQueueManager) generateReportOnce(ctx context.Context, payload *demeterReportQueueOperationPayload) (*demeterReportResult, int, error) {
+	userPrompt := reports.BuildReportUserPromptWithDetail(payload.Format, payload.DetailLevel, payload.SourceText, payload.MeetingTitle, payload.Participants)
+	if strings.TrimSpace(payload.TemplateID) != "" {
+		userPrompt = reports.BuildCustomReportUserPromptWithDetail(payload.Format, payload.DetailLevel, payload.SourceText, payload.MeetingTitle, payload.Participants, payload.TemplateName, payload.Instructions, payload.ExampleOutline)
+	}
 	body := map[string]any{
 		"model": strings.TrimSpace(payload.ModelID),
 		"messages": []map[string]string{
 			{"role": "system", "content": reports.BuildReportSystemPromptWithDetail(payload.DetailLevel)},
-			{"role": "user", "content": reports.BuildReportUserPromptWithDetail(payload.Format, payload.DetailLevel, payload.SourceText, payload.MeetingTitle, payload.Participants)},
+			{"role": "user", "content": userPrompt},
 		},
 		"temperature":     payload.Temperature,
 		"max_tokens":      payload.MaxTokens,
@@ -617,12 +758,14 @@ func (m *DemeterReportQueueManager) generateReportOnce(ctx context.Context, payl
 		return nil, fiber.StatusBadGateway, err
 	}
 	return &demeterReportResult{
-		Format:      string(payload.Format),
-		Report:      report,
-		Raw:         content,
-		ModelID:     payload.ModelID,
-		GeneratedAt: time.Now().UTC().Format(time.RFC3339),
-		DetailLevel: string(payload.DetailLevel),
+		Format:       string(payload.Format),
+		TemplateID:   strings.TrimSpace(payload.TemplateID),
+		TemplateName: strings.TrimSpace(payload.TemplateName),
+		Report:       report,
+		Raw:          content,
+		ModelID:      payload.ModelID,
+		GeneratedAt:  time.Now().UTC().Format(time.RFC3339),
+		DetailLevel:  string(payload.DetailLevel),
 	}, status, nil
 }
 
@@ -661,6 +804,120 @@ func extractDemeterReportChatContent(response []byte) string {
 	return demeterNormalizeTextContent(message["content"])
 }
 
+func buildReportTemplateDraftSystemPrompt() string {
+	return strings.Join([]string{
+		"Tu es un assistant de conception de modèles de compte rendu médical et administratif.",
+		"Tu dois produire uniquement un objet JSON valide, sans markdown ni texte autour.",
+		"N'utilise pas de bloc ```json, pas d'explication, pas de commentaire.",
+		"Toutes les chaînes JSON multilignes doivent utiliser des échappements \\n, jamais de retour ligne brut dans une chaîne.",
+		"Le JSON doit respecter exactement cette forme:",
+		`{"name":"...","description":"...","baseFormat":"CRI|CRO|CRS|CRN","instructions":"...","exampleOutline":"..."}`,
+		"Le modèle généré doit rester compatible avec une sortie structurée de compte rendu existante.",
+		"Les instructions doivent être directement utilisables comme consignes de génération du CR final.",
+	}, "\n")
+}
+
+func buildReportTemplateDraftUserPrompt(payload *demeterReportQueueOperationPayload) string {
+	if payload == nil {
+		return ""
+	}
+	sections := strings.TrimSpace(strings.Join(payload.RequiredSections, "\n- "))
+	if sections != "" {
+		sections = "- " + sections
+	}
+	baseFormat := strings.TrimSpace(payload.BaseFormatHint)
+	if baseFormat == "" {
+		baseFormat = "Choisir le plus adapté parmi CRI, CRO, CRS, CRN"
+	}
+	return strings.Join([]string{
+		"Crée un brouillon de modèle de compte rendu personnalisé pour Tradmin.",
+		"",
+		"Brief métier:",
+		strings.TrimSpace(payload.DraftBrief),
+		"",
+		"Format de base souhaité:",
+		baseFormat,
+		"",
+		"Ton / style souhaité:",
+		strings.TrimSpace(payload.Tone),
+		"",
+		"Sections souhaitées:",
+		sections,
+		"",
+		"Contraintes:",
+		"- name: nom court, clair, exploitable dans une liste de modèles.",
+		"- description: une phrase courte pour les utilisateurs Front User.",
+		"- baseFormat: exactement CRI, CRO, CRS ou CRN.",
+		"- instructions: inclure objectif, sections attendues, règles de style, contraintes métier et éléments à éviter.",
+		"- exampleOutline: structure lisible du compte rendu attendu, avec titres de sections.",
+	}, "\n")
+}
+
+func parseReportTemplateDraft(content string) (*demeterReportTemplateDraft, error) {
+	var draft demeterReportTemplateDraft
+	jsonText, ok := extractFirstJSONObject(strings.TrimSpace(content))
+	if !ok {
+		jsonText = strings.TrimSpace(content)
+	}
+	if err := json.Unmarshal([]byte(jsonText), &draft); err != nil {
+		return nil, fmt.Errorf("%w: JSON invalide", errInvalidReportTemplateDraft)
+	}
+	draft.Name = strings.TrimSpace(draft.Name)
+	draft.Description = strings.TrimSpace(draft.Description)
+	draft.BaseFormat = strings.TrimSpace(strings.ToUpper(draft.BaseFormat))
+	draft.Instructions = strings.TrimSpace(draft.Instructions)
+	draft.ExampleOutline = strings.TrimSpace(draft.ExampleOutline)
+	if draft.Name == "" || draft.Instructions == "" {
+		return nil, fmt.Errorf("%w: name and instructions are required", errInvalidReportTemplateDraft)
+	}
+	if _, ok := reports.ParseReportFormat(draft.BaseFormat); !ok {
+		return nil, fmt.Errorf("%w: baseFormat must be CRI, CRO, CRS or CRN", errInvalidReportTemplateDraft)
+	}
+	return &draft, nil
+}
+
+func extractFirstJSONObject(content string) (string, bool) {
+	content = strings.TrimSpace(content)
+	if content == "" {
+		return "", false
+	}
+	start := strings.IndexByte(content, '{')
+	if start < 0 {
+		return "", false
+	}
+	depth := 0
+	inString := false
+	escaped := false
+	for i := start; i < len(content); i++ {
+		ch := content[i]
+		if inString {
+			if escaped {
+				escaped = false
+				continue
+			}
+			switch ch {
+			case '\\':
+				escaped = true
+			case '"':
+				inString = false
+			}
+			continue
+		}
+		switch ch {
+		case '"':
+			inString = true
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				return content[start : i+1], true
+			}
+		}
+	}
+	return "", false
+}
+
 func demeterNormalizeTextContent(value any) string {
 	switch v := value.(type) {
 	case string:
@@ -688,6 +945,9 @@ func shouldRetryDemeterReportResponse(status int, err error) bool {
 		return false
 	}
 	if errors.Is(err, reports.ErrInvalidReport) {
+		return false
+	}
+	if errors.Is(err, errInvalidReportTemplateDraft) {
 		return false
 	}
 	if status == http.StatusTooManyRequests || status >= 500 {
@@ -1151,6 +1411,17 @@ func decodeDemeterReportQueuePayload(record sql.NullString) (*demeterReportQueue
 	return &payload, nil
 }
 
+func demeterReportPayloadKind(payload *demeterReportQueueOperationPayload) string {
+	if payload == nil {
+		return demeterReportQueueKindReport
+	}
+	kind := strings.TrimSpace(payload.Kind)
+	if kind == "" {
+		return demeterReportQueueKindReport
+	}
+	return kind
+}
+
 func (a *App) createAndEnqueueDemeterReportOperation(ctx context.Context, record *store.DemeterReportOperationRecord) (*store.DemeterReportOperationRecord, error) {
 	if err := a.Store.CreateDemeterReportOperation(ctx, record); err != nil {
 		return nil, err
@@ -1205,9 +1476,20 @@ func demeterReportOperationResponseFromRecord(record *store.DemeterReportOperati
 		resp.FinishedAt = record.FinishedAt.Time.UTC().Format(time.RFC3339)
 	}
 	if record.ResponseJSON.Valid && strings.TrimSpace(record.ResponseJSON.String) != "" {
-		var result demeterReportResult
-		if err := json.Unmarshal([]byte(record.ResponseJSON.String), &result); err == nil {
-			resp.Response = &result
+		raw := []byte(record.ResponseJSON.String)
+		var envelope struct {
+			Kind string `json:"kind"`
+		}
+		if err := json.Unmarshal(raw, &envelope); err == nil && strings.TrimSpace(envelope.Kind) == demeterReportQueueKindTemplateDraft {
+			var result demeterReportTemplateDraftResult
+			if err := json.Unmarshal(raw, &result); err == nil {
+				resp.Response = &result
+			}
+		} else {
+			var result demeterReportResult
+			if err := json.Unmarshal(raw, &result); err == nil {
+				resp.Response = &result
+			}
 		}
 	}
 	return resp
@@ -1228,6 +1510,30 @@ func (a *App) submitDemeterReportOperation(c *fiber.Ctx) error {
 	format, ok := reports.ParseReportFormat(req.Format)
 	if !ok {
 		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{Error: "invalid format"})
+	}
+	var template *store.OrganizationReportTemplate
+	templateID := strings.TrimSpace(req.TemplateID)
+	if templateID != "" {
+		loaded, err := a.Store.GetOrganizationReportTemplate(requestContext(c), templateID)
+		if err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{Error: "failed to load report template"})
+		}
+		if loaded == nil || loaded.OrganizationID != claims.OrgID || !loaded.OrgEnabled {
+			return c.Status(fiber.StatusForbidden).JSON(ErrorResponse{Error: "report template is not available"})
+		}
+		preferenceEnabled, err := a.Store.IsUserReportTemplateEnabled(requestContext(c), claims.UserID, loaded.ID)
+		if err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{Error: "failed to load report template preference"})
+		}
+		if !preferenceEnabled {
+			return c.Status(fiber.StatusForbidden).JSON(ErrorResponse{Error: "report template is disabled for user"})
+		}
+		templateFormat, ok := reports.ParseReportFormat(loaded.BaseFormat)
+		if !ok {
+			return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{Error: "invalid report template base format"})
+		}
+		format = templateFormat
+		template = loaded
 	}
 	detailLevel, ok := reports.ParseReportDetailLevel(req.DetailLevel)
 	if !ok {
@@ -1264,15 +1570,22 @@ func (a *App) submitDemeterReportOperation(c *fiber.Ctx) error {
 		TraceID:      requestTraceID(c),
 		Route:        requestRoutePath(c),
 		Seq:          nextDemeterReportOperationSequenceID(),
+		Kind:         demeterReportQueueKindReport,
 		MeetingTitle: strings.TrimSpace(req.MeetingTitle),
 		Participants: append([]string(nil), req.Participants...),
 		SourceText:   sourceText,
 		Format:       format,
 		DetailLevel:  detailLevel,
+		TemplateID:   templateID,
 		ModelID:      modelID,
 		Temperature:  temperature,
 		MaxTokens:    maxTokens,
 		CreatedAt:    time.Now().UTC(),
+	}
+	if template != nil {
+		payload.TemplateName = template.Name
+		payload.Instructions = template.Instructions
+		payload.ExampleOutline = template.ExampleOutline
 	}
 	rawPayload, _ := json.Marshal(payload)
 	now := time.Now().UTC()

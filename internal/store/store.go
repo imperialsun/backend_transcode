@@ -118,6 +118,41 @@ type ActivityIngestResult struct {
 	Duplicates int `json:"duplicates"`
 }
 
+// OrganizationReportTemplate stores one organization-scoped custom report
+// template.
+type OrganizationReportTemplate struct {
+	ID              string    `json:"id"`
+	OrganizationID  string    `json:"organizationId"`
+	Name            string    `json:"name"`
+	Description     string    `json:"description"`
+	BaseFormat      string    `json:"baseFormat"`
+	Instructions    string    `json:"instructions"`
+	ExampleOutline  string    `json:"exampleOutline"`
+	OrgEnabled      bool      `json:"orgEnabled"`
+	CreatedByUserID string    `json:"createdByUserId,omitempty"`
+	UpdatedByUserID string    `json:"updatedByUserId,omitempty"`
+	CreatedAt       time.Time `json:"createdAt"`
+	UpdatedAt       time.Time `json:"updatedAt"`
+}
+
+// ReportTemplateInput carries fields accepted when creating or updating a
+// custom report template.
+type ReportTemplateInput struct {
+	Name           string
+	Description    string
+	BaseFormat     string
+	Instructions   string
+	ExampleOutline string
+	OrgEnabled     bool
+}
+
+// UserReportTemplatePreference joins a visible organization template with the
+// current user's visibility preference.
+type UserReportTemplatePreference struct {
+	Template OrganizationReportTemplate `json:"template"`
+	Enabled  bool                       `json:"enabled"`
+}
+
 // ActivityRange identifies the inclusive day window used by activity summaries.
 type ActivityRange struct {
 	From string `json:"from"`
@@ -312,6 +347,32 @@ func (s *Store) Migrate(ctx context.Context) error {
 			FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,
 			FOREIGN KEY(organization_id) REFERENCES organizations(id)
 		);`,
+		`CREATE TABLE IF NOT EXISTS organization_report_templates (
+			id TEXT PRIMARY KEY,
+			organization_id TEXT NOT NULL,
+			name TEXT NOT NULL,
+			description TEXT NOT NULL DEFAULT '',
+			base_format TEXT NOT NULL,
+			instructions TEXT NOT NULL,
+			example_outline TEXT NOT NULL DEFAULT '',
+			org_enabled INTEGER NOT NULL DEFAULT 1,
+			created_by_user_id TEXT,
+			updated_by_user_id TEXT,
+			created_at DATETIME NOT NULL,
+			updated_at DATETIME NOT NULL,
+			FOREIGN KEY(organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
+			FOREIGN KEY(created_by_user_id) REFERENCES users(id) ON DELETE SET NULL,
+			FOREIGN KEY(updated_by_user_id) REFERENCES users(id) ON DELETE SET NULL
+		);`,
+		`CREATE TABLE IF NOT EXISTS user_report_template_preferences (
+			user_id TEXT NOT NULL,
+			template_id TEXT NOT NULL,
+			enabled INTEGER NOT NULL DEFAULT 1,
+			updated_at DATETIME NOT NULL,
+			PRIMARY KEY(user_id, template_id),
+			FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,
+			FOREIGN KEY(template_id) REFERENCES organization_report_templates(id) ON DELETE CASCADE
+		);`,
 		`CREATE TABLE IF NOT EXISTS refresh_sessions (
 			id TEXT PRIMARY KEY,
 			user_id TEXT NOT NULL,
@@ -480,6 +541,8 @@ func (s *Store) Migrate(ctx context.Context) error {
 		`CREATE INDEX IF NOT EXISTS idx_activity_user_day ON activity_usage_events(user_id, day);`,
 		`CREATE INDEX IF NOT EXISTS idx_activity_kind_org_day ON activity_usage_events(event_kind, organization_id, day);`,
 		`CREATE INDEX IF NOT EXISTS idx_activity_provider_org_day ON activity_usage_events(provider, organization_id, day);`,
+		`CREATE INDEX IF NOT EXISTS idx_report_templates_org ON organization_report_templates(organization_id, org_enabled, updated_at);`,
+		`CREATE INDEX IF NOT EXISTS idx_report_template_preferences_template ON user_report_template_preferences(template_id);`,
 		`CREATE INDEX IF NOT EXISTS idx_backend_error_created_at ON backend_error_events(created_at);`,
 		`CREATE INDEX IF NOT EXISTS idx_backend_error_org_created_at ON backend_error_events(organization_id, created_at);`,
 		`CREATE INDEX IF NOT EXISTS idx_backend_error_user_created_at ON backend_error_events(user_id, created_at);`,

@@ -339,10 +339,11 @@ func (a *App) generateMobileQueuedReportResult(
 	}
 
 	response := demeterReportOperationResponseFromRecord(finalRecord)
-	if response.Response == nil {
+	result, ok := response.Response.(*demeterReportResult)
+	if !ok || result == nil {
 		return nil, fmt.Errorf("report operation completed without a result")
 	}
-	return response.Response, nil
+	return result, nil
 }
 
 func (a *App) waitForMobileDemeterReportOperation(ctx context.Context, operationID, organizationID, userID string) (*store.DemeterReportOperationRecord, error) {

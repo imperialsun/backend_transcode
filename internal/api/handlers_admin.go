@@ -109,6 +109,7 @@ func (a *App) RegisterAdminCoreRoutes(router fiber.Router) {
 	a.registerAdminDemeterQueueRoutes(group)
 	a.registerAdminDemeterReportQueueRoutes(group)
 	a.registerAdminUserSettingsRoutes(group)
+	a.registerAdminReportTemplateRoutes(group)
 	group.Get("/organizations/:id/users", a.listOrganizationUsers)
 	group.Get("/users/:id/access", a.getUserAccess)
 	group.Patch("/users/:id", a.patchUser)

@@ -295,6 +295,21 @@ func (s *Store) GetDemeterReportOperation(ctx context.Context, operationID, orga
 	return record, nil
 }
 
+// GetDemeterReportOperationByID loads a report queue operation by primary key.
+// Callers must enforce organization/user authorization before returning it.
+func (s *Store) GetDemeterReportOperationByID(ctx context.Context, operationID string) (*DemeterReportOperationRecord, error) {
+	operationID = strings.TrimSpace(operationID)
+	if operationID == "" {
+		return nil, fmt.Errorf("operation_id is required")
+	}
+	row := s.DB.QueryRowContext(ctx, `
+		SELECT operation_id, organization_id, user_id, queue_id, queue_payload_json, status, stage, format_index, format_count, progress, response_json, last_error, status_code, created_at, updated_at, finished_at
+		FROM demeter_report_operations
+		WHERE operation_id = ?
+	`, operationID)
+	return scanDemeterReportOperationRecord(row)
+}
+
 // CancelDemeterReportOperation marks a running job as cancelled.
 func (s *Store) CancelDemeterReportOperation(ctx context.Context, operationID, organizationID, userID string, now time.Time) (*DemeterReportOperationRecord, error) {
 	now = now.UTC()

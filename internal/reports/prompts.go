@@ -199,6 +199,31 @@ func BuildReportUserPromptWithDetail(format ReportFormat, detailLevel ReportDeta
 	return strings.Join(lines, "\n")
 }
 
+// BuildCustomReportUserPromptWithDetail assembles the same structured report
+// contract as built-in formats while injecting organization-authored guidance.
+func BuildCustomReportUserPromptWithDetail(format ReportFormat, detailLevel ReportDetailLevel, sourceText string, title string, participants []string, templateName string, instructions string, exampleOutline string) string {
+	basePrompt := BuildReportUserPromptWithDetail(format, detailLevel, sourceText, title, participants)
+	customLines := []string{
+		"",
+		"MODELE PERSONNALISE ORGANISATION:",
+		fmt.Sprintf("Nom du modele: %s.", strings.TrimSpace(templateName)),
+		"Consignes specifiques prioritaires:",
+		strings.TrimSpace(instructions),
+	}
+	if strings.TrimSpace(exampleOutline) != "" {
+		customLines = append(customLines,
+			"",
+			"Structure ou exemple attendu par l'organisation:",
+			strings.TrimSpace(exampleOutline),
+		)
+	}
+	customLines = append(customLines,
+		"",
+		"Respecte ces consignes personnalisees tant qu'elles ne contredisent pas les regles de securite, de fidelite a la source et le schema JSON impose.",
+	)
+	return strings.Replace(basePrompt, "\nSOURCE:\n"+sourceText, strings.Join(customLines, "\n")+"\n\nSOURCE:\n"+sourceText, 1)
+}
+
 // BuildReportTitle returns the display title used for the exported document.
 func BuildReportTitle(format ReportFormat, meetingTitle string) string {
 	meetingTitle = strings.TrimSpace(meetingTitle)

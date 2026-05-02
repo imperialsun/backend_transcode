@@ -70,6 +70,7 @@ func buildAppBundle(cfg config.Config, st *store.Store, mistralClient *mistral.C
 	appCtx.RegisterAdminAuthCoreRoutes(apiV1Short.Group("/admin/auth"))
 	appCtx.RegisterAdminAuthForgotPasswordRoutes(apiV1Mail.Group("/admin/auth"))
 	appCtx.RegisterSettingsRoutes(apiV1Short)
+	appCtx.RegisterReportTemplateRoutes(apiV1Short)
 	appCtx.RegisterActivityRoutes(apiV1Short)
 	appCtx.RegisterPerformanceRoutes(apiV1Short)
 	appCtx.RegisterDemeterRoutes(apiV1Long)
