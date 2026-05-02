@@ -14,7 +14,7 @@ The documentation set covers:
 - local setup and daily development workflow,
 - backend architecture and runtime behavior,
 - authentication, RBAC, API, and settings contracts,
-- Demeter relay behavior, activity tracking, and database design,
+- Demeter operation queues, activity/performance tracking, and database design,
 - security, deployment, CI, quality gates, and troubleshooting.
 
 ## Quick links

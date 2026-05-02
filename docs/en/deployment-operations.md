@@ -28,6 +28,15 @@ The repo provides:
 | `MISTRAL_API_KEY` | empty | key required for Demeter and `readyz` |
 | `MISTRAL_REQUEST_TIMEOUT_SECONDS` | `480` | timeout for non-audio Mistral calls |
 | `MISTRAL_AUDIO_TRANSCRIPTION_TIMEOUT_SECONDS` | `1200` | dedicated timeout for `POST /v1/audio/transcriptions` and `POST /v1/audio/transcriptions/backend` |
+| `SMTP_HOST` | empty | SMTP host for reset/provisioning/report emails |
+| `SMTP_PORT` | `587` | SMTP port |
+| `SMTP_USERNAME` | empty | SMTP username |
+| `SMTP_PASSWORD` | empty | SMTP password |
+| `SMTP_FROM_EMAIL` | empty | sender email for transactional mail |
+| `SMTP_FROM_NAME` | empty | sender display name |
+| `APP_PUBLIC_URL` | empty | public frontend URL used in app reset links and emails |
+| `ADMIN_PUBLIC_URL` | empty | public admin URL used in admin reset links |
+| `PASSWORD_RESET_TTL_MINUTES` | `60` | reset token lifetime |
 | `BOOTSTRAP_ADMIN_EMAIL` | empty | admin email created on first boot |
 | `BOOTSTRAP_ADMIN_PASSWORD` | empty | admin password created on first boot |
 | `BOOTSTRAP_ORG_NAME` | `Default Organization` | bootstrap org name |

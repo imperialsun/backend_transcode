@@ -14,7 +14,8 @@ Backend `Go + Fiber + SQLite` for the Transcode frontend backend mode and admin 
 - Multi-tenant organization model with global roles, organization roles, and per-user permission overrides.
 - Backend-owned user settings storage exposed under `/api/v1/settings`.
 - Activity ingestion and admin summaries for transcription and report usage.
-- `Demeter Sante` relay routes that call Mistral server-side, with long-audio chunking requiring `ffmpeg` and `ffprobe` in the runtime image.
+- `Demeter Sante` audio transcription and report-operation queues that call Mistral server-side, with long-audio chunking requiring `ffmpeg` and `ffprobe` in the runtime image.
+- Mobile-oriented endpoints for report emails and audio-to-report jobs, backed by the same operation polling model.
 - SQLite persistence with WAL enabled and optional bootstrap admin creation.
 
 ## Quickstart
@@ -63,7 +64,8 @@ Both Compose files declare their environment variables inline. Real secret value
 - App sessions: `ACCESS_TTL_MINUTES`, `REFRESH_TTL_HOURS`, `COOKIE_SECURE`
 - Admin sessions: `ADMIN_ACCESS_TTL_MINUTES`, `ADMIN_REFRESH_TTL_HOURS`
 - CORS and origin control: `APP_CORS_ORIGINS`, `ADMIN_CORS_ORIGINS`, legacy `CORS_ORIGINS`
-- Provider relay: `MISTRAL_API_BASE_URL`, `MISTRAL_API_KEY`
+- Provider and queues: `MISTRAL_API_BASE_URL`, `MISTRAL_API_KEY`, `MISTRAL_REQUEST_TIMEOUT_SECONDS`, `MISTRAL_AUDIO_TRANSCRIPTION_TIMEOUT_SECONDS`
+- Mail links and SMTP: `APP_PUBLIC_URL`, `ADMIN_PUBLIC_URL`, `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_FROM_EMAIL`, `SMTP_FROM_NAME`, `PASSWORD_RESET_TTL_MINUTES`
 - First-start bootstrap: `BOOTSTRAP_ADMIN_EMAIL`, `BOOTSTRAP_ADMIN_PASSWORD`, `BOOTSTRAP_ORG_NAME`
 
 The full environment reference lives in [`docs/en/deployment-operations.md`](docs/en/deployment-operations.md) and [`docs/fr/deployment-operations.md`](docs/fr/deployment-operations.md).

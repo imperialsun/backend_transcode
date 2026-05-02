@@ -11,7 +11,7 @@
 | Organization role | RBAC role applied inside one organization scope, for example `org_admin` |
 | Effective permissions | union of global role permissions, org role permissions, and user overrides |
 | Override | `allow` or `deny` rule applied to one permission for one user |
-| Demeter Sante | backend relay endpoint family that forwards traffic to the Mistral upstream |
+| Demeter Sante | backend provider family for Mistral-backed audio transcription and report operations |
 | Source mode | origin of an activity event: `local`, `cloud_direct`, `cloud_backend` |
 | Activity summary | time-window aggregate for transcriptions and reports exposed to admins |
 | Bootstrap admin | automatic first organization and admin creation on an empty database |

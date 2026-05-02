@@ -43,9 +43,9 @@ Acces SQLite:
 - les settings, sessions, RBAC, et activity sont stockes localement en SQLite,
 - aucune donnee n est envoyee a un provider externe via ces routes seules.
 
-### Relay Demeter
+### Operations Demeter
 
-- les contenus audio et prompts envoyes a `Demeter Sante` quittent le backend vers Mistral,
+- les contenus audio et prompts de rapport traites par `Demeter Sante` quittent le backend vers Mistral,
 - la cle provider reste cachee cote serveur.
 
 ### Journalisation applicative

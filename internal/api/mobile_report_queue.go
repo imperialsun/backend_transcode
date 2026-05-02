@@ -284,6 +284,9 @@ func (a *App) generateMobileQueuedReportResult(
 		return nil, fmt.Errorf("source text is required")
 	}
 
+	// Mobile parent operations fan out into regular Demeter report operations.
+	// The derived ID keeps retries idempotent per format/batch while letting
+	// the existing report queue own generation, polling, and cleanup.
 	queueOperationID := mobileReportQueueOperationID(operationID, format, formatIndex, formatCount, batchIndex, batchCount)
 	payload := &demeterReportQueueOperationPayload{
 		TraceID:      traceID,

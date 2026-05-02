@@ -450,6 +450,8 @@ func (m *DemeterReportQueueManager) runLaneWorker(laneID int) {
 			return
 		}
 
+		// Claims are lane-specific so resizing parallelism can add or drain
+		// workers without two goroutines processing the same report operation.
 		record, err := m.app.Store.ClaimNextPendingDemeterReportOperationForQueue(m.ctx, laneID)
 		if err != nil {
 			if !m.sleepWithMistralRetryPause(m.ctx, laneID, demeterReportQueuePollInterval) {
@@ -570,6 +572,8 @@ func (m *DemeterReportQueueManager) generateReportWithRetry(ctx context.Context,
 		if !shouldRetryDemeterReportResponse(status, err) || attempt >= demeterReportGenerationMaxAttempts {
 			break
 		}
+		// Capacity responses pause the whole lane so subsequent operations do
+		// not immediately hit the same upstream throttling window.
 		if responseIsDemeterReportCapacityExceeded(status, err) {
 			m.startMistralRetryPause(laneID, operationID, 0)
 		}
@@ -1154,6 +1158,8 @@ func (a *App) createAndEnqueueDemeterReportOperation(ctx context.Context, record
 	queueManager := a.ensureDemeterReportQueueManager()
 	if queueManager != nil {
 		if _, err := queueManager.EnqueueOperation(ctx, record); err != nil {
+			// The operation is already visible to clients, so mark it terminal
+			// instead of deleting it and leaving pollers with a missing record.
 			now := time.Now().UTC()
 			_ = a.Store.UpdateDemeterReportOperationByID(ctx, &store.DemeterReportOperationRecord{
 				OperationID:    record.OperationID,

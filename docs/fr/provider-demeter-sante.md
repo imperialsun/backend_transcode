@@ -11,21 +11,26 @@ Le backend expose un provider nomme `Demeter Sante`, mais le transport reel pass
 - `readyz` retourne `503` tant que le client Mistral n est pas configure.
 - L image runtime backend doit fournir `ffmpeg` et `ffprobe` pour `/audio/transcriptions/backend`, qui accepte un transport `slice-v1` en morceaux de 5 Mo, reconstitue l audio cote serveur, puis traite l audio avant l appel a Mistral.
 
-## Endpoints relay
+## Endpoints publics d operation
 
 | Route backend | Upstream | Permission |
 | --- | --- | --- |
 | `POST /api/v1/providers/demeter-sante/audio/transcriptions/backend` | `POST /v1/audio/transcriptions` | `feature.cloudupload` + `provider.cloud.demeter_sante` |
+| `GET /api/v1/providers/demeter-sante/audio/transcriptions/operations/:operationId` | etat operation local | `feature.cloudupload` + `provider.cloud.demeter_sante` |
+| `DELETE /api/v1/providers/demeter-sante/audio/transcriptions/operations/:operationId` | annulation locale | `feature.cloudupload` + `provider.cloud.demeter_sante` |
 | `POST /api/v1/providers/demeter-sante/report/operations` | queue report interne | `feature.llmapi` + `provider.llm.demeter_sante` |
+| `GET /api/v1/providers/demeter-sante/report/operations/:operationId` | etat operation local | `feature.llmapi` + `provider.llm.demeter_sante` |
+| `DELETE /api/v1/providers/demeter-sante/report/operations/:operationId` | annulation locale | `feature.llmapi` + `provider.llm.demeter_sante` |
 
-## Comportement de relay
+Il n existe plus d endpoint public Demeter `/models` ni de proxy public Demeter `/chat/completions`. La generation de rapport passe par `/report/operations`; seul le worker de queue backend appelle chat completions Mistral pour Demeter.
 
-- Le backend ne reinterprette pas les payloads JSON.
+## Comportement des operations
+
 - Pour l audio, il exige `multipart/form-data` puis relaie le corps tel quel.
-- La route `/audio/transcriptions/backend` est reservee au transport par slices: le frontend envoie des morceaux de 5 Mo avec `X-Demeter-Transport: slice-v1`, et le backend reconstitue le fichier source avant le traitement.
+- La route `/audio/transcriptions/backend` est reservee au transport par slices: le frontend envoie des morceaux de 5 Mo avec `X-Demeter-Transport: slice-v1`, et le backend reconstitue le fichier source avant mise en queue.
 - Le backend preserve le format audio transmis par le client et ne reencode pas le fichier.
 - Les formats courants acceptes incluent `wav`, `mp3`, `m4a/mp4`, `aac`, `ogg/opus` et `webm` tant que le fichier n est pas vide et reste decodable par l upstream.
-- Le status code et le body upstream sont renvoyes tels quels au client.
+- Les routes POST audio et report renvoient un payload d operation, puis les clients pollent la route `GET .../operations/:operationId` correspondante.
 - Les fichiers vides sont rejetes avec un `400 empty_audio_file`.
 - En cas d echec reseau vers Mistral, le backend retourne `502`.
 - Si Mistral n est pas configure, le backend retourne `503`.

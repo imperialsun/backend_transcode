@@ -80,6 +80,9 @@ Response:
 | `GET` | `/api/v1/settings` | app session | `feature.settings` | returns `settings: {}` when no record exists |
 | `PUT` | `/api/v1/settings` | app session | `feature.settings` | accepts any valid JSON |
 | `POST` | `/api/v1/settings/reset` | app session | `feature.settings` | replaces the document with `{}` |
+| `GET` | `/api/v1/admin/users/:id/settings` | admin session | `feature.admin` + admin scope | reads one user's settings document |
+| `PUT` | `/api/v1/admin/users/:id/settings` | admin session | `feature.admin` + admin scope | replaces one user's settings document |
+| `POST` | `/api/v1/admin/users/:id/settings/reset` | admin session | `feature.admin` + admin scope | resets one user's settings document to `{}` |
 
 Example `PUT /api/v1/settings`:
 
@@ -97,9 +100,14 @@ Example `PUT /api/v1/settings`:
 | Method | Route | Auth | Permissions | Notes |
 | --- | --- | --- | --- | --- |
 | `POST` | `/api/v1/activity/events` | app session | none | ingests a batch of events with `eventId` idempotency |
+| `POST` | `/api/v1/performance/events` | app session | none | ingests frontend/backend timing events |
 | `GET` | `/api/v1/admin/activity/summary` | admin session | `feature.admin` + admin scope | global summary for `super_admin`, current org summary otherwise |
 | `GET` | `/api/v1/admin/activity/organizations/:id/summary` | admin session | `feature.admin` + admin scope | forced summary for a specific organization |
 | `GET` | `/api/v1/admin/users/:id/activity/summary` | admin session | `feature.admin` + admin scope | user summary for the selected account |
+| `GET` | `/api/v1/admin/performance/summary` | admin session | `feature.admin` + `super_admin` | performance summary and recent events |
+| `DELETE` | `/api/v1/admin/performance` | admin session | `feature.admin` + `super_admin` | purges matching performance events |
+| `GET` | `/api/v1/admin/backend-errors` | admin session | `feature.admin` + `super_admin` | paginated backend error events |
+| `DELETE` | `/api/v1/admin/backend-errors` | admin session | `feature.admin` + `super_admin` | purges matching backend error events |
 
 Example ingest payload:
 
@@ -126,7 +134,22 @@ Example ingest payload:
 | Method | Route | Auth | Permissions | Notes |
 | --- | --- | --- | --- | --- |
 | `POST` | `/api/v1/providers/demeter-sante/audio/transcriptions/backend` | app session | `feature.cloudupload` + `provider.cloud.demeter_sante` | slice-only `slice-v1` transport in 5 MiB chunks; the backend reconstructs the source audio server-side and exposes the result through polling |
+| `GET` | `/api/v1/providers/demeter-sante/audio/transcriptions/operations/:operationId` | app session | `feature.cloudupload` + `provider.cloud.demeter_sante` | reads audio transcription operation status |
+| `DELETE` | `/api/v1/providers/demeter-sante/audio/transcriptions/operations/:operationId` | app session | `feature.cloudupload` + `provider.cloud.demeter_sante` | cancels a pending/running audio transcription operation |
 | `POST` | `/api/v1/providers/demeter-sante/report/operations` | app session | `feature.llmapi` + `provider.llm.demeter_sante` | queues report generation and exposes progress through polling |
+| `GET` | `/api/v1/providers/demeter-sante/report/operations/:operationId` | app session | `feature.llmapi` + `provider.llm.demeter_sante` | reads report operation status |
+| `DELETE` | `/api/v1/providers/demeter-sante/report/operations/:operationId` | app session | `feature.llmapi` + `provider.llm.demeter_sante` | cancels a pending/running report operation |
+
+The backend does not expose Demeter `/models` or `/chat/completions` as public provider routes. Demeter report generation is asynchronous and queue-backed.
+
+## Mobile and support
+
+| Method | Route | Auth | Permissions | Notes |
+| --- | --- | --- | --- | --- |
+| `POST` | `/api/v1/mobile/reports/email` | app session | `feature.llmapi` + `provider.llm.demeter_sante` | generates and emails requested report formats |
+| `POST` | `/api/v1/mobile/audio/reports/backend` | app session | `feature.cloudupload` + `provider.cloud.demeter_sante` + `feature.llmapi` + `provider.llm.demeter_sante` | queues audio transcription then report generation |
+| `GET` | `/api/v1/mobile/operations/:operationId` | app session | `feature.llmapi` or `feature.cloudupload` | reads mobile operation status |
+| `POST` | `/api/v1/support/frontend-error-reports` | app session | none | records a frontend support/error report |
 
 ## Admin
 
@@ -155,6 +178,14 @@ All routes below require:
 | `GET` | `/api/v1/admin/users/:id/access` | returns the full access context for a user |
 | `GET` | `/api/v1/admin/catalog/roles` | returns global and organization role catalogs |
 | `GET` | `/api/v1/admin/catalog/permissions` | returns the seeded permission catalog |
+| `GET` | `/api/v1/admin/providers/demeter-sante/queue` | super-admin queue snapshot for audio transcription |
+| `PUT` | `/api/v1/admin/providers/demeter-sante/queue/settings` | updates audio queue parallelism |
+| `DELETE` | `/api/v1/admin/providers/demeter-sante/queue` | purges completed operations by default, or all with `scope=all` |
+| `GET` | `/api/v1/admin/providers/demeter-sante/report-queue` | super-admin queue snapshot for report generation |
+| `PUT` | `/api/v1/admin/providers/demeter-sante/report-queue/settings` | updates report queue parallelism |
+| `DELETE` | `/api/v1/admin/providers/demeter-sante/report-queue` | purges completed operations by default, or all with `scope=all` |
+| `GET` | `/api/v1/admin/providers/demeter-sante/queue/ws` | WebSocket live audio queue snapshot and settings commands |
+| `GET` | `/api/v1/admin/providers/demeter-sante/report-queue/ws` | WebSocket live report queue snapshot and settings commands |
 
 Example overrides payload:
 

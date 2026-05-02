@@ -80,6 +80,9 @@ Reponse:
 | `GET` | `/api/v1/settings` | session app | `feature.settings` | si aucun enregistrement, renvoie `{}` dans `settings` |
 | `PUT` | `/api/v1/settings` | session app | `feature.settings` | accepte tout JSON valide |
 | `POST` | `/api/v1/settings/reset` | session app | `feature.settings` | remplace le document par `{}` |
+| `GET` | `/api/v1/admin/users/:id/settings` | session admin | `feature.admin` + scope admin | lit les reglages d un utilisateur |
+| `PUT` | `/api/v1/admin/users/:id/settings` | session admin | `feature.admin` + scope admin | remplace les reglages d un utilisateur |
+| `POST` | `/api/v1/admin/users/:id/settings/reset` | session admin | `feature.admin` + scope admin | remet les reglages utilisateur a `{}` |
 
 Exemple `PUT /api/v1/settings`:
 
@@ -97,9 +100,14 @@ Exemple `PUT /api/v1/settings`:
 | Methode | Route | Auth | Permissions | Notes |
 | --- | --- | --- | --- | --- |
 | `POST` | `/api/v1/activity/events` | session app | aucune | ingere un batch d evenements avec idempotence sur `eventId` |
+| `POST` | `/api/v1/performance/events` | session app | aucune | ingere des evenements de timing frontend/backend |
 | `GET` | `/api/v1/admin/activity/summary` | session admin | `feature.admin` + scope admin | resume global pour `super_admin`, sinon resume org courant |
 | `GET` | `/api/v1/admin/activity/organizations/:id/summary` | session admin | `feature.admin` + scope admin | resume force pour une organisation donnee |
 | `GET` | `/api/v1/admin/users/:id/activity/summary` | session admin | `feature.admin` + scope admin | resume d activite pour le compte selectionne |
+| `GET` | `/api/v1/admin/performance/summary` | session admin | `feature.admin` + `super_admin` | synthese performance et evenements recents |
+| `DELETE` | `/api/v1/admin/performance` | session admin | `feature.admin` + `super_admin` | purge les evenements performance filtres |
+| `GET` | `/api/v1/admin/backend-errors` | session admin | `feature.admin` + `super_admin` | evenements d erreur backend pagines |
+| `DELETE` | `/api/v1/admin/backend-errors` | session admin | `feature.admin` + `super_admin` | purge les evenements d erreur backend filtres |
 
 Exemple ingestion:
 
@@ -126,7 +134,22 @@ Exemple ingestion:
 | Methode | Route | Auth | Permissions | Notes |
 | --- | --- | --- | --- | --- |
 | `POST` | `/api/v1/providers/demeter-sante/audio/transcriptions/backend` | session app | `feature.cloudupload` + `provider.cloud.demeter_sante` | transport `slice-v1` reserve aux morceaux de 5 Mo; le backend reconstitue l audio cote serveur puis expose le resultat via polling |
+| `GET` | `/api/v1/providers/demeter-sante/audio/transcriptions/operations/:operationId` | session app | `feature.cloudupload` + `provider.cloud.demeter_sante` | lit le statut d une operation de transcription audio |
+| `DELETE` | `/api/v1/providers/demeter-sante/audio/transcriptions/operations/:operationId` | session app | `feature.cloudupload` + `provider.cloud.demeter_sante` | annule une operation de transcription audio pending/running |
 | `POST` | `/api/v1/providers/demeter-sante/report/operations` | session app | `feature.llmapi` + `provider.llm.demeter_sante` | met la generation de rapport en queue et expose la progression via polling |
+| `GET` | `/api/v1/providers/demeter-sante/report/operations/:operationId` | session app | `feature.llmapi` + `provider.llm.demeter_sante` | lit le statut d une operation de rapport |
+| `DELETE` | `/api/v1/providers/demeter-sante/report/operations/:operationId` | session app | `feature.llmapi` + `provider.llm.demeter_sante` | annule une operation de rapport pending/running |
+
+Le backend n expose plus de route provider Demeter publique `/models` ou `/chat/completions`. La generation de rapport Demeter est asynchrone et geree par queue.
+
+## Mobile et support
+
+| Methode | Route | Auth | Permissions | Notes |
+| --- | --- | --- | --- | --- |
+| `POST` | `/api/v1/mobile/reports/email` | session app | `feature.llmapi` + `provider.llm.demeter_sante` | genere et envoie par email les formats de rapport demandes |
+| `POST` | `/api/v1/mobile/audio/reports/backend` | session app | `feature.cloudupload` + `provider.cloud.demeter_sante` + `feature.llmapi` + `provider.llm.demeter_sante` | met en queue transcription audio puis generation de rapport |
+| `GET` | `/api/v1/mobile/operations/:operationId` | session app | `feature.llmapi` ou `feature.cloudupload` | lit le statut d une operation mobile |
+| `POST` | `/api/v1/support/frontend-error-reports` | session app | aucune | enregistre un rapport support/erreur frontend |
 
 ## Admin
 
@@ -155,6 +178,14 @@ Toutes les routes ci-dessous exigent:
 | `GET` | `/api/v1/admin/users/:id/access` | contexte complet d acces utilisateur |
 | `GET` | `/api/v1/admin/catalog/roles` | catalogue roles globaux et organisation |
 | `GET` | `/api/v1/admin/catalog/permissions` | catalogue permissions seedees |
+| `GET` | `/api/v1/admin/providers/demeter-sante/queue` | snapshot super-admin de la queue transcription audio |
+| `PUT` | `/api/v1/admin/providers/demeter-sante/queue/settings` | met a jour le parallelisme de la queue audio |
+| `DELETE` | `/api/v1/admin/providers/demeter-sante/queue` | purge les operations terminees par defaut, ou toutes avec `scope=all` |
+| `GET` | `/api/v1/admin/providers/demeter-sante/report-queue` | snapshot super-admin de la queue generation rapport |
+| `PUT` | `/api/v1/admin/providers/demeter-sante/report-queue/settings` | met a jour le parallelisme de la queue rapport |
+| `DELETE` | `/api/v1/admin/providers/demeter-sante/report-queue` | purge les operations terminees par defaut, ou toutes avec `scope=all` |
+| `GET` | `/api/v1/admin/providers/demeter-sante/queue/ws` | WebSocket snapshot live queue audio et commandes settings |
+| `GET` | `/api/v1/admin/providers/demeter-sante/report-queue/ws` | WebSocket snapshot live queue rapport et commandes settings |
 
 Exemple overrides:
 

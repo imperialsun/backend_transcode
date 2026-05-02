@@ -5,8 +5,8 @@
 The backend is a `Go + Fiber + SQLite` service organized in layers:
 
 - `cmd/server/main.go`: global bootstrap, middleware, routes, shutdown.
-- `internal/api/*`: HTTP handlers, auth middleware, simple validation, request logging.
-- `internal/store/*`: SQLite access, migrations, RBAC seeding, settings, activity, audit persistence.
+- `internal/api/*`: HTTP handlers, auth middleware, validation, request logging, async queue managers.
+- `internal/store/*`: SQLite access, migrations, RBAC seeding, settings, activity, audit, operation and observability persistence.
 - `internal/auth/*`: password hashing, JWT, refresh tokens, CSRF.
 - `internal/mistral/*`: HTTP client used by the `Demeter Sante` routes.
 - `internal/rbac/*`: small helpers for role and permission checks.
@@ -22,7 +22,7 @@ The backend is a `Go + Fiber + SQLite` service organized in layers:
    - recover middleware,
    - admin origin filter,
    - CORS,
-   - health, auth, settings, activity, provider, and admin routes.
+   - health, auth, settings, activity, performance, support, provider, mobile, admin, and admin WebSocket routes.
 6. The process listens on `PORT` and waits for `SIGINT` or `SIGTERM` to perform a 10 second graceful shutdown.
 
 ## Middleware request path
@@ -46,17 +46,21 @@ Processing order:
 | Admin auth | `/api/v1/admin/auth/*` | admin login, refresh, logout, `me` |
 | Settings | `/api/v1/settings*` | user settings read and write |
 | Activity | `/api/v1/activity/*`, `/api/v1/admin/activity/*` | usage ingestion + admin aggregates |
-| Demeter | `/api/v1/providers/demeter-sante/*` | server-side Mistral relay |
-| Admin | `/api/v1/admin/*` | organizations, users, roles, permissions |
+| Performance | `/api/v1/performance/*`, `/api/v1/admin/performance*` | frontend/backend timing ingestion + super-admin summaries |
+| Demeter | `/api/v1/providers/demeter-sante/*` | audio transcription and report operations backed by Mistral |
+| Mobile | `/api/v1/mobile/*` | simplified report/email and audio-report operation API |
+| Support | `/api/v1/support/*` | frontend error reports |
+| Admin | `/api/v1/admin/*` | organizations, users, roles, permissions, queues, errors |
+| Admin WebSockets | `/api/v1/admin/providers/demeter-sante/*/ws` | live queue snapshots and settings commands |
 
 ## Technical boundaries
 
 | Area | Main dependencies | Contract |
 | --- | --- | --- |
 | API | Fiber, `internal/store`, `internal/auth` | parse JSON, enforce auth, return JSON or HTTP codes |
-| Store | `database/sql`, `modernc.org/sqlite` | source of truth for users, roles, settings, sessions, activity |
+| Store | `database/sql`, `modernc.org/sqlite` | source of truth for users, roles, settings, sessions, activity, queues |
 | Auth | JWT HMAC, Argon2id, random tokens | no server-side session state except refresh sessions in DB |
-| Mistral relay | `net/http` | passes requests upstream and returns upstream status/body |
+| Mistral client | `net/http` | calls upstream audio transcription and chat-completions endpoints for backend-managed operations |
 
 ## Multi-tenancy and live claims
 
@@ -70,6 +74,8 @@ Processing order:
 - `refresh_sessions` only stores refresh token hashes.
 - `user_settings` stores an opaque JSON blob owned by the frontend.
 - `activity_usage_events` stores idempotent usage events keyed by `event_id`.
+- `performance_events` and `backend_error_events` store operational telemetry for the admin panel.
+- `demeter_audio_transcription_operations`, `demeter_report_operations`, and `mobile_operations` store asynchronous job state and polling responses.
 - `audit_logs` captures admin logins and admin mutations.
 
 ## Links

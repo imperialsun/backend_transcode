@@ -11,7 +11,7 @@
 | Organization role | role RBAC applique dans le scope d une organisation, ex. `org_admin` |
 | Effective permissions | union roles globaux + roles org + overrides utilisateur |
 | Override | regle `allow` ou `deny` sur une permission pour un user |
-| Demeter Sante | nom des endpoints relay backend vers l upstream Mistral |
+| Demeter Sante | famille provider backend pour les operations audio et rapport adossees a Mistral |
 | Source mode | origine d un event activity: `local`, `cloud_direct`, `cloud_backend` |
 | Activity summary | agregat admin par periode sur transcriptions et reports |
 | Bootstrap admin | creation initiale automatique d une org et d un admin sur base vide |
