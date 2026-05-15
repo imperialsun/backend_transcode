@@ -400,6 +400,49 @@ func (s *Store) UpdateDemeterReportOperationQueueByID(ctx context.Context, opera
 	return nil
 }
 
+// UpdatePendingDemeterReportOperationQueueByID updates the queue assignment
+// only while the report operation is still pending.
+func (s *Store) UpdatePendingDemeterReportOperationQueueByID(ctx context.Context, operationID string, queueID int, updatedAt time.Time) (bool, error) {
+	operationID = strings.TrimSpace(operationID)
+	if operationID == "" {
+		return false, fmt.Errorf("operation_id is required")
+	}
+	updatedAt = updatedAt.UTC()
+
+	logStoreStep(ctx, "demeter_update_pending_start", "demeter_report_report_operation", map[string]any{
+		"operation_id": operationID,
+		"queue_id":     queueID,
+	})
+
+	res, err := s.DB.ExecContext(ctx, `
+		UPDATE demeter_report_operations
+		SET queue_id = ?, updated_at = ?
+		WHERE operation_id = ? AND status = ?
+	`, queueID, updatedAt, operationID, DemeterReportOperationStatusPending)
+	if err != nil {
+		logStoreStep(ctx, "demeter_update_pending_error", "demeter_report_report_operation", map[string]any{
+			"operation_id": operationID,
+			"queue_id":     queueID,
+			"error":        err,
+		})
+		return false, err
+	}
+	rows, _ := res.RowsAffected()
+	if rows == 0 {
+		logStoreStep(ctx, "demeter_update_pending_skip", "demeter_report_report_operation", map[string]any{
+			"operation_id": operationID,
+			"queue_id":     queueID,
+		})
+		return false, nil
+	}
+
+	logStoreStep(ctx, "demeter_update_pending_success", "demeter_report_report_operation", map[string]any{
+		"operation_id": operationID,
+		"queue_id":     queueID,
+	})
+	return true, nil
+}
+
 // UpdateDemeterReportOperationQueuePayloadByID updates the stored
 // queue payload for one report by primary key only.
 func (s *Store) UpdateDemeterReportOperationQueuePayloadByID(ctx context.Context, operationID string, queuePayloadJSON string, updatedAt time.Time) error {

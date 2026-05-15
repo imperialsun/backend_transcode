@@ -95,6 +95,14 @@ var detailMinimumSourceRatios = map[ReportFormat]map[ReportDetailLevel]float64{
 	},
 }
 
+func detailMinimumWords(format ReportFormat, detailLevel ReportDetailLevel, sourceText string) int {
+	minimumRatio := detailMinimumSourceRatios[format][detailLevel]
+	if sourceWordCount := len(strings.Fields(strings.TrimSpace(sourceText))); sourceWordCount > 0 && minimumRatio > 0 {
+		return int(float64(sourceWordCount)*minimumRatio + 0.5)
+	}
+	return 0
+}
+
 // BuildReportSystemPrompt returns the system prompt that constrains report
 // generation to the backend's structured format.
 func BuildReportSystemPrompt() string {
@@ -137,11 +145,7 @@ func BuildReportUserPromptWithDetail(format ReportFormat, detailLevel ReportDeta
 	} else {
 		detailLevel = ReportDetailStandard
 	}
-	minimumRatio := detailMinimumSourceRatios[format][detailLevel]
-	minimumWords := 0
-	if sourceWordCount := len(strings.Fields(strings.TrimSpace(sourceText))); sourceWordCount > 0 && minimumRatio > 0 {
-		minimumWords = int(float64(sourceWordCount)*minimumRatio + 0.5)
-	}
+	minimumWords := detailMinimumWords(format, detailLevel, sourceText)
 
 	lines := []string{
 		fmt.Sprintf("Format cible: %s.", ReportFormatDisplayName(format)),
@@ -202,6 +206,9 @@ func BuildReportUserPromptWithDetail(format ReportFormat, detailLevel ReportDeta
 // BuildCustomReportUserPromptWithDetail assembles the same structured report
 // contract as built-in formats while injecting organization-authored guidance.
 func BuildCustomReportUserPromptWithDetail(format ReportFormat, detailLevel ReportDetailLevel, sourceText string, title string, participants []string, templateName string, instructions string, exampleOutline string) string {
+	if format == ReportFormatCUSTOM {
+		return BuildFreeCustomReportUserPromptWithDetail(detailLevel, sourceText, title, participants, templateName, instructions, exampleOutline)
+	}
 	basePrompt := BuildReportUserPromptWithDetail(format, detailLevel, sourceText, title, participants)
 	customLines := []string{
 		"",
@@ -222,6 +229,71 @@ func BuildCustomReportUserPromptWithDetail(format ReportFormat, detailLevel Repo
 		"Respecte ces consignes personnalisees tant qu'elles ne contredisent pas les regles de securite, de fidelite a la source et le schema JSON impose.",
 	)
 	return strings.Replace(basePrompt, "\nSOURCE:\n"+sourceText, strings.Join(customLines, "\n")+"\n\nSOURCE:\n"+sourceText, 1)
+}
+
+// BuildFreeCustomReportUserPromptWithDetail assembles a structured report
+// prompt for organization-authored templates that are not based on CRI/CRO/CRS
+// or CRN.
+func BuildFreeCustomReportUserPromptWithDetail(detailLevel ReportDetailLevel, sourceText string, title string, participants []string, templateName string, instructions string, exampleOutline string) string {
+	participantLine := "Aucun participant fourni."
+	if len(participants) > 0 {
+		participantLine = strings.Join(participants, ", ")
+	}
+	if parsed, ok := ParseReportDetailLevel(string(detailLevel)); ok {
+		detailLevel = parsed
+	} else {
+		detailLevel = ReportDetailStandard
+	}
+	lines := []string{
+		"Format cible: CUSTOM.",
+		"Ce modèle est libre: ne t'appuie sur aucune structure CRI, CRO, CRS ou CRN.",
+		detailLevelGuidelines[detailLevel],
+		"",
+		"Titre de la réunion:",
+		title,
+		"",
+		"Participants:",
+		participantLine,
+		"",
+		"MODELE PERSONNALISE ORGANISATION:",
+		fmt.Sprintf("Nom du modele: %s.", strings.TrimSpace(templateName)),
+		"Consignes specifiques prioritaires:",
+		strings.TrimSpace(instructions),
+	}
+	if strings.TrimSpace(exampleOutline) != "" {
+		lines = append(lines,
+			"",
+			"Structure ou exemple attendu par l'organisation:",
+			strings.TrimSpace(exampleOutline),
+		)
+	}
+	lines = append(lines,
+		"",
+		"Retourne uniquement un JSON valide avec cette structure:",
+		`{
+  "format": "CUSTOM",
+  "title": "...",
+  "subtitle": "... (optionnel)",
+  "sections": [
+    { "heading": "...", "paragraphs": ["...", "..."] }
+  ],
+  "key_points": ["..."],
+  "action_items": ["..."],
+  "caveats": ["..."]
+}`,
+		"",
+		"Contraintes de contenu:",
+		"- applique les consignes du modèle comme structure principale du compte rendu.",
+		"- sections: titres clairs et ordre conforme au modèle si une structure est fournie.",
+		"- key_points: points saillants utiles à la lecture rapide.",
+		"- action_items: suites concrètes si explicites dans la source.",
+		"- caveats: zones d'incertitude / informations absentes.",
+		"- respecte ces consignes personnalisees tant qu'elles ne contredisent pas les regles de securite, de fidelite a la source et le schema JSON impose.",
+		"",
+		"SOURCE:",
+		sourceText,
+	)
+	return strings.Join(lines, "\n")
 }
 
 // BuildReportTitle returns the display title used for the exported document.

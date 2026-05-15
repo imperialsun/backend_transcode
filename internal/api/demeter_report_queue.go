@@ -32,6 +32,7 @@ const (
 	demeterReportGenerationBaseDelay     = 2 * time.Second
 	demeterReportQueueKindReport         = "report"
 	demeterReportQueueKindTemplateDraft  = "report_template_draft"
+	demeterReportRepairResponseMaxChars  = 20000
 )
 
 var errInvalidReportTemplateDraft = errors.New("invalid report template draft")
@@ -284,7 +285,8 @@ func (m *DemeterReportQueueManager) bootstrap(ctx context.Context) error {
 	for _, laneID := range laneIDs {
 		m.ensureLaneWorker(laneID)
 	}
-	return m.rebalancePendingOperations(ctx)
+	_, err = m.rebalancePendingOperations(ctx)
+	return err
 }
 
 func (m *DemeterReportQueueManager) ensureLaneStateLocked(laneID int) *demeterReportQueueLaneState {
@@ -492,6 +494,16 @@ func (m *DemeterReportQueueManager) runLaneWorker(laneID int) {
 			continue
 		}
 		if record == nil {
+			changed, err := m.rebalancePendingOperations(m.ctx)
+			if err != nil {
+				if !m.sleepWithMistralRetryPause(m.ctx, laneID, demeterReportQueuePollInterval) {
+					return
+				}
+				continue
+			}
+			if changed {
+				continue
+			}
 			if !m.waitForLaneWorkAvailable(m.ctx, laneID, demeterReportQueueIdleFallback) {
 				return
 			}
@@ -562,6 +574,7 @@ func (m *DemeterReportQueueManager) processClaimedOperation(record *store.Demete
 		return err
 	}
 	m.clearLaneCurrentOperation(laneID)
+	_, _ = m.rebalancePendingOperations(opCtx)
 	return nil
 }
 
@@ -593,6 +606,7 @@ func (m *DemeterReportQueueManager) processClaimedTemplateDraftOperation(ctx con
 		return err
 	}
 	m.clearLaneCurrentOperation(laneID)
+	_, _ = m.rebalancePendingOperations(ctx)
 	return nil
 }
 
@@ -615,6 +629,7 @@ func (m *DemeterReportQueueManager) failClaimedOperation(ctx context.Context, re
 	if err := m.app.Store.UpdateDemeterReportOperationByID(ctx, update); err != nil {
 		return err
 	}
+	_, _ = m.rebalancePendingOperations(ctx)
 	m.notifySnapshotChanged()
 	return nil
 }
@@ -755,6 +770,52 @@ func (m *DemeterReportQueueManager) generateReportOnce(ctx context.Context, payl
 	}
 	report, err := reports.ParseReportJSON(content, payload.Format)
 	if err != nil {
+		repaired, repairStatus, repairErr := m.repairReportJSONOnce(ctx, payload, content, err)
+		if repairErr != nil {
+			if !errors.Is(repairErr, reports.ErrInvalidReport) {
+				return nil, repairStatus, repairErr
+			}
+			return nil, repairStatus, err
+		}
+		return repaired, status, nil
+	}
+	return &demeterReportResult{
+		Format:       string(payload.Format),
+		TemplateID:   strings.TrimSpace(payload.TemplateID),
+		TemplateName: strings.TrimSpace(payload.TemplateName),
+		Report:       report,
+		Raw:          content,
+		ModelID:      payload.ModelID,
+		GeneratedAt:  time.Now().UTC().Format(time.RFC3339),
+		DetailLevel:  string(payload.DetailLevel),
+	}, status, nil
+}
+
+func (m *DemeterReportQueueManager) repairReportJSONOnce(ctx context.Context, payload *demeterReportQueueOperationPayload, rawContent string, parseErr error) (*demeterReportResult, int, error) {
+	body := map[string]any{
+		"model": strings.TrimSpace(payload.ModelID),
+		"messages": []map[string]string{
+			{"role": "system", "content": buildReportJSONRepairSystemPrompt()},
+			{"role": "user", "content": buildReportJSONRepairUserPrompt(payload, rawContent, parseErr)},
+		},
+		"temperature":     0,
+		"max_tokens":      payload.MaxTokens,
+		"response_format": map[string]string{"type": "json_object"},
+	}
+	rawBody, _ := json.Marshal(body)
+	status, responseBody, err := m.app.MistralClient.DoJSON(ctx, http.MethodPost, demeterReportGenerationUpstreamPath, rawBody)
+	if err != nil {
+		return nil, status, err
+	}
+	if status < 200 || status >= 300 {
+		return nil, status, fmt.Errorf("mistral api (%d): %s", status, strings.TrimSpace(string(responseBody)))
+	}
+	content := extractDemeterReportChatContent(responseBody)
+	if strings.TrimSpace(content) == "" {
+		return nil, fiber.StatusBadGateway, fmt.Errorf("empty model repair response")
+	}
+	report, err := reports.ParseReportJSON(content, payload.Format)
+	if err != nil {
 		return nil, fiber.StatusBadGateway, err
 	}
 	return &demeterReportResult{
@@ -767,6 +828,39 @@ func (m *DemeterReportQueueManager) generateReportOnce(ctx context.Context, payl
 		GeneratedAt:  time.Now().UTC().Format(time.RFC3339),
 		DetailLevel:  string(payload.DetailLevel),
 	}, status, nil
+}
+
+func buildReportJSONRepairSystemPrompt() string {
+	return strings.TrimSpace(`
+Tu répares une réponse de génération de compte rendu médical qui n'a pas respecté le contrat JSON.
+Retourne uniquement un objet JSON valide, sans Markdown ni texte autour.
+Tu ne dois pas ajouter de faits absents de la réponse initiale.
+Le JSON final doit respecter exactement ce schéma:
+{
+  "format": "CRI|CRO|CRS|CRN|CUSTOM",
+  "title": "Titre court",
+  "sections": [{"heading": "Titre de section", "paragraphs": ["Paragraphe factuel"]}],
+  "key_points": ["optionnel"],
+  "action_items": ["optionnel"],
+  "caveats": ["optionnel"]
+}
+Si la réponse initiale contient peu d'informations utilisables, crée une section courte qui l'indique clairement sans inventer.
+`)
+}
+
+func buildReportJSONRepairUserPrompt(payload *demeterReportQueueOperationPayload, rawContent string, parseErr error) string {
+	content := strings.TrimSpace(rawContent)
+	if len(content) > demeterReportRepairResponseMaxChars {
+		content = content[:demeterReportRepairResponseMaxChars] + "\n[réponse tronquée]"
+	}
+	return strings.TrimSpace(fmt.Sprintf(`
+Format attendu: %s.
+Niveau de détail attendu: %s.
+Erreur de parsing rencontrée: %v.
+
+Réponse initiale à convertir en JSON structuré:
+%s
+`, payload.Format, payload.DetailLevel, parseErr, content))
 }
 
 func extractDemeterReportChatContent(response []byte) string {
@@ -811,8 +905,8 @@ func buildReportTemplateDraftSystemPrompt() string {
 		"N'utilise pas de bloc ```json, pas d'explication, pas de commentaire.",
 		"Toutes les chaînes JSON multilignes doivent utiliser des échappements \\n, jamais de retour ligne brut dans une chaîne.",
 		"Le JSON doit respecter exactement cette forme:",
-		`{"name":"...","description":"...","baseFormat":"CRI|CRO|CRS|CRN","instructions":"...","exampleOutline":"..."}`,
-		"Le modèle généré doit rester compatible avec une sortie structurée de compte rendu existante.",
+		`{"name":"...","description":"...","baseFormat":"CUSTOM|CRI|CRO|CRS|CRN","instructions":"...","exampleOutline":"..."}`,
+		"Utilise baseFormat CUSTOM pour un modèle libre qui ne doit pas se baser sur CRI, CRO, CRS ou CRN.",
 		"Les instructions doivent être directement utilisables comme consignes de génération du CR final.",
 	}, "\n")
 }
@@ -827,7 +921,7 @@ func buildReportTemplateDraftUserPrompt(payload *demeterReportQueueOperationPayl
 	}
 	baseFormat := strings.TrimSpace(payload.BaseFormatHint)
 	if baseFormat == "" {
-		baseFormat = "Choisir le plus adapté parmi CRI, CRO, CRS, CRN"
+		baseFormat = "CUSTOM"
 	}
 	return strings.Join([]string{
 		"Crée un brouillon de modèle de compte rendu personnalisé pour Tradmin.",
@@ -847,7 +941,7 @@ func buildReportTemplateDraftUserPrompt(payload *demeterReportQueueOperationPayl
 		"Contraintes:",
 		"- name: nom court, clair, exploitable dans une liste de modèles.",
 		"- description: une phrase courte pour les utilisateurs Front User.",
-		"- baseFormat: exactement CRI, CRO, CRS ou CRN.",
+		"- baseFormat: CUSTOM pour un modèle libre; sinon exactement CRI, CRO, CRS ou CRN si une base explicite est demandée.",
 		"- instructions: inclure objectif, sections attendues, règles de style, contraintes métier et éléments à éviter.",
 		"- exampleOutline: structure lisible du compte rendu attendu, avec titres de sections.",
 	}, "\n")
@@ -870,8 +964,8 @@ func parseReportTemplateDraft(content string) (*demeterReportTemplateDraft, erro
 	if draft.Name == "" || draft.Instructions == "" {
 		return nil, fmt.Errorf("%w: name and instructions are required", errInvalidReportTemplateDraft)
 	}
-	if _, ok := reports.ParseReportFormat(draft.BaseFormat); !ok {
-		return nil, fmt.Errorf("%w: baseFormat must be CRI, CRO, CRS or CRN", errInvalidReportTemplateDraft)
+	if _, ok := reports.ParseReportTemplateFormat(draft.BaseFormat); !ok {
+		return nil, fmt.Errorf("%w: baseFormat must be CUSTOM, CRI, CRO, CRS or CRN", errInvalidReportTemplateDraft)
 	}
 	return &draft, nil
 }
@@ -1139,22 +1233,87 @@ func (m *DemeterReportQueueManager) chooseLane(ctx context.Context) int {
 	return bestID
 }
 
-func (m *DemeterReportQueueManager) rebalancePendingOperations(ctx context.Context) error {
-	pending, err := m.app.Store.ListDemeterReportOperations(ctx, nil, []string{store.DemeterReportOperationStatusPending}, 1000)
-	if err != nil {
-		return err
-	}
-	changed := false
-	for _, record := range pending {
-		if record == nil || record.QueueID > 0 {
+func (m *DemeterReportQueueManager) openReportLaneIDs() []int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	laneIDs := make([]int, 0, len(m.lanes))
+	for laneID, state := range m.lanes {
+		if state == nil || !state.Open || state.Draining {
 			continue
 		}
-		laneID := m.chooseLane(ctx)
+		laneIDs = append(laneIDs, laneID)
+	}
+	sort.Ints(laneIDs)
+	return laneIDs
+}
+
+func chooseLeastLoadedReportLane(loadByLane map[int]int, laneIDs []int) int {
+	bestID := 0
+	bestLoad := int(^uint(0) >> 1)
+	for _, laneID := range laneIDs {
+		load := loadByLane[laneID]
+		if load < bestLoad || (load == bestLoad && (bestID == 0 || laneID < bestID)) {
+			bestID = laneID
+			bestLoad = load
+		}
+	}
+	return bestID
+}
+
+func (m *DemeterReportQueueManager) rebalancePendingOperations(ctx context.Context) (bool, error) {
+	laneIDs := m.openReportLaneIDs()
+	if len(laneIDs) == 0 {
+		return false, nil
+	}
+	operations, err := m.app.Store.ListDemeterReportOperations(ctx, nil, []string{
+		store.DemeterReportOperationStatusPending,
+		store.DemeterReportOperationStatusRunning,
+	}, 0)
+	if err != nil {
+		return false, err
+	}
+
+	openLaneSet := make(map[int]struct{}, len(laneIDs))
+	loadByLane := make(map[int]int, len(laneIDs))
+	for _, laneID := range laneIDs {
+		openLaneSet[laneID] = struct{}{}
+		loadByLane[laneID] = 0
+	}
+
+	pending := make([]*store.DemeterReportOperationRecord, 0)
+	for _, record := range operations {
+		if record == nil {
+			continue
+		}
+		switch record.Status {
+		case store.DemeterReportOperationStatusRunning:
+			if _, ok := openLaneSet[record.QueueID]; ok {
+				loadByLane[record.QueueID]++
+			}
+		case store.DemeterReportOperationStatusPending:
+			pending = append(pending, record)
+		}
+	}
+
+	changed := false
+	for _, record := range pending {
+		if record == nil {
+			continue
+		}
+		laneID := chooseLeastLoadedReportLane(loadByLane, laneIDs)
 		if laneID <= 0 {
 			continue
 		}
-		if err := m.app.Store.UpdateDemeterReportOperationQueueByID(ctx, record.OperationID, laneID, time.Now().UTC()); err != nil {
-			return err
+		loadByLane[laneID]++
+		if record.QueueID == laneID {
+			continue
+		}
+		moved, err := m.app.Store.UpdatePendingDemeterReportOperationQueueByID(ctx, record.OperationID, laneID, time.Now().UTC())
+		if err != nil {
+			return changed, err
+		}
+		if !moved {
+			continue
 		}
 		m.ensureLaneWorker(laneID)
 		m.notifyLaneWorkAvailable(laneID)
@@ -1163,7 +1322,7 @@ func (m *DemeterReportQueueManager) rebalancePendingOperations(ctx context.Conte
 	if changed {
 		m.notifySnapshotChanged()
 	}
-	return nil
+	return changed, nil
 }
 
 func (m *DemeterReportQueueManager) EnqueueOperation(ctx context.Context, record *store.DemeterReportOperationRecord) (int, error) {
@@ -1179,7 +1338,7 @@ func (m *DemeterReportQueueManager) EnqueueOperation(ctx context.Context, record
 		m.notifyLaneWorkAvailable(laneID)
 		m.notifySnapshotChanged()
 	}
-	if err := m.rebalancePendingOperations(ctx); err != nil {
+	if _, err := m.rebalancePendingOperations(ctx); err != nil {
 		return laneID, err
 	}
 	m.notifySnapshotChanged()
@@ -1224,7 +1383,8 @@ func (m *DemeterReportQueueManager) Resize(ctx context.Context, parallelism int)
 		m.ensureLaneWorker(laneID)
 	}
 	m.notifySnapshotChanged()
-	return m.rebalancePendingOperations(ctx)
+	_, err := m.rebalancePendingOperations(ctx)
+	return err
 }
 
 func (m *DemeterReportQueueManager) Snapshot(ctx context.Context, limit int) (demeterReportQueueSnapshot, error) {
@@ -1507,12 +1667,12 @@ func (a *App) submitDemeterReportOperation(c *fiber.Ctx) error {
 	if err := c.BodyParser(&req); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{Error: "invalid payload"})
 	}
-	format, ok := reports.ParseReportFormat(req.Format)
-	if !ok {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{Error: "invalid format"})
-	}
 	var template *store.OrganizationReportTemplate
 	templateID := strings.TrimSpace(req.TemplateID)
+	format, ok := reports.ParseReportFormat(req.Format)
+	if !ok && templateID == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{Error: "invalid format"})
+	}
 	if templateID != "" {
 		loaded, err := a.Store.GetOrganizationReportTemplate(requestContext(c), templateID)
 		if err != nil {
@@ -1529,6 +1689,9 @@ func (a *App) submitDemeterReportOperation(c *fiber.Ctx) error {
 			return c.Status(fiber.StatusForbidden).JSON(ErrorResponse{Error: "report template is disabled for user"})
 		}
 		templateFormat, ok := reports.ParseReportFormat(loaded.BaseFormat)
+		if !ok {
+			templateFormat, ok = reports.ParseReportTemplateFormat(loaded.BaseFormat)
+		}
 		if !ok {
 			return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{Error: "invalid report template base format"})
 		}

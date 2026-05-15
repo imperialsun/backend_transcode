@@ -53,7 +53,7 @@ func (a *App) RegisterReportTemplateRoutes(router fiber.Router) {
 }
 
 func reportTemplateInputFromRequest(req reportTemplateRequest) (store.ReportTemplateInput, error) {
-	baseFormat, ok := reports.ParseReportFormat(req.BaseFormat)
+	baseFormat, ok := reports.ParseReportTemplateFormat(req.BaseFormat)
 	if !ok {
 		return store.ReportTemplateInput{}, fiber.NewError(fiber.StatusBadRequest, "invalid base format")
 	}
@@ -202,7 +202,7 @@ func (a *App) adminSubmitReportTemplateDraftOperation(c *fiber.Ctx) error {
 	}
 	baseFormatHint := strings.TrimSpace(strings.ToUpper(req.BaseFormatHint))
 	if baseFormatHint != "" {
-		if _, ok := reports.ParseReportFormat(baseFormatHint); !ok {
+		if _, ok := reports.ParseReportTemplateFormat(baseFormatHint); !ok {
 			return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{Error: "invalid base format hint"})
 		}
 	}

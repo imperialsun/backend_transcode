@@ -151,3 +151,84 @@ func TestPurgeAllDemeterReportOperationsRemovesEveryRow(t *testing.T) {
 		}
 	}
 }
+
+func TestUpdatePendingDemeterReportOperationQueueByIDMovesOnlyPendingRows(t *testing.T) {
+	ctx := context.Background()
+	st, err := Open(ctx, filepath.Join(t.TempDir(), "demeter-report-pending-queue.sqlite"))
+	if err != nil {
+		t.Fatalf("failed to open store: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = st.Close()
+	})
+
+	org, err := st.CreateOrganization(ctx, "Org", "pending-org", "active")
+	if err != nil {
+		t.Fatalf("failed to create org: %v", err)
+	}
+	user, err := st.CreateUser(ctx, org.ID, "pending@example.com", "hash", "active")
+	if err != nil {
+		t.Fatalf("failed to create user: %v", err)
+	}
+	now := time.Now().UTC()
+	for _, record := range []*DemeterReportOperationRecord{
+		{
+			OperationID:    "demeter-report-pending-move",
+			OrganizationID: org.ID,
+			UserID:         user.ID,
+			QueueID:        1,
+			Status:         DemeterReportOperationStatusPending,
+			Stage:          "queued",
+			FormatCount:    1,
+			StatusCode:     202,
+			CreatedAt:      now,
+			UpdatedAt:      now,
+		},
+		{
+			OperationID:    "demeter-report-running-stays",
+			OrganizationID: org.ID,
+			UserID:         user.ID,
+			QueueID:        1,
+			Status:         DemeterReportOperationStatusRunning,
+			Stage:          "running",
+			FormatCount:    1,
+			StatusCode:     202,
+			CreatedAt:      now,
+			UpdatedAt:      now,
+		},
+	} {
+		if err := st.CreateDemeterReportOperation(ctx, record); err != nil {
+			t.Fatalf("failed to create report record %s: %v", record.OperationID, err)
+		}
+	}
+
+	moved, err := st.UpdatePendingDemeterReportOperationQueueByID(ctx, "demeter-report-pending-move", 2, now.Add(time.Second))
+	if err != nil {
+		t.Fatalf("failed to move pending row: %v", err)
+	}
+	if !moved {
+		t.Fatal("expected pending row to move")
+	}
+	skipped, err := st.UpdatePendingDemeterReportOperationQueueByID(ctx, "demeter-report-running-stays", 2, now.Add(time.Second))
+	if err != nil {
+		t.Fatalf("failed to skip running row: %v", err)
+	}
+	if skipped {
+		t.Fatal("running row must not be moved by pending-only update")
+	}
+
+	pending, err := st.GetDemeterReportOperation(ctx, "demeter-report-pending-move", org.ID, user.ID)
+	if err != nil {
+		t.Fatalf("failed to reload pending row: %v", err)
+	}
+	if pending.QueueID != 2 {
+		t.Fatalf("expected pending row on queue 2, got %+v", pending)
+	}
+	running, err := st.GetDemeterReportOperation(ctx, "demeter-report-running-stays", org.ID, user.ID)
+	if err != nil {
+		t.Fatalf("failed to reload running row: %v", err)
+	}
+	if running.QueueID != 1 {
+		t.Fatalf("running row should stay on queue 1, got %+v", running)
+	}
+}

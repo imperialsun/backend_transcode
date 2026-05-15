@@ -26,11 +26,26 @@ func TestReportTemplatesCRUDAndUserPreferences(t *testing.T) {
 		t.Fatalf("unexpected normalized template: %+v", template)
 	}
 
+	freeTemplate, err := st.CreateOrganizationReportTemplate(ctx, org.ID, user.ID, ReportTemplateInput{
+		Name:           "CR Libre",
+		Description:    "Structure libre",
+		BaseFormat:     "custom",
+		Instructions:   "Suivre uniquement la structure fournie.",
+		ExampleOutline: "Constats\nSuites",
+		OrgEnabled:     true,
+	})
+	if err != nil {
+		t.Fatalf("failed to create free report template: %v", err)
+	}
+	if freeTemplate.BaseFormat != "CUSTOM" {
+		t.Fatalf("expected CUSTOM normalized template, got %+v", freeTemplate)
+	}
+
 	items, err := st.ListOrganizationReportTemplates(ctx, org.ID, false)
 	if err != nil {
 		t.Fatalf("failed to list templates: %v", err)
 	}
-	if len(items) != 1 || items[0].ID != template.ID {
+	if len(items) != 2 {
 		t.Fatalf("expected created template in org list, got %+v", items)
 	}
 
@@ -38,7 +53,7 @@ func TestReportTemplatesCRUDAndUserPreferences(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to list user preferences: %v", err)
 	}
-	if len(prefs) != 1 || !prefs[0].Enabled {
+	if len(prefs) != 2 || !prefs[0].Enabled || !prefs[1].Enabled {
 		t.Fatalf("expected default enabled user preference, got %+v", prefs)
 	}
 
@@ -75,7 +90,7 @@ func TestReportTemplatesCRUDAndUserPreferences(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to list visible templates: %v", err)
 	}
-	if len(visible) != 0 {
+	if len(visible) != 1 || visible[0].Template.ID != freeTemplate.ID {
 		t.Fatalf("disabled org template should not be visible, got %+v", visible)
 	}
 }

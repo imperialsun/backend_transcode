@@ -15,6 +15,10 @@ const (
 	ReportFormatCRO ReportFormat = "CRO"
 	ReportFormatCRS ReportFormat = "CRS"
 	ReportFormatCRN ReportFormat = "CRN"
+	// ReportFormatCUSTOM is reserved for organization-authored free-form
+	// templates. It is intentionally not accepted by ParseReportFormat so the
+	// standard report endpoints keep their built-in format contract.
+	ReportFormatCUSTOM ReportFormat = "CUSTOM"
 )
 
 // ReportDetailLevel controls how much source material the model should keep in
@@ -92,6 +96,22 @@ func ParseReportFormat(value string) (ReportFormat, bool) {
 	}
 }
 
+// ParseReportTemplateFormat normalizes a report-template format. Templates may
+// be based on a built-in format or be fully organization-authored.
+func ParseReportTemplateFormat(value string) (ReportFormat, bool) {
+	normalized := ReportFormat(strings.ToUpper(strings.TrimSpace(value)))
+	if normalized == ReportFormatCUSTOM {
+		return normalized, true
+	}
+	return ParseReportFormat(string(normalized))
+}
+
+// ParseReportOutputFormat normalizes the format embedded in a generated report
+// JSON payload.
+func ParseReportOutputFormat(value string) (ReportFormat, bool) {
+	return ParseReportTemplateFormat(value)
+}
+
 // ParseReportDetailLevel normalizes a user-provided detail level.
 func ParseReportDetailLevel(value string) (ReportDetailLevel, bool) {
 	switch ReportDetailLevel(strings.ToLower(strings.TrimSpace(value))) {
@@ -161,6 +181,8 @@ func ReportFormatDisplayName(format ReportFormat) string {
 		return "CRS"
 	case ReportFormatCRN:
 		return "CRN"
+	case ReportFormatCUSTOM:
+		return "CUSTOM"
 	default:
 		return string(format)
 	}
@@ -280,12 +302,12 @@ func normalizeReport(value any, expectedFormat ReportFormat) (ReportJson, error)
 
 	formatCandidate, _ := trimString(record["format"])
 	format := expectedFormat
-	if formatCandidate != "" {
-		if parsed, ok := ParseReportFormat(formatCandidate); ok {
+	if _, ok := ParseReportOutputFormat(string(expectedFormat)); !ok && formatCandidate != "" {
+		if parsed, ok := ParseReportOutputFormat(formatCandidate); ok {
 			format = parsed
 		}
 	}
-	if format != ReportFormatCRI && format != ReportFormatCRO && format != ReportFormatCRS && format != ReportFormatCRN {
+	if _, ok := ParseReportOutputFormat(string(format)); !ok {
 		return ReportJson{}, fmt.Errorf("%w: invalid report format", ErrInvalidReport)
 	}
 

@@ -2,7 +2,9 @@ package api
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
@@ -11,6 +13,7 @@ import (
 
 	"demeter-backend/internal/mistral"
 	"demeter-backend/internal/reports"
+	"demeter-backend/internal/store"
 )
 
 func TestDemeterReportQueueSnapshotChangesAreBroadcast(t *testing.T) {
@@ -207,6 +210,94 @@ func TestDemeterReportQueueFinishRetryPauseWakesOpenLanes(t *testing.T) {
 	}
 }
 
+func TestDemeterReportQueueRebalancesPendingOperationsToIdleLane(t *testing.T) {
+	ctx := context.Background()
+	st := openAPITestStore(t, "demeter-report-rebalance.sqlite")
+	org := createTestOrganization(t, st, "Rebalance Org", "rebalance-org", "active")
+	user := createTestUser(t, st, org.ID, "rebalance@example.com", "hashed-password", "active")
+	now := time.Now().UTC()
+
+	createReportQueueOperation(t, st, org.ID, user.ID, "running-lane-1", 1, store.DemeterReportOperationStatusRunning, now)
+	for index := 1; index <= 4; index++ {
+		createReportQueueOperation(t, st, org.ID, user.ID, fmt.Sprintf("pending-lane-1-%d", index), 1, store.DemeterReportOperationStatusPending, now.Add(time.Duration(index)*time.Second))
+	}
+
+	manager := &DemeterReportQueueManager{
+		app: &App{Store: st},
+		lanes: map[int]*demeterReportQueueLaneState{
+			1: {ID: 1, Open: true, WorkerRunning: true},
+			2: {ID: 2, Open: true, WorkerRunning: true},
+		},
+		laneWakeCh: map[int]chan struct{}{},
+	}
+	lane2Wake := manager.laneWakeChannel(2)
+
+	changed, err := manager.rebalancePendingOperations(ctx)
+	if err != nil {
+		t.Fatalf("rebalance failed: %v", err)
+	}
+	if !changed {
+		t.Fatal("expected pending operations to be moved")
+	}
+
+	select {
+	case <-lane2Wake:
+	default:
+		t.Fatal("expected lane 2 to be woken after receiving pending work")
+	}
+
+	lane2Pending, err := st.ListDemeterReportOperations(ctx, ptrInt(2), []string{store.DemeterReportOperationStatusPending}, 100)
+	if err != nil {
+		t.Fatalf("failed to list lane 2 pending operations: %v", err)
+	}
+	if len(lane2Pending) == 0 {
+		t.Fatal("expected idle lane 2 to receive pending operations")
+	}
+
+	running, err := st.GetDemeterReportOperation(ctx, "running-lane-1", org.ID, user.ID)
+	if err != nil {
+		t.Fatalf("failed to reload running operation: %v", err)
+	}
+	if running.QueueID != 1 || running.Status != store.DemeterReportOperationStatusRunning {
+		t.Fatalf("running operation must not move, got %+v", running)
+	}
+}
+
+func TestDemeterReportQueueRebalanceIgnoresDrainingLanes(t *testing.T) {
+	ctx := context.Background()
+	st := openAPITestStore(t, "demeter-report-rebalance-draining.sqlite")
+	org := createTestOrganization(t, st, "Drain Org", "drain-org", "active")
+	user := createTestUser(t, st, org.ID, "drain@example.com", "hashed-password", "active")
+	now := time.Now().UTC()
+	for index := 1; index <= 3; index++ {
+		createReportQueueOperation(t, st, org.ID, user.ID, fmt.Sprintf("pending-drain-%d", index), 1, store.DemeterReportOperationStatusPending, now.Add(time.Duration(index)*time.Second))
+	}
+
+	manager := &DemeterReportQueueManager{
+		app: &App{Store: st},
+		lanes: map[int]*demeterReportQueueLaneState{
+			1: {ID: 1, Open: true, WorkerRunning: true},
+			2: {ID: 2, Open: true, Draining: true, WorkerRunning: true},
+		},
+		laneWakeCh: map[int]chan struct{}{},
+	}
+
+	changed, err := manager.rebalancePendingOperations(ctx)
+	if err != nil {
+		t.Fatalf("rebalance failed: %v", err)
+	}
+	if changed {
+		t.Fatal("did not expect work to move to a draining lane")
+	}
+	lane2Pending, err := st.ListDemeterReportOperations(ctx, ptrInt(2), []string{store.DemeterReportOperationStatusPending}, 100)
+	if err != nil {
+		t.Fatalf("failed to list lane 2 pending operations: %v", err)
+	}
+	if len(lane2Pending) != 0 {
+		t.Fatalf("draining lane should not receive work, got %+v", lane2Pending)
+	}
+}
+
 func waitForDemeterReportRetryPause(t *testing.T, manager *DemeterReportQueueManager, laneID int, operationID string, timeout time.Duration) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
@@ -220,4 +311,39 @@ func waitForDemeterReportRetryPause(t *testing.T, manager *DemeterReportQueueMan
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatalf("timed out waiting for retry pause on lane %d", laneID)
+}
+
+func createReportQueueOperation(t *testing.T, st *store.Store, orgID, userID, operationID string, queueID int, status string, createdAt time.Time) {
+	t.Helper()
+	payload, err := json.Marshal(demeterReportQueueOperationPayload{
+		Kind:       demeterReportQueueKindReport,
+		SourceText: "source text",
+		Format:     reports.ReportFormatCRS,
+		ModelID:    "mistral-medium-latest",
+		CreatedAt:  createdAt,
+	})
+	if err != nil {
+		t.Fatalf("failed to marshal queue payload: %v", err)
+	}
+	if err := st.CreateDemeterReportOperation(context.Background(), &store.DemeterReportOperationRecord{
+		OperationID:      operationID,
+		OrganizationID:   orgID,
+		UserID:           userID,
+		QueueID:          queueID,
+		QueuePayloadJSON: sql.NullString{String: string(payload), Valid: true},
+		Status:           status,
+		Stage:            status,
+		FormatIndex:      0,
+		FormatCount:      1,
+		Progress:         0,
+		StatusCode:       http.StatusAccepted,
+		CreatedAt:        createdAt,
+		UpdatedAt:        createdAt,
+	}); err != nil {
+		t.Fatalf("failed to create report operation %s: %v", operationID, err)
+	}
+}
+
+func ptrInt(value int) *int {
+	return &value
 }

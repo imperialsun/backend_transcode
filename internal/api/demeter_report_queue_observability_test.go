@@ -123,6 +123,66 @@ func TestDemeterReportQueueCompletesGenerationForCRN(t *testing.T) {
 	}
 }
 
+func TestDemeterReportQueueRepairsInvalidReportJSON(t *testing.T) {
+	requestBodies := make(chan map[string]any, 2)
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("failed to decode upstream request: %v", err)
+		}
+		requestBodies <- body
+		content := "Compte rendu narratif: la réunion confirme le suivi du patient."
+		if calls == 2 {
+			content = `{"format":"CRN","title":"Compte rendu narratif","sections":[{"heading":"Synthèse","paragraphs":["La réunion confirme le suivi du patient."]}],"key_points":["Suivi confirmé."],"caveats":[]}`
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"choices": []any{
+				map[string]any{
+					"message": map[string]any{"content": content},
+				},
+			},
+		})
+	}))
+	defer server.Close()
+
+	app := &App{MistralClient: mistral.NewClient(server.URL, "key", time.Second, time.Second)}
+	manager := app.EnsureDemeterReportQueueManager()
+	result, status, err := manager.generateReportOnce(context.Background(), &demeterReportQueueOperationPayload{
+		Format:      reports.ReportFormatCRN,
+		DetailLevel: reports.ReportDetailExhaustive,
+		SourceText:  "La réunion confirme le suivi du patient.",
+		ModelID:     "mistral-medium-latest",
+		MaxTokens:   512,
+	})
+	if err != nil {
+		t.Fatalf("expected invalid JSON repair to succeed: %v", err)
+	}
+	if status != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", status)
+	}
+	if calls != 2 {
+		t.Fatalf("expected generation plus repair call, got %d calls", calls)
+	}
+	if result.Report.Format != reports.ReportFormatCRN || len(result.Report.Sections) != 1 {
+		t.Fatalf("expected repaired CRN report, got %+v", result.Report)
+	}
+
+	<-requestBodies
+	repairBody := <-requestBodies
+	messages, _ := repairBody["messages"].([]any)
+	if len(messages) != 2 {
+		t.Fatalf("expected repair system and user messages, got %#v", repairBody["messages"])
+	}
+	userMessage, _ := messages[1].(map[string]any)
+	userPrompt, _ := userMessage["content"].(string)
+	if !strings.Contains(userPrompt, "Format attendu: CRN") || !strings.Contains(userPrompt, "Erreur de parsing") {
+		t.Fatalf("expected repair prompt with format and parse error, got %s", userPrompt)
+	}
+}
+
 func TestDemeterReportQueueCompletesReportTemplateDraft(t *testing.T) {
 	st := openAPITestStore(t, "demeter-report-template-draft.sqlite")
 	org := createTestOrganization(t, st, "Draft Org", "draft-org", "active")
@@ -197,6 +257,62 @@ func TestDemeterReportQueueCompletesReportTemplateDraft(t *testing.T) {
 	}
 	if !stored.ResponseJSON.Valid || !strings.Contains(stored.ResponseJSON.String, `"kind":"report_template_draft"`) {
 		t.Fatalf("expected persisted template draft response, got %#v", stored.ResponseJSON)
+	}
+}
+
+func TestDemeterReportQueueGeneratesFreeCustomTemplate(t *testing.T) {
+	requestBodies := make(chan map[string]any, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("failed to decode upstream request: %v", err)
+		}
+		requestBodies <- body
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"choices": []any{
+				map[string]any{
+					"message": map[string]any{
+						"content": `{"format":"CUSTOM","title":"CR Libre","sections":[{"heading":"Constats","paragraphs":["Point confirmé."]}],"key_points":["Point confirmé."],"caveats":[]}`,
+					},
+				},
+			},
+		})
+	}))
+	defer server.Close()
+
+	app := &App{MistralClient: mistral.NewClient(server.URL, "key", time.Second, time.Second)}
+	manager := app.EnsureDemeterReportQueueManager()
+	result, _, err := manager.generateReportOnce(context.Background(), &demeterReportQueueOperationPayload{
+		Format:         reports.ReportFormatCUSTOM,
+		DetailLevel:    reports.ReportDetailStandard,
+		SourceText:     "Le point est confirmé.",
+		TemplateID:     "template-free",
+		TemplateName:   "CR Libre",
+		Instructions:   "Produire uniquement une section Constats.",
+		ExampleOutline: "Constats",
+		ModelID:        "mistral-medium-latest",
+		MaxTokens:      512,
+	})
+	if err != nil {
+		t.Fatalf("expected free custom template generation to succeed: %v", err)
+	}
+	if result.Format != "CUSTOM" || result.Report.Format != reports.ReportFormatCUSTOM {
+		t.Fatalf("expected CUSTOM report result, got %+v", result)
+	}
+
+	body := <-requestBodies
+	messages, _ := body["messages"].([]any)
+	if len(messages) != 2 {
+		t.Fatalf("expected system and user messages, got %#v", body["messages"])
+	}
+	userMessage, _ := messages[1].(map[string]any)
+	userPrompt, _ := userMessage["content"].(string)
+	if !strings.Contains(userPrompt, "Format cible: CUSTOM.") {
+		t.Fatalf("expected free custom prompt, got %s", userPrompt)
+	}
+	if strings.Contains(userPrompt, "CRI =") || strings.Contains(userPrompt, "CRO =") || strings.Contains(userPrompt, "CRS =") || strings.Contains(userPrompt, "CRN =") {
+		t.Fatalf("free custom prompt should not include built-in format guidelines: %s", userPrompt)
 	}
 }
 
@@ -281,5 +397,17 @@ func TestParseReportTemplateDraftExtractsJSONEnvelope(t *testing.T) {
 	}
 	if draft.Name != "CR Suivi" || draft.BaseFormat != "CRS" {
 		t.Fatalf("unexpected draft: %#v", draft)
+	}
+}
+
+func TestParseReportTemplateDraftAcceptsCustomBaseFormat(t *testing.T) {
+	content := `{"name":"CR Libre","description":"Libre","baseFormat":"CUSTOM","instructions":"Suivre le modèle libre.","exampleOutline":"Constats\nSuites"}`
+
+	draft, err := parseReportTemplateDraft(content)
+	if err != nil {
+		t.Fatalf("expected custom draft to parse: %v", err)
+	}
+	if draft.BaseFormat != "CUSTOM" {
+		t.Fatalf("expected CUSTOM draft base format, got %#v", draft)
 	}
 }
