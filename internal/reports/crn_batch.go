@@ -155,19 +155,30 @@ func mergeCRNReportSections(target *ReportJson, source ReportJson) {
 }
 
 func mergeCRNUniqueStringLists(left []string, right []string) []string {
-	merged := make([]string, 0, len(left)+len(right))
-	seen := make(map[string]struct{}, len(left)+len(right))
-	for _, value := range append(append([]string(nil), left...), right...) {
-		normalized := normalizeCRNLineText(value)
-		if normalized == "" {
-			continue
-		}
-		if _, exists := seen[normalized]; exists {
-			continue
-		}
-		seen[normalized] = struct{}{}
-		merged = append(merged, strings.TrimSpace(value))
+	capacity := len(left)
+	if len(right) > capacity {
+		capacity = len(right)
 	}
+	merged := make([]string, 0, capacity)
+	seen := make(map[string]struct{}, capacity)
+
+	appendUnique := func(values []string) {
+		for _, value := range values {
+			normalized := normalizeCRNLineText(value)
+			if normalized == "" {
+				continue
+			}
+			if _, exists := seen[normalized]; exists {
+				continue
+			}
+			seen[normalized] = struct{}{}
+			merged = append(merged, strings.TrimSpace(value))
+		}
+	}
+
+	appendUnique(left)
+	appendUnique(right)
+
 	return merged
 }
 
