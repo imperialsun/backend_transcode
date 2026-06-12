@@ -23,16 +23,20 @@ import (
 )
 
 const (
-	demeterReportQueueDefaultParallelism = 1
-	demeterReportQueueMaxParallelism     = 8
-	demeterReportQueuePollInterval       = 250 * time.Millisecond
-	demeterReportQueueIdleFallback       = 30 * time.Second
-	demeterReportQueueCooldownDuration   = 5 * time.Second
-	demeterReportGenerationMaxAttempts   = 10
-	demeterReportGenerationBaseDelay     = 2 * time.Second
-	demeterReportQueueKindReport         = "report"
-	demeterReportQueueKindTemplateDraft  = "report_template_draft"
-	demeterReportRepairResponseMaxChars  = 20000
+	demeterReportQueueDefaultParallelism    = 1
+	demeterReportQueueDefaultCRNParallelism = 1
+	demeterReportQueueMaxParallelism        = 8
+	demeterReportQueueCRNLaneBaseID         = 1000
+	demeterReportQueueLaneKindStandard      = "standard"
+	demeterReportQueueLaneKindCRN           = "crn"
+	demeterReportQueuePollInterval          = 250 * time.Millisecond
+	demeterReportQueueIdleFallback          = 30 * time.Second
+	demeterReportQueueCooldownDuration      = 5 * time.Second
+	demeterReportGenerationMaxAttempts      = 10
+	demeterReportGenerationBaseDelay        = 2 * time.Second
+	demeterReportQueueKindReport            = "report"
+	demeterReportQueueKindTemplateDraft     = "report_template_draft"
+	demeterReportRepairResponseMaxChars     = 20000
 )
 
 var errInvalidReportTemplateDraft = errors.New("invalid report template draft")
@@ -117,6 +121,7 @@ type demeterReportOperationResponse struct {
 
 type demeterReportQueueLaneState struct {
 	ID                 int
+	Kind               string
 	Open               bool
 	Draining           bool
 	WorkerRunning      bool
@@ -131,12 +136,14 @@ type demeterReportQueueLaneState struct {
 }
 
 type demeterReportQueueSettingsSnapshot struct {
-	Parallelism int    `json:"parallelism"`
-	UpdatedAt   string `json:"updatedAt"`
+	Parallelism    int    `json:"parallelism"`
+	CRNParallelism int    `json:"crnParallelism"`
+	UpdatedAt      string `json:"updatedAt"`
 }
 
 type demeterReportQueueSummarySnapshot struct {
 	Parallelism            int    `json:"parallelism"`
+	CRNParallelism         int    `json:"crnParallelism"`
 	OpenWorkers            int    `json:"openWorkers"`
 	DrainingWorkers        int    `json:"drainingWorkers"`
 	CoolingWorkers         int    `json:"coolingWorkers"`
@@ -171,6 +178,7 @@ type demeterReportQueueOperationSnapshot struct {
 
 type demeterReportQueueLaneSnapshot struct {
 	QueueID            int     `json:"queueId"`
+	Kind               string  `json:"kind"`
 	Open               bool    `json:"open"`
 	Draining           bool    `json:"draining"`
 	WorkerRunning      bool    `json:"workerRunning"`
@@ -203,6 +211,7 @@ type DemeterReportQueueManager struct {
 	ctx                    context.Context
 	cancel                 context.CancelFunc
 	parallelism            int
+	crnParallelism         int
 	lanes                  map[int]*demeterReportQueueLaneState
 	laneWakeCh             map[int]chan struct{}
 	retryPaused            bool
@@ -265,18 +274,15 @@ func (m *DemeterReportQueueManager) bootstrap(ctx context.Context) error {
 		return err
 	}
 	if settings == nil {
-		settings, err = m.app.Store.SaveDemeterReportQueueSettings(ctx, demeterReportQueueDefaultParallelism)
+		settings, err = m.app.Store.SaveDemeterReportQueueSettings(ctx, demeterReportQueueDefaultParallelism, demeterReportQueueDefaultCRNParallelism)
 		if err != nil {
 			return err
 		}
 	}
 	m.mu.Lock()
 	m.parallelism = clampInt(settings.Parallelism, 0, demeterReportQueueMaxParallelism)
-	for laneID := 1; laneID <= m.parallelism; laneID++ {
-		state := m.ensureLaneStateLocked(laneID)
-		state.Open = true
-		state.Draining = false
-	}
+	m.crnParallelism = clampInt(settings.CRNParallelism, 0, demeterReportQueueMaxParallelism)
+	m.applyLaneParallelismLocked(m.parallelism, m.crnParallelism)
 	laneIDs := make([]int, 0, len(m.lanes))
 	for laneID := range m.lanes {
 		laneIDs = append(laneIDs, laneID)
@@ -298,10 +304,70 @@ func (m *DemeterReportQueueManager) ensureLaneStateLocked(laneID int) *demeterRe
 	}
 	state, ok := m.lanes[laneID]
 	if !ok {
-		state = &demeterReportQueueLaneState{ID: laneID}
+		state = &demeterReportQueueLaneState{ID: laneID, Kind: reportLaneKind(laneID)}
 		m.lanes[laneID] = state
 	}
+	if state.Kind == "" {
+		state.Kind = reportLaneKind(laneID)
+	}
 	return state
+}
+
+func reportCRNLaneID(index int) int {
+	return demeterReportQueueCRNLaneBaseID + index
+}
+
+func reportLaneKind(laneID int) string {
+	if laneID > demeterReportQueueCRNLaneBaseID && laneID <= demeterReportQueueCRNLaneBaseID+demeterReportQueueMaxParallelism {
+		return demeterReportQueueLaneKindCRN
+	}
+	return demeterReportQueueLaneKindStandard
+}
+
+func reportQueueKindForPayload(payload *demeterReportQueueOperationPayload) string {
+	if payload != nil && payload.Format == reports.ReportFormatCRN {
+		return demeterReportQueueLaneKindCRN
+	}
+	return demeterReportQueueLaneKindStandard
+}
+
+func (m *DemeterReportQueueManager) applyLaneParallelismLocked(parallelism, crnParallelism int) {
+	openStandard := map[int]struct{}{}
+	for laneID := 1; laneID <= parallelism; laneID++ {
+		openStandard[laneID] = struct{}{}
+		state := m.ensureLaneStateLocked(laneID)
+		state.Kind = demeterReportQueueLaneKindStandard
+		state.Open = true
+		state.Draining = false
+	}
+	openCRN := map[int]struct{}{}
+	for index := 1; index <= crnParallelism; index++ {
+		laneID := reportCRNLaneID(index)
+		openCRN[laneID] = struct{}{}
+		state := m.ensureLaneStateLocked(laneID)
+		state.Kind = demeterReportQueueLaneKindCRN
+		state.Open = true
+		state.Draining = false
+	}
+	for laneID, state := range m.lanes {
+		if state == nil {
+			continue
+		}
+		switch reportLaneKind(laneID) {
+		case demeterReportQueueLaneKindCRN:
+			state.Kind = demeterReportQueueLaneKindCRN
+			if _, ok := openCRN[laneID]; ok {
+				continue
+			}
+		default:
+			state.Kind = demeterReportQueueLaneKindStandard
+			if _, ok := openStandard[laneID]; ok {
+				continue
+			}
+		}
+		state.Open = false
+		state.Draining = true
+	}
 }
 
 func (m *DemeterReportQueueManager) subscribeSnapshotChanges() (<-chan struct{}, func()) {
@@ -1067,9 +1133,6 @@ func demeterReportRetryDelayForAttempt(attempt int) time.Duration {
 	delay := demeterReportGenerationBaseDelay
 	for i := 1; i < attempt; i++ {
 		delay *= 2
-		if delay > 32*time.Second {
-			return 32 * time.Second
-		}
 	}
 	return delay
 }
@@ -1210,16 +1273,22 @@ func (m *DemeterReportQueueManager) setLaneCooldown(laneID int, duration time.Du
 	m.notifySnapshotChanged()
 }
 
-func (m *DemeterReportQueueManager) chooseLane(ctx context.Context) int {
+func (m *DemeterReportQueueManager) chooseLane(ctx context.Context, kind string) int {
 	m.mu.Lock()
-	parallelism := m.parallelism
+	var laneIDs []int
+	switch kind {
+	case demeterReportQueueLaneKindCRN:
+		laneIDs = m.openReportLaneIDsLocked(demeterReportQueueLaneKindCRN)
+	default:
+		laneIDs = m.openReportLaneIDsLocked(demeterReportQueueLaneKindStandard)
+	}
 	m.mu.Unlock()
-	if parallelism <= 0 {
+	if len(laneIDs) == 0 {
 		return 0
 	}
 	bestID := 0
 	bestLoad := int(^uint(0) >> 1)
-	for laneID := 1; laneID <= parallelism; laneID++ {
+	for _, laneID := range laneIDs {
 		count, err := m.app.Store.ListDemeterReportOperations(ctx, &laneID, []string{store.DemeterReportOperationStatusPending, store.DemeterReportOperationStatusRunning}, 1000)
 		if err != nil {
 			continue
@@ -1233,12 +1302,22 @@ func (m *DemeterReportQueueManager) chooseLane(ctx context.Context) int {
 	return bestID
 }
 
-func (m *DemeterReportQueueManager) openReportLaneIDs() []int {
+func (m *DemeterReportQueueManager) openReportLaneIDs(kind string) []int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	return m.openReportLaneIDsLocked(kind)
+}
+
+func (m *DemeterReportQueueManager) openReportLaneIDsLocked(kind string) []int {
 	laneIDs := make([]int, 0, len(m.lanes))
 	for laneID, state := range m.lanes {
-		if state == nil || !state.Open || state.Draining {
+		if state == nil {
+			continue
+		}
+		if state.Kind == "" {
+			state.Kind = reportLaneKind(laneID)
+		}
+		if !state.Open || state.Draining || state.Kind != kind {
 			continue
 		}
 		laneIDs = append(laneIDs, laneID)
@@ -1261,8 +1340,9 @@ func chooseLeastLoadedReportLane(loadByLane map[int]int, laneIDs []int) int {
 }
 
 func (m *DemeterReportQueueManager) rebalancePendingOperations(ctx context.Context) (bool, error) {
-	laneIDs := m.openReportLaneIDs()
-	if len(laneIDs) == 0 {
+	standardLaneIDs := m.openReportLaneIDs(demeterReportQueueLaneKindStandard)
+	crnLaneIDs := m.openReportLaneIDs(demeterReportQueueLaneKindCRN)
+	if len(standardLaneIDs) == 0 && len(crnLaneIDs) == 0 {
 		return false, nil
 	}
 	operations, err := m.app.Store.ListDemeterReportOperations(ctx, nil, []string{
@@ -1273,9 +1353,13 @@ func (m *DemeterReportQueueManager) rebalancePendingOperations(ctx context.Conte
 		return false, err
 	}
 
-	openLaneSet := make(map[int]struct{}, len(laneIDs))
-	loadByLane := make(map[int]int, len(laneIDs))
-	for _, laneID := range laneIDs {
+	openLaneSet := make(map[int]struct{}, len(standardLaneIDs)+len(crnLaneIDs))
+	loadByLane := make(map[int]int, len(standardLaneIDs)+len(crnLaneIDs))
+	for _, laneID := range standardLaneIDs {
+		openLaneSet[laneID] = struct{}{}
+		loadByLane[laneID] = 0
+	}
+	for _, laneID := range crnLaneIDs {
 		openLaneSet[laneID] = struct{}{}
 		loadByLane[laneID] = 0
 	}
@@ -1299,6 +1383,11 @@ func (m *DemeterReportQueueManager) rebalancePendingOperations(ctx context.Conte
 	for _, record := range pending {
 		if record == nil {
 			continue
+		}
+		payload, _ := decodeDemeterReportQueuePayload(record.QueuePayloadJSON)
+		laneIDs := standardLaneIDs
+		if reportQueueKindForPayload(payload) == demeterReportQueueLaneKindCRN {
+			laneIDs = crnLaneIDs
 		}
 		laneID := chooseLeastLoadedReportLane(loadByLane, laneIDs)
 		if laneID <= 0 {
@@ -1329,7 +1418,8 @@ func (m *DemeterReportQueueManager) EnqueueOperation(ctx context.Context, record
 	if err := m.Start(context.Background()); err != nil {
 		return 0, err
 	}
-	laneID := m.chooseLane(ctx)
+	payload, _ := decodeDemeterReportQueuePayload(record.QueuePayloadJSON)
+	laneID := m.chooseLane(ctx, reportQueueKindForPayload(payload))
 	if laneID > 0 {
 		if err := m.app.Store.UpdateDemeterReportOperationQueueByID(ctx, record.OperationID, laneID, time.Now().UTC()); err != nil {
 			return 0, err
@@ -1345,7 +1435,7 @@ func (m *DemeterReportQueueManager) EnqueueOperation(ctx context.Context, record
 	return laneID, nil
 }
 
-func (m *DemeterReportQueueManager) Resize(ctx context.Context, parallelism int) error {
+func (m *DemeterReportQueueManager) Resize(ctx context.Context, parallelism, crnParallelism int) error {
 	if err := m.Start(context.Background()); err != nil {
 		return err
 	}
@@ -1355,25 +1445,19 @@ func (m *DemeterReportQueueManager) Resize(ctx context.Context, parallelism int)
 	if parallelism > demeterReportQueueMaxParallelism {
 		parallelism = demeterReportQueueMaxParallelism
 	}
-	if _, err := m.app.Store.SaveDemeterReportQueueSettings(ctx, parallelism); err != nil {
+	if crnParallelism < 0 {
+		crnParallelism = 0
+	}
+	if crnParallelism > demeterReportQueueMaxParallelism {
+		crnParallelism = demeterReportQueueMaxParallelism
+	}
+	if _, err := m.app.Store.SaveDemeterReportQueueSettings(ctx, parallelism, crnParallelism); err != nil {
 		return err
 	}
 	m.mu.Lock()
 	m.parallelism = parallelism
-	for laneID, state := range m.lanes {
-		if laneID <= parallelism {
-			state.Open = true
-			state.Draining = false
-		} else {
-			state.Open = false
-			state.Draining = true
-		}
-	}
-	for laneID := 1; laneID <= parallelism; laneID++ {
-		state := m.ensureLaneStateLocked(laneID)
-		state.Open = true
-		state.Draining = false
-	}
+	m.crnParallelism = crnParallelism
+	m.applyLaneParallelismLocked(parallelism, crnParallelism)
 	laneIDs := make([]int, 0, len(m.lanes))
 	for laneID := range m.lanes {
 		laneIDs = append(laneIDs, laneID)
@@ -1397,7 +1481,7 @@ func (m *DemeterReportQueueManager) Snapshot(ctx context.Context, limit int) (de
 		return snapshot, err
 	}
 	if settings == nil {
-		settings = &store.DemeterReportQueueSettingsRecord{Parallelism: demeterReportQueueDefaultParallelism, UpdatedAt: time.Now().UTC()}
+		settings = &store.DemeterReportQueueSettingsRecord{Parallelism: demeterReportQueueDefaultParallelism, CRNParallelism: demeterReportQueueDefaultCRNParallelism, UpdatedAt: time.Now().UTC()}
 	}
 	operations, err := m.app.Store.ListDemeterReportOperations(ctx, nil, []string{store.DemeterReportOperationStatusPending, store.DemeterReportOperationStatusRunning}, limit)
 	if err != nil {
@@ -1442,6 +1526,9 @@ func (m *DemeterReportQueueManager) Snapshot(ctx context.Context, limit int) (de
 		if state == nil {
 			continue
 		}
+		if state.Kind == "" {
+			state.Kind = reportLaneKind(laneID)
+		}
 		if state.Open {
 			openWorkers++
 		}
@@ -1464,6 +1551,7 @@ func (m *DemeterReportQueueManager) Snapshot(ctx context.Context, limit int) (de
 		}
 		item := demeterReportQueueLaneSnapshot{
 			QueueID:            laneID,
+			Kind:               state.Kind,
 			Open:               state.Open,
 			Draining:           state.Draining,
 			WorkerRunning:      state.WorkerRunning,
@@ -1505,9 +1593,10 @@ func (m *DemeterReportQueueManager) Snapshot(ctx context.Context, limit int) (de
 		allSnapshots = append(allSnapshots, demeterReportQueueOperationSnapshotFromRecord(op))
 	}
 
-	snapshot.Settings = demeterReportQueueSettingsSnapshot{Parallelism: settings.Parallelism, UpdatedAt: settings.UpdatedAt.UTC().Format(time.RFC3339)}
+	snapshot.Settings = demeterReportQueueSettingsSnapshot{Parallelism: settings.Parallelism, CRNParallelism: settings.CRNParallelism, UpdatedAt: settings.UpdatedAt.UTC().Format(time.RFC3339)}
 	snapshot.Summary = demeterReportQueueSummarySnapshot{
 		Parallelism:            settings.Parallelism,
+		CRNParallelism:         settings.CRNParallelism,
 		OpenWorkers:            openWorkers,
 		DrainingWorkers:        drainingWorkers,
 		CoolingWorkers:         coolingWorkers,
@@ -1717,10 +1806,7 @@ func (a *App) submitDemeterReportOperation(c *fiber.Ctx) error {
 	} else if !errors.Is(err, sql.ErrNoRows) && !errors.Is(err, store.ErrDemeterReportOperationOwnership) {
 		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{Error: "failed to load operation"})
 	}
-	modelID := strings.TrimSpace(req.ModelID)
-	if modelID == "" {
-		modelID = reports.DefaultReportModelID
-	}
+	modelID := reports.DefaultReportModelID
 	maxTokens := req.MaxTokens
 	if maxTokens <= 0 {
 		maxTokens = reports.DefaultReportMaxTokens
@@ -1884,15 +1970,21 @@ func (a *App) putAdminDemeterReportQueueSettings(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusForbidden).JSON(ErrorResponse{Error: "forbidden"})
 	}
 	var req struct {
-		Parallelism *int `json:"parallelism"`
-		Settings    *struct {
-			Parallelism *int `json:"parallelism"`
+		Parallelism    *int `json:"parallelism"`
+		CRNParallelism *int `json:"crnParallelism"`
+		Settings       *struct {
+			Parallelism    *int `json:"parallelism"`
+			CRNParallelism *int `json:"crnParallelism"`
 		} `json:"settings"`
 	}
 	if err := c.BodyParser(&req); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{Error: "invalid payload"})
 	}
 	parallelism := 0
+	crnParallelism := demeterReportQueueDefaultCRNParallelism
+	if settings, err := a.Store.GetDemeterReportQueueSettings(requestContext(c)); err == nil && settings != nil {
+		crnParallelism = settings.CRNParallelism
+	}
 	switch {
 	case req.Parallelism != nil:
 		parallelism = *req.Parallelism
@@ -1901,8 +1993,14 @@ func (a *App) putAdminDemeterReportQueueSettings(c *fiber.Ctx) error {
 	default:
 		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{Error: "parallelism is required"})
 	}
+	switch {
+	case req.CRNParallelism != nil:
+		crnParallelism = *req.CRNParallelism
+	case req.Settings != nil && req.Settings.CRNParallelism != nil:
+		crnParallelism = *req.Settings.CRNParallelism
+	}
 	manager := a.EnsureDemeterReportQueueManager()
-	if err := manager.Resize(requestContext(c), parallelism); err != nil {
+	if err := manager.Resize(requestContext(c), parallelism, crnParallelism); err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{Error: "failed to update demeter report queue settings"})
 	}
 	snapshot, err := manager.Snapshot(requestContext(c), 200)

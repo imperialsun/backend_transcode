@@ -16,6 +16,26 @@ import (
 	"demeter-backend/internal/store"
 )
 
+func TestDemeterReportRetryDelayMatchesAudioBackoff(t *testing.T) {
+	expected := []time.Duration{
+		2 * time.Second,
+		4 * time.Second,
+		8 * time.Second,
+		16 * time.Second,
+		32 * time.Second,
+		64 * time.Second,
+		128 * time.Second,
+		256 * time.Second,
+		512 * time.Second,
+	}
+	for attempt, want := range expected {
+		got := demeterReportRetryDelayForAttempt(attempt + 1)
+		if got != want {
+			t.Fatalf("attempt %d: expected %s, got %s", attempt+1, want, got)
+		}
+	}
+}
+
 func TestDemeterReportQueueSnapshotChangesAreBroadcast(t *testing.T) {
 	manager := &DemeterReportQueueManager{}
 	changes, unsubscribe := manager.subscribeSnapshotChanges()
@@ -298,6 +318,52 @@ func TestDemeterReportQueueRebalanceIgnoresDrainingLanes(t *testing.T) {
 	}
 }
 
+func TestDemeterReportQueueRoutesCRNWorkToDedicatedLanes(t *testing.T) {
+	ctx := context.Background()
+	st := openAPITestStore(t, "demeter-report-crn-lanes.sqlite")
+	org := createTestOrganization(t, st, "CRN Lanes Org", "crn-lanes-org", "active")
+	user := createTestUser(t, st, org.ID, "crn-lanes@example.com", "hashed-password", "active")
+	now := time.Now().UTC()
+
+	createReportQueueOperationWithFormat(t, st, org.ID, user.ID, "report-crs", 0, store.DemeterReportOperationStatusPending, reports.ReportFormatCRS, now)
+	createReportQueueOperationWithFormat(t, st, org.ID, user.ID, "report-crn", 0, store.DemeterReportOperationStatusPending, reports.ReportFormatCRN, now.Add(time.Second))
+
+	manager := &DemeterReportQueueManager{
+		app:        &App{Store: st},
+		lanes:      map[int]*demeterReportQueueLaneState{},
+		laneWakeCh: map[int]chan struct{}{},
+	}
+	manager.mu.Lock()
+	manager.parallelism = 1
+	manager.crnParallelism = 1
+	manager.applyLaneParallelismLocked(1, 1)
+	manager.mu.Unlock()
+
+	changed, err := manager.rebalancePendingOperations(ctx)
+	if err != nil {
+		t.Fatalf("rebalance failed: %v", err)
+	}
+	if !changed {
+		t.Fatal("expected pending operations to be routed")
+	}
+
+	standard, err := st.GetDemeterReportOperation(ctx, "report-crs", org.ID, user.ID)
+	if err != nil {
+		t.Fatalf("failed to reload standard report: %v", err)
+	}
+	if standard.QueueID != 1 {
+		t.Fatalf("expected standard report on lane 1, got %d", standard.QueueID)
+	}
+
+	crn, err := st.GetDemeterReportOperation(ctx, "report-crn", org.ID, user.ID)
+	if err != nil {
+		t.Fatalf("failed to reload CRN report: %v", err)
+	}
+	if crn.QueueID != reportCRNLaneID(1) {
+		t.Fatalf("expected CRN report on dedicated lane %d, got %d", reportCRNLaneID(1), crn.QueueID)
+	}
+}
+
 func waitForDemeterReportRetryPause(t *testing.T, manager *DemeterReportQueueManager, laneID int, operationID string, timeout time.Duration) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
@@ -315,10 +381,15 @@ func waitForDemeterReportRetryPause(t *testing.T, manager *DemeterReportQueueMan
 
 func createReportQueueOperation(t *testing.T, st *store.Store, orgID, userID, operationID string, queueID int, status string, createdAt time.Time) {
 	t.Helper()
+	createReportQueueOperationWithFormat(t, st, orgID, userID, operationID, queueID, status, reports.ReportFormatCRS, createdAt)
+}
+
+func createReportQueueOperationWithFormat(t *testing.T, st *store.Store, orgID, userID, operationID string, queueID int, status string, format reports.ReportFormat, createdAt time.Time) {
+	t.Helper()
 	payload, err := json.Marshal(demeterReportQueueOperationPayload{
 		Kind:       demeterReportQueueKindReport,
 		SourceText: "source text",
-		Format:     reports.ReportFormatCRS,
+		Format:     format,
 		ModelID:    "mistral-medium-latest",
 		CreatedAt:  createdAt,
 	})
