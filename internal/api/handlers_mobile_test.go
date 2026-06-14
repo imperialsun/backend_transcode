@@ -112,7 +112,7 @@ func TestLoadMobileReportSettingsUsesStoredValuesAndOverrides(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loadMobileReportSettings returned error: %v", err)
 	}
-	if settings.ModelID != "mistral-large-latest" || settings.Temperature != 0.4 {
+	if settings.ModelID != meetingreports.DefaultReportModelID || settings.Temperature != 0.4 {
 		t.Fatalf("unexpected model settings: %+v", settings)
 	}
 	if settings.MaxTokens != 65536 {

@@ -206,10 +206,7 @@ func (a *App) adminSubmitReportTemplateDraftOperation(c *fiber.Ctx) error {
 			return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{Error: "invalid base format hint"})
 		}
 	}
-	modelID := strings.TrimSpace(req.ModelID)
-	if modelID == "" {
-		modelID = reports.DefaultReportModelID
-	}
+	modelID := reports.DefaultReportModelID
 	maxTokens := req.MaxTokens
 	if maxTokens <= 0 {
 		maxTokens = 3000

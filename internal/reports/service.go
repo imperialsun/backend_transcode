@@ -17,7 +17,7 @@ import (
 )
 
 const (
-	DefaultReportModelID   = "mistral-medium-latest"
+	DefaultReportModelID   = "mistral-large-2512"
 	DefaultReportMaxTokens = 32768
 	DefaultReportTemp      = 0
 

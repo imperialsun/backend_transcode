@@ -807,7 +807,6 @@ func (a *App) loadMobileReportSettings(ctx context.Context, userID string, overr
 	if record != nil && len(strings.TrimSpace(string(record.Settings))) > 0 {
 		var raw map[string]json.RawMessage
 		if err := json.Unmarshal(record.Settings, &raw); err == nil {
-			settings.ModelID = readStringSetting(raw, "llmApiMistralModelId", settings.ModelID)
 			settings.Temperature = readFloatSetting(raw, "llmApiMistralTemperature", settings.Temperature)
 			settings.MonoPassMaxTokens = readIntSetting(raw, "llmApiReportMonoPassMaxTokens", settings.MonoPassMaxTokens)
 			settings.MaxTokens = readIntSetting(raw, "llmApiMistralMaxTokens", settings.MaxTokens)
@@ -820,10 +819,7 @@ func (a *App) loadMobileReportSettings(ctx context.Context, userID string, overr
 	if settings.MonoPassMaxTokens > 0 {
 		settings.MaxTokens = settings.MonoPassMaxTokens
 	}
-	settings.ModelID = strings.TrimSpace(settings.ModelID)
-	if settings.ModelID == "" {
-		settings.ModelID = meetingreports.DefaultReportModelID
-	}
+	settings.ModelID = meetingreports.DefaultReportModelID
 	if settings.Temperature < 0 || settings.Temperature > 2 {
 		settings.Temperature = 0.2
 	}

@@ -17,6 +17,12 @@ import (
 
 // These tests cover JSON parsing, concurrent format generation, and retry
 // cancellation behavior for the report generator.
+func TestDefaultReportModelID(t *testing.T) {
+	if DefaultReportModelID != "mistral-large-2512" {
+		t.Fatalf("unexpected default report model: %s", DefaultReportModelID)
+	}
+}
+
 func TestParseReportJSON(t *testing.T) {
 	tests := []struct {
 		name   string

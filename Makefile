@@ -14,7 +14,7 @@ fmt-check:
 	test -z "$$(gofmt -l .)"
 
 test:
-	go test ./...
+	go test -v ./...
 
 test-race:
 	go test ./... -race -coverprofile=coverage.out
