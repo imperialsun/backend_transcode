@@ -14,8 +14,9 @@ const demeterReportQueueSettingsID = 1
 // DemeterReportQueueSettingsRecord stores the global worker parallelism used by
 // the Demeter queue manager.
 type DemeterReportQueueSettingsRecord struct {
-	Parallelism int
-	UpdatedAt   time.Time
+	Parallelism    int
+	CRNParallelism int
+	UpdatedAt      time.Time
 }
 
 // GetDemeterReportQueueSettings loads the singleton queue settings row. Missing
@@ -23,10 +24,10 @@ type DemeterReportQueueSettingsRecord struct {
 func (s *Store) GetDemeterReportQueueSettings(ctx context.Context) (*DemeterReportQueueSettingsRecord, error) {
 	var record DemeterReportQueueSettingsRecord
 	if err := s.DB.QueryRowContext(ctx, `
-		SELECT parallelism, updated_at
+		SELECT parallelism, crn_parallelism, updated_at
 		FROM demeter_report_queue_settings
 		WHERE id = ?
-	`, demeterReportQueueSettingsID).Scan(&record.Parallelism, &record.UpdatedAt); err != nil {
+	`, demeterReportQueueSettingsID).Scan(&record.Parallelism, &record.CRNParallelism, &record.UpdatedAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
 		}
@@ -36,35 +37,41 @@ func (s *Store) GetDemeterReportQueueSettings(ctx context.Context) (*DemeterRepo
 }
 
 // SaveDemeterReportQueueSettings persists the singleton queue settings row.
-func (s *Store) SaveDemeterReportQueueSettings(ctx context.Context, parallelism int) (*DemeterReportQueueSettingsRecord, error) {
+func (s *Store) SaveDemeterReportQueueSettings(ctx context.Context, parallelism, crnParallelism int) (*DemeterReportQueueSettingsRecord, error) {
 	if parallelism < 0 {
 		parallelism = 0
 	}
+	if crnParallelism < 0 {
+		crnParallelism = 0
+	}
 	now := time.Now().UTC()
 	logStoreStep(ctx, "save_start", "demeter_report_queue_settings", map[string]any{
-		"parallelism": parallelism,
+		"parallelism":     parallelism,
+		"crn_parallelism": crnParallelism,
 	})
 	_, err := s.DB.ExecContext(ctx, `
-		INSERT INTO demeter_report_queue_settings(id, parallelism, updated_at)
-		VALUES (?, ?, ?)
+		INSERT INTO demeter_report_queue_settings(id, parallelism, crn_parallelism, updated_at)
+		VALUES (?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			parallelism = excluded.parallelism,
+			crn_parallelism = excluded.crn_parallelism,
 			updated_at = excluded.updated_at
-	`, demeterReportQueueSettingsID, parallelism, now)
+	`, demeterReportQueueSettingsID, parallelism, crnParallelism, now)
 	if err != nil {
-		logStoreStep(ctx, "save_error", "demeter_report_queue_settings", map[string]any{"error": err, "parallelism": parallelism})
+		logStoreStep(ctx, "save_error", "demeter_report_queue_settings", map[string]any{"error": err, "parallelism": parallelism, "crn_parallelism": crnParallelism})
 		return nil, err
 	}
 	record, err := s.GetDemeterReportQueueSettings(ctx)
 	if err != nil {
-		logStoreStep(ctx, "save_error", "demeter_report_queue_settings", map[string]any{"error": err, "parallelism": parallelism})
+		logStoreStep(ctx, "save_error", "demeter_report_queue_settings", map[string]any{"error": err, "parallelism": parallelism, "crn_parallelism": crnParallelism})
 		return nil, err
 	}
 	if record == nil {
-		record = &DemeterReportQueueSettingsRecord{Parallelism: parallelism, UpdatedAt: now}
+		record = &DemeterReportQueueSettingsRecord{Parallelism: parallelism, CRNParallelism: crnParallelism, UpdatedAt: now}
 	}
 	logStoreStep(ctx, "save_success", "demeter_report_queue_settings", map[string]any{
-		"parallelism": record.Parallelism,
+		"parallelism":     record.Parallelism,
+		"crn_parallelism": record.CRNParallelism,
 	})
 	return record, nil
 }

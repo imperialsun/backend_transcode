@@ -531,6 +531,7 @@ func (s *Store) Migrate(ctx context.Context) error {
 		`CREATE TABLE IF NOT EXISTS demeter_report_queue_settings (
 			id INTEGER PRIMARY KEY CHECK(id = 1),
 			parallelism INTEGER NOT NULL DEFAULT 1,
+			crn_parallelism INTEGER NOT NULL DEFAULT 1,
 			updated_at DATETIME NOT NULL
 		);`,
 		`CREATE INDEX IF NOT EXISTS idx_users_org ON users(organization_id);`,
@@ -617,6 +618,10 @@ func (s *Store) Migrate(ctx context.Context) error {
 		return err
 	}
 	if err := ensureColumnExists(ctx, tx, "demeter_audio_transcription_operations", "queue_payload_json", `ALTER TABLE demeter_audio_transcription_operations ADD COLUMN queue_payload_json TEXT`); err != nil {
+		logStoreStep(ctx, "migrate_error", "schema", map[string]any{"error": err})
+		return err
+	}
+	if err := ensureColumnExists(ctx, tx, "demeter_report_queue_settings", "crn_parallelism", `ALTER TABLE demeter_report_queue_settings ADD COLUMN crn_parallelism INTEGER NOT NULL DEFAULT 1`); err != nil {
 		logStoreStep(ctx, "migrate_error", "schema", map[string]any{"error": err})
 		return err
 	}

@@ -20,7 +20,8 @@ type demeterReportQueueWebSocketClientMessage struct {
 	CSRFToken string `json:"csrfToken,omitempty"`
 	CommandID string `json:"commandId,omitempty"`
 	Settings  *struct {
-		Parallelism *int `json:"parallelism"`
+		Parallelism    *int `json:"parallelism"`
+		CRNParallelism *int `json:"crnParallelism"`
 	} `json:"settings,omitempty"`
 }
 
@@ -208,7 +209,14 @@ func (a *App) handleDemeterReportQueueWebSocketCommand(
 			return send(demeterReportQueueWebSocketServerMessage{Type: "command_error", CommandID: commandID, Code: "missing_parallelism", Message: "parallelism is required"})
 		}
 		commandCtx := requestmeta.WithActor(ctx, claims.UserID, claims.OrgID)
-		if err := manager.Resize(commandCtx, *message.Settings.Parallelism); err != nil {
+		crnParallelism := demeterReportQueueDefaultCRNParallelism
+		if settings, err := manager.app.Store.GetDemeterReportQueueSettings(commandCtx); err == nil && settings != nil {
+			crnParallelism = settings.CRNParallelism
+		}
+		if message.Settings.CRNParallelism != nil {
+			crnParallelism = *message.Settings.CRNParallelism
+		}
+		if err := manager.Resize(commandCtx, *message.Settings.Parallelism, crnParallelism); err != nil {
 			return send(demeterReportQueueWebSocketServerMessage{Type: "command_error", CommandID: commandID, Code: "update_failed", Message: "failed to update demeter report queue settings"})
 		}
 		snapshot, err := manager.Snapshot(commandCtx, limit)
