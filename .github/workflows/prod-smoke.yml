@@ -55,7 +55,9 @@ jobs:
             -p 8080:8080 \
             -e APP_ENV=production \
             -e SQLITE_PATH=/tmp/backend.sqlite \
-            -e JWT_SECRET=smoke-secret \
+            -e JWT_SECRET=smoke-secret-with-at-least-32-characters \
+            -e APP_CORS_ORIGINS=https://app.smoke.invalid \
+            -e ADMIN_CORS_ORIGINS=https://admin.smoke.invalid \
             -e MISTRAL_API_KEY=smoke-key \
             -e MISTRAL_API_BASE_URL=https://api.mistral.ai \
             -e BOOTSTRAP_ADMIN_EMAIL=admin@demeter.local \
