@@ -3,6 +3,8 @@ package auth
 import (
 	"testing"
 	"time"
+
+	"github.com/golang-jwt/jwt/v5"
 )
 
 // These tests cover the core token, password, and reset-token helpers.
@@ -40,6 +42,24 @@ func TestNewAndParseAccessToken(t *testing.T) {
 	}
 	if claims.UserID != "user-1" || claims.OrgID != "org-1" {
 		t.Fatalf("unexpected claims payload: %+v", claims)
+	}
+}
+
+func TestParseAccessTokenRejectsAlternateHMACAlgorithms(t *testing.T) {
+	secret := "unit-test-secret"
+	token := jwt.NewWithClaims(jwt.SigningMethodHS384, Claims{
+		UserID: "user-1",
+		RegisteredClaims: jwt.RegisteredClaims{
+			ExpiresAt: jwt.NewNumericDate(time.Now().UTC().Add(5 * time.Minute)),
+		},
+	})
+	signed, err := token.SignedString([]byte(secret))
+	if err != nil {
+		t.Fatalf("failed to sign alternate token: %v", err)
+	}
+
+	if _, err := ParseAccessToken(secret, signed); err == nil {
+		t.Fatal("expected non-HS256 access token to be rejected")
 	}
 }
 

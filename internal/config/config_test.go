@@ -71,3 +71,31 @@ func TestLoadConfigUsesEnvVars(t *testing.T) {
 		t.Fatalf("expected RefreshTTL=1h, got %s", cfg.RefreshTTL)
 	}
 }
+
+func TestValidateProductionRejectsUnsafeAuthenticationAndOrigins(t *testing.T) {
+	cfg := Config{
+		AppEnv:           "production",
+		JWTSecret:        developmentJWTSecret,
+		CookieSecure:     false,
+		AppCORSOrigins:   []string{"*"},
+		AdminCORSOrigins: []string{"http://admin.example.test"},
+	}
+
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected unsafe production configuration to be rejected")
+	}
+}
+
+func TestValidateProductionAcceptsSecureConfiguration(t *testing.T) {
+	cfg := Config{
+		AppEnv:           "production",
+		JWTSecret:        "a-production-secret-with-at-least-32-characters",
+		CookieSecure:     true,
+		AppCORSOrigins:   []string{"https://app.example.test"},
+		AdminCORSOrigins: []string{"https://admin.example.test"},
+	}
+
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("expected secure production configuration to pass validation: %v", err)
+	}
+}

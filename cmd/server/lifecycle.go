@@ -106,6 +106,10 @@ func serverLogPerformanceStep(traceID, step, task string, fields map[string]any)
 func run(ctx context.Context, cfg config.Config) error {
 	processTraceID := observability.NewTraceID()
 	serverLogStep(processTraceID, "boot_start", "server", map[string]any{"port": cfg.Port})
+	if err := cfg.Validate(); err != nil {
+		serverLogStep(processTraceID, "boot_error", "server", map[string]any{"port": cfg.Port, "error": err})
+		return fmt.Errorf("validate configuration: %w", err)
+	}
 
 	st, err := store.Open(ctx, cfg.SQLitePath)
 	if err != nil {

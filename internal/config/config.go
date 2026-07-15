@@ -1,11 +1,16 @@
 package config
 
 import (
+	"errors"
+	"fmt"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
 	"time"
 )
+
+const developmentJWTSecret = "dev-insecure-jwt-secret-change-me"
 
 type Config struct {
 	// AppEnv selects the runtime profile and controls a few safe defaults.
@@ -64,7 +69,7 @@ func Load() Config {
 		Port:                   getEnv("PORT", "8080"),
 		BodyLimitBytes:         getEnvInt("BODY_LIMIT_BYTES", 500*1024*1024),
 		SQLitePath:             getEnv("SQLITE_PATH", "./backend.sqlite"),
-		JWTSecret:              getEnv("JWT_SECRET", "dev-insecure-jwt-secret-change-me"),
+		JWTSecret:              getEnv("JWT_SECRET", developmentJWTSecret),
 		AccessTTL:              time.Duration(getEnvInt("ACCESS_TTL_MINUTES", 15)) * time.Minute,
 		RefreshTTL:             time.Duration(getEnvInt("REFRESH_TTL_HOURS", 24*30)) * time.Hour,
 		AdminAccessTTL:         time.Duration(getEnvInt("ADMIN_ACCESS_TTL_MINUTES", 10)) * time.Minute,
@@ -90,6 +95,44 @@ func Load() Config {
 		BootstrapOrgName:       strings.TrimSpace(getEnv("BOOTSTRAP_ORG_NAME", "Default Organization")),
 	}
 	return cfg
+}
+
+// Validate rejects unsafe production settings before any persistent or network
+// resources are initialized.
+func (c Config) Validate() error {
+	if !strings.EqualFold(strings.TrimSpace(c.AppEnv), "production") {
+		return nil
+	}
+
+	var validationErrors []error
+	secret := strings.TrimSpace(c.JWTSecret)
+	if secret == developmentJWTSecret || len(secret) < 32 {
+		validationErrors = append(validationErrors, errors.New("JWT_SECRET must contain at least 32 characters and must not use the development default"))
+	}
+	if !c.CookieSecure {
+		validationErrors = append(validationErrors, errors.New("COOKIE_SECURE must be enabled in production"))
+	}
+	if err := validateProductionOrigins("APP_CORS_ORIGINS", c.AppCORSOrigins); err != nil {
+		validationErrors = append(validationErrors, err)
+	}
+	if err := validateProductionOrigins("ADMIN_CORS_ORIGINS", c.AdminCORSOrigins); err != nil {
+		validationErrors = append(validationErrors, err)
+	}
+	return errors.Join(validationErrors...)
+}
+
+func validateProductionOrigins(name string, origins []string) error {
+	if len(origins) == 0 {
+		return fmt.Errorf("%s must contain at least one HTTPS origin", name)
+	}
+	for _, rawOrigin := range origins {
+		origin := strings.TrimSpace(rawOrigin)
+		parsed, err := url.Parse(origin)
+		if err != nil || origin == "*" || parsed.Scheme != "https" || parsed.Host == "" {
+			return fmt.Errorf("%s contains an unsafe production origin %q", name, origin)
+		}
+	}
+	return nil
 }
 
 // getEnv returns the trimmed environment value when present, otherwise the
