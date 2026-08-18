@@ -123,6 +123,92 @@ func TestDemeterReportQueueCompletesGenerationForCRN(t *testing.T) {
 	}
 }
 
+func TestDemeterReportQueueCompletesClarificationForWordNote(t *testing.T) {
+	st := openAPITestStore(t, "demeter-report-queue-clarification.sqlite")
+	org := createTestOrganization(t, st, "Clarification Org", "clarification-org", "active")
+	user := createTestUser(t, st, org.ID, "clarification-worker@example.com", "hashed-password", "active")
+	requestBody := make(chan map[string]any, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("failed to decode clarification request: %v", err)
+		}
+		requestBody <- body
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"choices": []any{map[string]any{
+				"message": map[string]any{
+					"content": `{"needsClarification":true,"summary":"Participants absents","questions":[{"id":"participants","question":"Qui participait ?","rationale":"Les participants ne sont pas identifiables."}]}`,
+				},
+			}},
+		})
+	}))
+	defer server.Close()
+
+	app := &App{
+		Store:         st,
+		MistralClient: mistral.NewClient(server.URL, "key", time.Second, time.Second),
+	}
+	manager := app.EnsureDemeterReportQueueManager()
+	now := time.Now().UTC()
+	payload := &demeterReportQueueOperationPayload{
+		TraceID:     "trace-clarification",
+		Route:       "/providers/demeter-sante/report/operations",
+		Seq:         10,
+		Kind:        demeterReportQueueKindClarification,
+		SourceKind:  reports.ReportSourceWordNote,
+		SourceText:  "CR équipe / budget à revoir",
+		ModelID:     "mistral-medium-latest",
+		Temperature: 0,
+		MaxTokens:   512,
+		CreatedAt:   now,
+	}
+	rawPayload, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("failed to marshal payload: %v", err)
+	}
+	record := &store.DemeterReportOperationRecord{
+		OperationID:      "op-clarification",
+		OrganizationID:   org.ID,
+		UserID:           user.ID,
+		QueueID:          1,
+		Status:           store.DemeterReportOperationStatusPending,
+		Stage:            "queued",
+		FormatCount:      1,
+		QueuePayloadJSON: sql.NullString{String: string(rawPayload), Valid: true},
+		StatusCode:       http.StatusAccepted,
+		CreatedAt:        now,
+		UpdatedAt:        now,
+	}
+	if err := st.CreateDemeterReportOperation(context.Background(), record); err != nil {
+		t.Fatalf("failed to create clarification operation: %v", err)
+	}
+	if err := manager.processClaimedOperation(record, payload, 1); err != nil {
+		t.Fatalf("expected clarification generation to succeed: %v", err)
+	}
+
+	stored, err := st.GetDemeterReportOperation(context.Background(), record.OperationID, record.OrganizationID, record.UserID)
+	if err != nil {
+		t.Fatalf("failed to reload clarification operation: %v", err)
+	}
+	if stored.Status != store.DemeterReportOperationStatusCompleted {
+		t.Fatalf("expected completed status, got %s", stored.Status)
+	}
+	if !stored.ResponseJSON.Valid || !strings.Contains(stored.ResponseJSON.String, `"kind":"clarification"`) || !strings.Contains(stored.ResponseJSON.String, `"id":"participants"`) {
+		t.Fatalf("expected persisted clarification response, got %#v", stored.ResponseJSON)
+	}
+
+	body := <-requestBody
+	messages, _ := body["messages"].([]any)
+	if len(messages) != 2 {
+		t.Fatalf("expected clarification system and user messages, got %#v", body["messages"])
+	}
+	systemMessage, _ := messages[0].(map[string]any)
+	if !strings.Contains(systemMessage["content"].(string), "prise de note Word très abrégée") {
+		t.Fatalf("expected Word note clarification prompt, got %#v", systemMessage)
+	}
+}
+
 func TestDemeterReportQueueRepairsInvalidReportJSON(t *testing.T) {
 	requestBodies := make(chan map[string]any, 2)
 	calls := 0

@@ -9,7 +9,7 @@ var commonPromptRules = []string{
 	"N'invente jamais d'informations absentes de la source.",
 	"Si une information est manquante, ambiguë ou incertaine, indique-le explicitement dans `caveats`.",
 	"Ne fais aucune interprétation diagnostique supplémentaire.",
-	"Le texte source provient d'une transcription ASR et peut contenir des erreurs (reconnaissance, ponctuation, traduction).",
+	"Le texte source peut contenir des erreurs de formulation, de ponctuation ou de transcription.",
 	"Corrige uniquement les erreurs manifestes quand le sens est clair; en cas de doute, conserve l'intention d'origine et signale l'incertitude dans `caveats`.",
 	"Respecte strictement le format JSON demandé, sans texte avant/après.",
 	"Conserve la langue française.",
@@ -112,16 +112,41 @@ func BuildReportSystemPrompt() string {
 // BuildReportSystemPromptWithDetail returns the system prompt with the same
 // detail-priority rules used by the frontend when a level is selected.
 func BuildReportSystemPromptWithDetail(detailLevel ReportDetailLevel) string {
+	return BuildReportSystemPromptWithDetailAndSource(detailLevel, ReportSourceTranscription)
+}
+
+// BuildReportSystemPromptWithDetailAndSource adds provenance-aware safety
+// rules while preserving the historical transcription prompt by default.
+func BuildReportSystemPromptWithDetailAndSource(detailLevel ReportDetailLevel, sourceKind ReportSourceKind) string {
+	sourceKind = NormalizeReportSourceKind(string(sourceKind))
 	lines := []string{
 		"Tu es un rédacteur expert des comptes rendus professionnels.",
-		"Ta mission: transformer une transcription brute en compte rendu structuré selon le format demandé.",
+		"Ta mission: transformer une source brute en compte rendu structuré selon le format demandé.",
 	}
 	lines = append(lines, commonPromptRules...)
-	if parsed, ok := ParseReportDetailLevel(string(detailLevel)); ok {
+	if sourceKind == ReportSourceWordNote {
+		lines = append(lines,
+			"La source est une prise de note Word très abrégée et potentiellement fragmentaire, pas nécessairement une transcription ASR.",
+			"Développe la rédaction uniquement à partir des éléments explicitement présents ou confirmés par l'utilisateur.",
+			"Conserve toute abréviation ambiguë et signale-la dans caveats au lieu de l'expanser arbitrairement.",
+			"Si la source ne permet pas d'atteindre le niveau de détail demandé, reste court et indique les manques dans caveats.",
+		)
+	} else if sourceKind == ReportSourceTextNote {
+		lines = append(lines,
+			"La source est une note texte potentiellement fragmentaire.",
+			"Ne transforme pas des mots-clés en faits non présents et signale les informations insuffisantes dans caveats.",
+		)
+	}
+	if parsed, ok := ParseReportDetailLevel(string(detailLevel)); ok && sourceKind != ReportSourceWordNote {
 		lines = append(lines,
 			fmt.Sprintf("Niveau de detail actif: %s.", detailLevelLabels[parsed]),
 			"La contrainte de longueur associee est prioritaire: considere-la comme une base minimale, un minimum obligatoire, pas comme une moyenne ni un plafond.",
 			"Respecte cette contrainte avant toute recherche de concision.",
+		)
+	} else if parsed, ok := ParseReportDetailLevel(string(detailLevel)); ok {
+		lines = append(lines,
+			fmt.Sprintf("Niveau de detail actif: %s, sans longueur minimale artificielle pour cette note Word.", detailLevelLabels[parsed]),
+			"Développe uniquement les faits explicitement présents et reste court si la source est insuffisante.",
 		)
 	}
 	return strings.Join(lines, "\n")
@@ -136,6 +161,14 @@ func BuildReportUserPrompt(format ReportFormat, sourceText string, title string,
 // BuildReportUserPromptWithDetail assembles the user prompt with the requested
 // detail level, mirroring the frontend's standard/verbose/exhaustive behavior.
 func BuildReportUserPromptWithDetail(format ReportFormat, detailLevel ReportDetailLevel, sourceText string, title string, participants []string) string {
+	return BuildReportUserPromptWithDetailAndSource(format, detailLevel, sourceText, title, participants, ReportSourceTranscription)
+}
+
+// BuildReportUserPromptWithDetailAndSource assembles a provenance-aware report
+// prompt. Existing callers should use BuildReportUserPromptWithDetail unless
+// they know the source is a note rather than a transcript.
+func BuildReportUserPromptWithDetailAndSource(format ReportFormat, detailLevel ReportDetailLevel, sourceText string, title string, participants []string, sourceKind ReportSourceKind) string {
+	sourceKind = NormalizeReportSourceKind(string(sourceKind))
 	participantLine := "Aucun participant fourni."
 	if len(participants) > 0 {
 		participantLine = strings.Join(participants, ", ")
@@ -177,7 +210,7 @@ func BuildReportUserPromptWithDetail(format ReportFormat, detailLevel ReportDeta
 		"- action_items: suites concrètes si explicites dans la source.",
 		"- caveats: zones d'incertitude / informations absentes.",
 	}
-	if minimumWords > 0 {
+	if minimumWords > 0 && sourceKind != ReportSourceWordNote {
 		wordLabel := "mots"
 		if minimumWords == 1 {
 			wordLabel = "mot"
@@ -195,6 +228,13 @@ func BuildReportUserPromptWithDetail(format ReportFormat, detailLevel ReportDeta
 	for _, rule := range formatStyleRules[format] {
 		lines = append(lines, "- "+rule)
 	}
+	if sourceKind == ReportSourceWordNote {
+		lines = append(lines,
+			"- la source peut être télégraphique : reformule les éléments présents sans compléter les éléments absents.",
+			"- une longueur inférieure à la cible est acceptable si la source est insuffisante.",
+			"- conserve les abréviations non résolues et signale-les dans caveats.",
+		)
+	}
 	lines = append(lines,
 		"",
 		"SOURCE:",
@@ -206,10 +246,16 @@ func BuildReportUserPromptWithDetail(format ReportFormat, detailLevel ReportDeta
 // BuildCustomReportUserPromptWithDetail assembles the same structured report
 // contract as built-in formats while injecting organization-authored guidance.
 func BuildCustomReportUserPromptWithDetail(format ReportFormat, detailLevel ReportDetailLevel, sourceText string, title string, participants []string, templateName string, instructions string, exampleOutline string) string {
+	return BuildCustomReportUserPromptWithDetailAndSource(format, detailLevel, sourceText, title, participants, templateName, instructions, exampleOutline, ReportSourceTranscription)
+}
+
+// BuildCustomReportUserPromptWithDetailAndSource applies the same source
+// provenance safeguards to organization templates.
+func BuildCustomReportUserPromptWithDetailAndSource(format ReportFormat, detailLevel ReportDetailLevel, sourceText string, title string, participants []string, templateName string, instructions string, exampleOutline string, sourceKind ReportSourceKind) string {
 	if format == ReportFormatCUSTOM {
-		return BuildFreeCustomReportUserPromptWithDetail(detailLevel, sourceText, title, participants, templateName, instructions, exampleOutline)
+		return BuildFreeCustomReportUserPromptWithDetailAndSource(detailLevel, sourceText, title, participants, templateName, instructions, exampleOutline, sourceKind)
 	}
-	basePrompt := BuildReportUserPromptWithDetail(format, detailLevel, sourceText, title, participants)
+	basePrompt := BuildReportUserPromptWithDetailAndSource(format, detailLevel, sourceText, title, participants, sourceKind)
 	customLines := []string{
 		"",
 		"MODELE PERSONNALISE ORGANISATION:",
@@ -235,6 +281,13 @@ func BuildCustomReportUserPromptWithDetail(format ReportFormat, detailLevel Repo
 // prompt for organization-authored templates that are not based on CRI/CRO/CRS
 // or CRN.
 func BuildFreeCustomReportUserPromptWithDetail(detailLevel ReportDetailLevel, sourceText string, title string, participants []string, templateName string, instructions string, exampleOutline string) string {
+	return BuildFreeCustomReportUserPromptWithDetailAndSource(detailLevel, sourceText, title, participants, templateName, instructions, exampleOutline, ReportSourceTranscription)
+}
+
+// BuildFreeCustomReportUserPromptWithDetailAndSource preserves the free custom
+// contract while applying the same provenance safeguards as built-in formats.
+func BuildFreeCustomReportUserPromptWithDetailAndSource(detailLevel ReportDetailLevel, sourceText string, title string, participants []string, templateName string, instructions string, exampleOutline string, sourceKind ReportSourceKind) string {
+	sourceKind = NormalizeReportSourceKind(string(sourceKind))
 	participantLine := "Aucun participant fourni."
 	if len(participants) > 0 {
 		participantLine = strings.Join(participants, ", ")
@@ -289,10 +342,14 @@ func BuildFreeCustomReportUserPromptWithDetail(detailLevel ReportDetailLevel, so
 		"- action_items: suites concrètes si explicites dans la source.",
 		"- caveats: zones d'incertitude / informations absentes.",
 		"- respecte ces consignes personnalisees tant qu'elles ne contredisent pas les regles de securite, de fidelite a la source et le schema JSON impose.",
-		"",
-		"SOURCE:",
-		sourceText,
 	)
+	if sourceKind == ReportSourceWordNote {
+		lines = append(lines,
+			"- la source est une note Word abrégée : n'expanse pas les abréviations ambiguës.",
+			"- une sortie courte est acceptable si aucun contenu supplémentaire n'est explicitement disponible.",
+		)
+	}
+	lines = append(lines, "", "SOURCE:", sourceText)
 	return strings.Join(lines, "\n")
 }
 
