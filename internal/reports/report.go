@@ -21,6 +21,12 @@ const (
 	ReportFormatCUSTOM ReportFormat = "CUSTOM"
 )
 
+const (
+	DefaultReportModelID   = "mistral-large-2512"
+	DefaultReportMaxTokens = 32768
+	DefaultReportTemp      = 0
+)
+
 // ReportDetailLevel controls how much source material the model should keep in
 // the generated report.
 type ReportDetailLevel string

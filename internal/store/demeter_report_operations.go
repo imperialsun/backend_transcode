@@ -25,6 +25,11 @@ const (
 // to access someone else's upload session.
 var ErrDemeterReportOperationOwnership = errors.New("demeter report report operation owned by another user")
 
+// ErrDemeterReportOperationTerminal indicates that a worker attempted to
+// update an operation after another actor had already completed, failed, or
+// cancelled it.
+var ErrDemeterReportOperationTerminal = errors.New("demeter report operation is already terminal")
+
 // DemeterReportOperationRecord stores the state of one backend
 // report report job.
 type DemeterReportOperationRecord struct {
@@ -213,7 +218,8 @@ func (s *Store) UpdateDemeterReportOperationByID(ctx context.Context, record *De
 		UPDATE demeter_report_operations
 		SET status = ?, stage = ?, format_index = ?, format_count = ?, progress = ?, response_json = ?, last_error = ?, status_code = ?, updated_at = ?, finished_at = ?
 		WHERE operation_id = ?
-	`, record.Status, record.Stage, record.FormatIndex, record.FormatCount, record.Progress, nullStringValue(record.ResponseJSON), nullStringValue(record.LastError), record.StatusCode, record.UpdatedAt, nullTimeValue(record.FinishedAt), record.OperationID)
+		  AND status NOT IN (?, ?, ?)
+	`, record.Status, record.Stage, record.FormatIndex, record.FormatCount, record.Progress, nullStringValue(record.ResponseJSON), nullStringValue(record.LastError), record.StatusCode, record.UpdatedAt, nullTimeValue(record.FinishedAt), record.OperationID, DemeterReportOperationStatusCompleted, DemeterReportOperationStatusFailed, DemeterReportOperationStatusCancelled)
 	if err != nil {
 		logStoreStep(ctx, "demeter_update_error", "demeter_report_report_operation", map[string]any{
 			"operation_id": record.OperationID,
@@ -224,6 +230,13 @@ func (s *Store) UpdateDemeterReportOperationByID(ctx context.Context, record *De
 
 	rows, _ := res.RowsAffected()
 	if rows == 0 {
+		stored, peekErr := s.peekDemeterReportOperation(ctx, record.OperationID)
+		if peekErr == nil && stored != nil {
+			switch stored.Status {
+			case DemeterReportOperationStatusCompleted, DemeterReportOperationStatusFailed, DemeterReportOperationStatusCancelled:
+				return ErrDemeterReportOperationTerminal
+			}
+		}
 		logStoreStep(ctx, "demeter_update_error", "demeter_report_report_operation", map[string]any{
 			"operation_id": record.OperationID,
 			"error":        sql.ErrNoRows,
@@ -345,12 +358,22 @@ func (s *Store) CancelDemeterReportOperation(ctx context.Context, operationID, o
 	record.LastError = sql.NullString{String: "operation cancelled", Valid: true}
 	record.StatusCode = http.StatusRequestTimeout
 
-	if err := s.UpdateDemeterReportOperation(ctx, record); err != nil {
-		var ownershipErr *DemeterReportOperationOwnershipError
-		if errors.As(err, &ownershipErr) {
-			logStoreStep(ctx, "ownership_cancel_error", "demeter_report_report_operation", ownershipErr.WithSource("store_cancel").LogFields())
-		}
+	result, err := s.DB.ExecContext(ctx, `
+		UPDATE demeter_report_operations
+		SET status = ?, stage = ?, format_index = ?, format_count = ?, progress = ?, response_json = ?, last_error = ?, status_code = ?, updated_at = ?, finished_at = ?
+		WHERE operation_id = ? AND organization_id = ? AND user_id = ?
+		  AND status NOT IN (?, ?, ?)
+	`, record.Status, record.Stage, record.FormatIndex, record.FormatCount, record.Progress, nullStringValue(record.ResponseJSON), nullStringValue(record.LastError), record.StatusCode, record.UpdatedAt, nullTimeValue(record.FinishedAt), record.OperationID, record.OrganizationID, record.UserID, DemeterReportOperationStatusCompleted, DemeterReportOperationStatusFailed, DemeterReportOperationStatusCancelled)
+	if err != nil {
 		return nil, err
+	}
+	rows, _ := result.RowsAffected()
+	if rows == 0 {
+		current, loadErr := s.GetDemeterReportOperation(ctx, record.OperationID, record.OrganizationID, record.UserID)
+		if loadErr != nil {
+			return nil, loadErr
+		}
+		return current, nil
 	}
 
 	return s.GetDemeterReportOperation(ctx, record.OperationID, record.OrganizationID, record.UserID)

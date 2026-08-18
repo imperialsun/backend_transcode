@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"demeter-backend/internal/backenderrors"
+	"demeter-backend/internal/backendperformance"
 	"demeter-backend/internal/mistral"
 	"demeter-backend/internal/reports"
 	"demeter-backend/internal/store"
@@ -125,6 +126,10 @@ func TestDemeterReportQueueCompletesGenerationForCRN(t *testing.T) {
 
 func TestDemeterReportQueueCompletesClarificationForWordNote(t *testing.T) {
 	st := openAPITestStore(t, "demeter-report-queue-clarification.sqlite")
+	backendperformance.RegisterSink(st)
+	t.Cleanup(func() {
+		backendperformance.RegisterSink(nil)
+	})
 	org := createTestOrganization(t, st, "Clarification Org", "clarification-org", "active")
 	user := createTestUser(t, st, org.ID, "clarification-worker@example.com", "hashed-password", "active")
 	requestBody := make(chan map[string]any, 1)
@@ -206,6 +211,11 @@ func TestDemeterReportQueueCompletesClarificationForWordNote(t *testing.T) {
 	systemMessage, _ := messages[0].(map[string]any)
 	if !strings.Contains(systemMessage["content"].(string), "prise de note Word très abrégée") {
 		t.Fatalf("expected Word note clarification prompt, got %#v", systemMessage)
+	}
+
+	event := waitForPerformanceEventByTask(t, st, payload.TraceID, "demeter_report_generation")
+	if !strings.Contains(event.MetaJSON, `"operation_type":"clarification"`) || !strings.Contains(event.MetaJSON, `"source_kind":"word_note"`) {
+		t.Fatalf("expected clarification performance metadata, got %s", event.MetaJSON)
 	}
 }
 

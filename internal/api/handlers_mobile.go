@@ -1267,13 +1267,6 @@ func approximateTokenCount(text string) int {
 	return len(strings.Fields(strings.TrimSpace(text)))
 }
 
-func generatorModelID(generator *meetingreports.Generator) string {
-	if generator == nil || strings.TrimSpace(generator.ModelID) == "" {
-		return meetingreports.DefaultReportModelID
-	}
-	return strings.TrimSpace(generator.ModelID)
-}
-
 func parseMobileDetailLevelRaw(raw json.RawMessage, fallback map[meetingreports.ReportFormat]meetingreports.ReportDetailLevel) map[meetingreports.ReportFormat]meetingreports.ReportDetailLevel {
 	out := meetingreports.NormalizeReportDetailLevels(fallback)
 	var values map[string]string

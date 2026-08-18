@@ -42,6 +42,10 @@ const (
 
 var errInvalidReportTemplateDraft = errors.New("invalid report template draft")
 
+// demeterReportOperationCancels lets the DELETE endpoint interrupt an
+// operation that is already running in the report worker.
+var demeterReportOperationCancels sync.Map
+
 type demeterReportQueueOperationPayload struct {
 	TraceID          string                    `json:"traceId"`
 	Route            string                    `json:"route"`
@@ -603,6 +607,20 @@ func (m *DemeterReportQueueManager) processClaimedOperation(record *store.Demete
 	}
 	opCtx := observability.WithTraceID(m.ctx, payload.TraceID)
 	opCtx = requestmeta.WithActor(opCtx, record.UserID, record.OrganizationID)
+	opCtx, cancel := context.WithCancel(opCtx)
+	demeterReportOperationCancels.Store(record.OperationID, cancel)
+	defer func() {
+		cancel()
+		demeterReportOperationCancels.Delete(record.OperationID)
+	}()
+	if current, err := m.app.Store.GetDemeterReportOperationByID(opCtx, record.OperationID); err == nil && current != nil && current.Status == store.DemeterReportOperationStatusCancelled {
+		m.clearLaneCurrentOperation(laneID)
+		return nil
+	}
+	if opCtx.Err() != nil {
+		m.clearLaneCurrentOperation(laneID)
+		return nil
+	}
 
 	m.setLaneCurrentOperation(laneID, record.OperationID, "running", "running", 0, 1, 0, "")
 	switch demeterReportPayloadKind(payload) {
@@ -614,6 +632,10 @@ func (m *DemeterReportQueueManager) processClaimedOperation(record *store.Demete
 
 	result, statusCode, err := m.generateReportWithRetry(opCtx, laneID, record.OperationID, payload)
 	if err != nil {
+		if errors.Is(opCtx.Err(), context.Canceled) || errors.Is(err, context.Canceled) {
+			m.clearLaneCurrentOperation(laneID)
+			return nil
+		}
 		route := strings.TrimSpace(payload.Route)
 		if route == "" {
 			route = "/providers/demeter-sante/report/operations"
@@ -628,7 +650,10 @@ func (m *DemeterReportQueueManager) processClaimedOperation(record *store.Demete
 			"error":        err,
 			"model_id":     strings.TrimSpace(payload.ModelID),
 		})
-		_ = m.failClaimedOperation(opCtx, record, err.Error(), statusCode)
+		if failErr := m.failClaimedOperation(opCtx, record, err.Error(), statusCode); errors.Is(failErr, store.ErrDemeterReportOperationTerminal) {
+			m.clearLaneCurrentOperation(laneID)
+			return nil
+		}
 		m.clearLaneCurrentOperation(laneID)
 		return err
 	}
@@ -651,6 +676,9 @@ func (m *DemeterReportQueueManager) processClaimedOperation(record *store.Demete
 	}
 	if err := m.app.Store.UpdateDemeterReportOperationByID(opCtx, update); err != nil {
 		m.clearLaneCurrentOperation(laneID)
+		if errors.Is(err, store.ErrDemeterReportOperationTerminal) || errors.Is(opCtx.Err(), context.Canceled) {
+			return nil
+		}
 		return err
 	}
 	m.clearLaneCurrentOperation(laneID)
@@ -659,9 +687,59 @@ func (m *DemeterReportQueueManager) processClaimedOperation(record *store.Demete
 }
 
 func (m *DemeterReportQueueManager) processClaimedClarificationOperation(ctx context.Context, record *store.DemeterReportOperationRecord, payload *demeterReportQueueOperationPayload, laneID int) error {
+	jobStartedAt := time.Now()
+	logCtx := newDemeterAudioLogContext(ctx)
+	route := strings.TrimSpace(payload.Route)
+	if route == "" {
+		route = "/providers/demeter-sante/report/operations"
+	}
+	baseFields := map[string]any{
+		"operation_id":   record.OperationID,
+		"operation_type": demeterReportQueueKindClarification,
+		"source_kind":    string(payload.SourceKind),
+		"model_id":       strings.TrimSpace(payload.ModelID),
+		"queue_id":       laneID,
+		"duration_ms":    int64(0),
+	}
+	logDemeterReportPerformanceTaskCtx(logCtx, route, payload.Seq, "clarification_started", baseFields)
+	logFailure := func(stage string, statusCode int, err error) {
+		fields := map[string]any{
+			"operation_id":   record.OperationID,
+			"operation_type": demeterReportQueueKindClarification,
+			"source_kind":    string(payload.SourceKind),
+			"model_id":       strings.TrimSpace(payload.ModelID),
+			"queue_id":       laneID,
+			"status_code":    statusCode,
+			"duration_ms":    time.Since(jobStartedAt).Milliseconds(),
+			// Keep model output and source-derived text out of telemetry fields.
+			"error_type": fmt.Sprintf("%T", err),
+		}
+		logDemeterReportBackendErrorCtx(logCtx, route, payload.Seq, stage, fields)
+		logDemeterReportPerformanceTaskCtx(logCtx, route, payload.Seq, "clarification_failed", fields)
+	}
+	logCancelled := func() {
+		fields := map[string]any{}
+		for key, value := range baseFields {
+			fields[key] = value
+		}
+		fields["duration_ms"] = time.Since(jobStartedAt).Milliseconds()
+		fields["status"] = store.DemeterReportOperationStatusCancelled
+		logDemeterReportPerformanceTaskCtx(logCtx, route, payload.Seq, "clarification_cancelled", fields)
+	}
+
 	result, statusCode, err := m.generateReportClarificationWithRetry(ctx, laneID, record.OperationID, payload)
 	if err != nil {
-		_ = m.failClaimedOperation(ctx, record, err.Error(), statusCode)
+		if errors.Is(ctx.Err(), context.Canceled) || errors.Is(err, context.Canceled) {
+			logCancelled()
+			m.clearLaneCurrentOperation(laneID)
+			return nil
+		}
+		logFailure("clarification_generation_error", statusCode, err)
+		if failErr := m.failClaimedOperation(ctx, record, err.Error(), statusCode); errors.Is(failErr, store.ErrDemeterReportOperationTerminal) {
+			logCancelled()
+			m.clearLaneCurrentOperation(laneID)
+			return nil
+		}
 		m.clearLaneCurrentOperation(laneID)
 		return err
 	}
@@ -682,9 +760,23 @@ func (m *DemeterReportQueueManager) processClaimedClarificationOperation(ctx con
 		FinishedAt:     sql.NullTime{Time: now, Valid: true},
 	}
 	if err := m.app.Store.UpdateDemeterReportOperationByID(ctx, update); err != nil {
+		if errors.Is(err, store.ErrDemeterReportOperationTerminal) || errors.Is(ctx.Err(), context.Canceled) {
+			logCancelled()
+			m.clearLaneCurrentOperation(laneID)
+			return nil
+		}
+		logFailure("clarification_persist_error", fiber.StatusInternalServerError, err)
 		m.clearLaneCurrentOperation(laneID)
 		return err
 	}
+	completedFields := map[string]any{}
+	for key, value := range baseFields {
+		completedFields[key] = value
+	}
+	completedFields["status"] = store.DemeterReportOperationStatusCompleted
+	completedFields["status_code"] = fiber.StatusOK
+	completedFields["duration_ms"] = time.Since(jobStartedAt).Milliseconds()
+	logDemeterReportPerformanceTaskCtx(logCtx, route, payload.Seq, "clarification_completed", completedFields)
 	m.clearLaneCurrentOperation(laneID)
 	_, _ = m.rebalancePendingOperations(ctx)
 	return nil
@@ -693,6 +785,10 @@ func (m *DemeterReportQueueManager) processClaimedClarificationOperation(ctx con
 func (m *DemeterReportQueueManager) processClaimedTemplateDraftOperation(ctx context.Context, record *store.DemeterReportOperationRecord, payload *demeterReportQueueOperationPayload, laneID int) error {
 	result, statusCode, err := m.generateReportTemplateDraftWithRetry(ctx, laneID, record.OperationID, payload)
 	if err != nil {
+		if errors.Is(ctx.Err(), context.Canceled) || errors.Is(err, context.Canceled) {
+			m.clearLaneCurrentOperation(laneID)
+			return nil
+		}
 		_ = m.failClaimedOperation(ctx, record, err.Error(), statusCode)
 		m.clearLaneCurrentOperation(laneID)
 		return err
@@ -715,6 +811,9 @@ func (m *DemeterReportQueueManager) processClaimedTemplateDraftOperation(ctx con
 	}
 	if err := m.app.Store.UpdateDemeterReportOperationByID(ctx, update); err != nil {
 		m.clearLaneCurrentOperation(laneID)
+		if errors.Is(err, store.ErrDemeterReportOperationTerminal) || errors.Is(ctx.Err(), context.Canceled) {
+			return nil
+		}
 		return err
 	}
 	m.clearLaneCurrentOperation(laneID)
@@ -2048,6 +2147,7 @@ func (a *App) cancelDemeterReportOperation(c *fiber.Ctx) error {
 	if operationID == "" {
 		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{Error: "missing operation id"})
 	}
+	cancelDemeterReportOperationContext(operationID)
 	record, err := a.Store.CancelDemeterReportOperation(requestContext(c), operationID, claims.OrgID, claims.UserID, time.Now().UTC())
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) || errors.Is(err, store.ErrDemeterReportOperationOwnership) {
@@ -2055,9 +2155,22 @@ func (a *App) cancelDemeterReportOperation(c *fiber.Ctx) error {
 		}
 		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{Error: "failed to cancel operation"})
 	}
+	cancelDemeterReportOperationContext(operationID)
 	response := demeterReportOperationResponseFromRecord(record)
 	defer a.purgeDemeterReportOperationAfterResponse(record.OperationID, response.Status)
 	return c.Status(fiber.StatusOK).JSON(response)
+}
+
+func cancelDemeterReportOperationContext(operationID string) {
+	operationID = strings.TrimSpace(operationID)
+	if operationID == "" {
+		return
+	}
+	if cancelValue, ok := demeterReportOperationCancels.Load(operationID); ok {
+		if cancel, ok := cancelValue.(context.CancelFunc); ok {
+			cancel()
+		}
+	}
 }
 
 func (a *App) purgeDemeterReportOperationAfterResponse(operationID, status string) {

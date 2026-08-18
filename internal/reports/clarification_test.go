@@ -21,6 +21,16 @@ func TestParseReportClarificationJSONRejectsInvalidJSON(t *testing.T) {
 	}
 }
 
+func TestParseReportClarificationJSONExtractsModelCommentary(t *testing.T) {
+	clarification, err := ParseReportClarificationJSON(`Analyse terminée: {"needsClarification":true,"questions":[{"id":"date","question":"Quelle est la date ?"}]}`)
+	if err != nil {
+		t.Fatalf("expected clarification JSON to be extracted: %v", err)
+	}
+	if len(clarification.Questions) != 1 || clarification.Questions[0].ID != "date" {
+		t.Fatalf("unexpected clarification: %+v", clarification)
+	}
+}
+
 func TestBuildClarificationPromptsMentionWordNoteSafety(t *testing.T) {
 	prompt := BuildClarificationSystemPrompt(ReportSourceWordNote)
 	if prompt == "" || !containsAll(prompt, "prise de note Word très abrégée", "n'invente jamais de fait") {

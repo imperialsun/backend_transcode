@@ -52,9 +52,10 @@ func NormalizeReportSourceKind(value string) ReportSourceKind {
 func BuildClarificationSystemPrompt(sourceKind ReportSourceKind) string {
 	sourceKind = NormalizeReportSourceKind(string(sourceKind))
 	sourceDescription := "une transcription ASR"
-	if sourceKind == ReportSourceWordNote {
+	switch sourceKind {
+	case ReportSourceWordNote:
 		sourceDescription = "une prise de note Word très abrégée et potentiellement fragmentaire"
-	} else if sourceKind == ReportSourceTextNote {
+	case ReportSourceTextNote:
 		sourceDescription = "une note texte potentiellement fragmentaire"
 	}
 
@@ -86,17 +87,17 @@ func BuildClarificationUserPrompt(sourceText string, sourceKind ReportSourceKind
 
 // ParseReportClarificationJSON extracts and validates the model response.
 func ParseReportClarificationJSON(rawOutput string) (ReportClarification, error) {
-	candidate := strings.TrimSpace(rawOutput)
-	if strings.HasPrefix(candidate, "```") {
-		candidate = strings.TrimPrefix(candidate, "```")
-		if newline := strings.IndexByte(candidate, '\n'); newline >= 0 {
-			candidate = candidate[newline+1:]
-		}
-		candidate = strings.TrimSuffix(strings.TrimSpace(candidate), "```")
+	value, err := parseReportCandidate(rawOutput)
+	if err != nil {
+		return ReportClarification{}, fmt.Errorf("%w: %v", ErrInvalidReportClarification, err)
+	}
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return ReportClarification{}, fmt.Errorf("%w: %v", ErrInvalidReportClarification, err)
 	}
 
 	var parsed ReportClarification
-	if err := json.Unmarshal([]byte(candidate), &parsed); err != nil {
+	if err := json.Unmarshal(encoded, &parsed); err != nil {
 		return ReportClarification{}, fmt.Errorf("%w: %v", ErrInvalidReportClarification, err)
 	}
 

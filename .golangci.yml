@@ -9,3 +9,9 @@ linters:
     - errcheck
     - govet
     - staticcheck
+  exclusions:
+    rules:
+      - path: _test\.go
+        text: SA5011
+        linters:
+          - staticcheck

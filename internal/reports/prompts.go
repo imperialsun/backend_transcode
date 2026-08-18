@@ -124,14 +124,15 @@ func BuildReportSystemPromptWithDetailAndSource(detailLevel ReportDetailLevel, s
 		"Ta mission: transformer une source brute en compte rendu structuré selon le format demandé.",
 	}
 	lines = append(lines, commonPromptRules...)
-	if sourceKind == ReportSourceWordNote {
+	switch sourceKind {
+	case ReportSourceWordNote:
 		lines = append(lines,
 			"La source est une prise de note Word très abrégée et potentiellement fragmentaire, pas nécessairement une transcription ASR.",
 			"Développe la rédaction uniquement à partir des éléments explicitement présents ou confirmés par l'utilisateur.",
 			"Conserve toute abréviation ambiguë et signale-la dans caveats au lieu de l'expanser arbitrairement.",
 			"Si la source ne permet pas d'atteindre le niveau de détail demandé, reste court et indique les manques dans caveats.",
 		)
-	} else if sourceKind == ReportSourceTextNote {
+	case ReportSourceTextNote:
 		lines = append(lines,
 			"La source est une note texte potentiellement fragmentaire.",
 			"Ne transforme pas des mots-clés en faits non présents et signale les informations insuffisantes dans caveats.",

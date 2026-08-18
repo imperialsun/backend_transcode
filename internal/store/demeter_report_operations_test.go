@@ -232,3 +232,67 @@ func TestUpdatePendingDemeterReportOperationQueueByIDMovesOnlyPendingRows(t *tes
 		t.Fatalf("running row should stay on queue 1, got %+v", running)
 	}
 }
+
+func TestCancelDemeterReportOperationWinsAgainstLateWorkerUpdate(t *testing.T) {
+	ctx := context.Background()
+	st, err := Open(ctx, filepath.Join(t.TempDir(), "demeter-report-cancel-race.sqlite"))
+	if err != nil {
+		t.Fatalf("failed to open store: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	org, err := st.CreateOrganization(ctx, "Org", "cancel-race-org", "active")
+	if err != nil {
+		t.Fatalf("failed to create org: %v", err)
+	}
+	user, err := st.CreateUser(ctx, org.ID, "cancel-race@example.com", "hash", "active")
+	if err != nil {
+		t.Fatalf("failed to create user: %v", err)
+	}
+	now := time.Now().UTC()
+	operation := &DemeterReportOperationRecord{
+		OperationID:    "demeter-report-cancel-race",
+		OrganizationID: org.ID,
+		UserID:         user.ID,
+		Status:         DemeterReportOperationStatusRunning,
+		Stage:          "running",
+		FormatCount:    1,
+		StatusCode:     202,
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	}
+	if err := st.CreateDemeterReportOperation(ctx, operation); err != nil {
+		t.Fatalf("failed to create operation: %v", err)
+	}
+
+	cancelled, err := st.CancelDemeterReportOperation(ctx, operation.OperationID, org.ID, user.ID, now.Add(time.Second))
+	if err != nil {
+		t.Fatalf("failed to cancel operation: %v", err)
+	}
+	if cancelled.Status != DemeterReportOperationStatusCancelled {
+		t.Fatalf("expected cancelled status, got %s", cancelled.Status)
+	}
+
+	lateUpdate := &DemeterReportOperationRecord{
+		OperationID: operation.OperationID,
+		Status:      DemeterReportOperationStatusCompleted,
+		Stage:       "completed",
+		FormatIndex: 1,
+		FormatCount: 1,
+		Progress:    1,
+		StatusCode:  200,
+		UpdatedAt:   now.Add(2 * time.Second),
+		FinishedAt:  sql.NullTime{Time: now.Add(2 * time.Second), Valid: true},
+	}
+	if err := st.UpdateDemeterReportOperationByID(ctx, lateUpdate); !errors.Is(err, ErrDemeterReportOperationTerminal) {
+		t.Fatalf("expected terminal update error, got %v", err)
+	}
+
+	final, err := st.GetDemeterReportOperation(ctx, operation.OperationID, org.ID, user.ID)
+	if err != nil {
+		t.Fatalf("failed to reload cancelled operation: %v", err)
+	}
+	if final.Status != DemeterReportOperationStatusCancelled {
+		t.Fatalf("late worker update overwrote cancellation: %+v", final)
+	}
+}
