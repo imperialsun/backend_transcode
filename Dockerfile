@@ -1,4 +1,4 @@
-FROM golang:1.26.5 AS builder
+FROM golang:1.27.1 AS builder
 
 WORKDIR /src
 
@@ -14,7 +14,7 @@ RUN mkdir -p /out /runtime-data && \
 FROM debian:bookworm-slim AS runtime
 
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends ffmpeg ca-certificates && \
+    apt-get install -y --no-install-recommends ffmpeg ca-certificates libpcre2-8-0 && \
     rm -rf /var/lib/apt/lists/* && \
     useradd --system --uid 65532 --create-home --home-dir /home/nonroot nonroot
 
